@@ -1,0 +1,14 @@
+[package]
+name = "x1sound"
+version = "0.1.0"
+edition = "2021"
+description = "Speaker controller for the ThinkPad X1 Carbon Gen 9 on PipeWire (Dolby-like profiles, bass/treble, loudness, tweeter/woofer balance)"
+license = "GPL-3.0-or-later"
+
+# Sin dependencias externas: solo std. Se compila con --offline y no ejecuta código de terceros.
+[dependencies]
+
+[profile.release]
+opt-level = 2
+lto = true
+panic = "abort"

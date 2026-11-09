@@ -1,0 +1,2 @@
+# x1sound: los woofers (DAC 0x03, 'DAC2 Playback Volume') arrancan con techo conservador
+ACTION=="add", SUBSYSTEM=="sound", KERNEL=="controlC0", RUN+="/usr/bin/amixer -c0 -q cset name='DAC2 Playback Volume' 50"

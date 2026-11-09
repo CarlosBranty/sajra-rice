@@ -1,0 +1,4 @@
+/target
+# derivado del driver propietario de Lenovo: se regenera con speaker-tuning-to-easyeffects, no se versiona
+*.irs
+driver-cache/
