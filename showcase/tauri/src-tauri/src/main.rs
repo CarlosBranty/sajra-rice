@@ -286,6 +286,9 @@ fn sidecar_send(app: AppHandle, msg: Value) {
 /// The input bubble needs keystrokes: make the overlay key while typing, then hand focus back.
 #[tauri::command]
 fn set_typing(app: AppHandle, window: WebviewWindow, on: bool) {
+    // Said before the keyboard is taken, so a bar that hands it back never does so in the middle of this.
+    #[cfg(target_os = "linux")]
+    linux::dock_keys(on);
     let _ = window.set_focusable(on);
     if on {
         let _ = window.set_focus();

@@ -187,8 +187,10 @@ meanwhile. The two leave each other notes in `$XDG_RUNTIME_DIR/roamies/`:
 - `dock.json`, written by the bar: `{"x": 1830, "y": 23, "sw": 2304, "sh": 1440, "mx": 0, "my": 0}`. `x`, `y` is the
   centre of the slot, `sw` × `sh` the size of its screen and `mx`, `my` where that screen starts, all in logical pixels.
   Roamies reads it every couple of seconds; without the file nothing changes.
-- `state.json`, written by Roamies: `{"pid": 1234, "exe": "/usr/bin/roamies", "out": false, "t": 1794359725}`. `out` is
-  true while the Roamie is on screen (so the slot is empty). `t` is when it was written, in seconds; it's rewritten every
+- `state.json`, written by Roamies: `{"pid": 1234, "exe": "/usr/bin/roamies", "out": false, "keys": false, "t": 1794359725}`.
+  `out` is true while the Roamie is on screen (so the slot is empty). `keys` is true while something is being typed to
+  it; a tiling compositor leaves the keyboard with the overlay afterwards, so when `keys` is false and the overlay
+  still has the keyboard, the bar should give it back to the window that had it. `t` is when it was written, in seconds; it's rewritten every
   couple of seconds, so an old one means Roamies isn't running. `exe` is the command to run with `--talk`, `--panel`
   or `--summon` when the slot is clicked.
 

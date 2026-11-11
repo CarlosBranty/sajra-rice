@@ -434,7 +434,8 @@
       // ⌃⌥S toggles; the menu's Show Sidekick only ever shows.
       const a = getAgent();
       if (m.show || !a.visible) { if (a.show({ summoned: true })) a.act('wave'); }
-      else a.hide();
+      // An open question goes with it: left open, the overlay kept the keyboard with nothing on screen.
+      else { if (ask) finishAsk(null); a.hide(); }
       return;
     }
     if (m.kind === 'say') { if (!ask) getAgent().say(m.text, { mood: m.mood ?? null }); }

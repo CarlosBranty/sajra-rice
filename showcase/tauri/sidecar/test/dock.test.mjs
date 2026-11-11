@@ -122,4 +122,12 @@ const travel = (c, to, secs, why) => {
   }
 }
 
+// Regression: hiding the Roamie with its shortcut while a typed question was open left the overlay holding the
+// keyboard with nothing on screen (on a tiling desktop nothing else could be typed in until a click).
+{
+  const host = fs.readFileSync(new URL('../../../roamies/host.js', import.meta.url), 'utf8');
+  const summon = host.slice(host.indexOf("if (m.kind === 'summon')"), host.indexOf("if (m.kind === 'say')"));
+  assert.match(summon, /else \{ if \(ask\) finishAsk\(null\); a\.hide\(\); \}/, 'hiding closes an open question, which gives the keyboard back');
+}
+
 console.log('dock tests: passed');

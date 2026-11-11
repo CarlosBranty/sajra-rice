@@ -66,9 +66,11 @@ fn trace() -> bool {
 // $XDG_RUNTIME_DIR/roamies/ (gone at logout):
 //   dock.json   from the bar: {"x": 1830, "y": 23, "sw": 2304, "sh": 1440, "mx": 0, "my": 0}, the slot's centre on a
 //               screen sw × sh at (mx, my), all in that screen's logical px.
-//   state.json  from Roamies: {"pid": 1234, "exe": "/usr/bin/roamies", "out": false, "t": 1794359725}. out: the Roamie
-//               is on screen, so the slot is empty. t: when this was written (seconds); it is written again every couple
-//               of seconds (host.js), so an old one means Roamies has gone.
+//   state.json  from Roamies: {"pid": 1234, "exe": "/usr/bin/roamies", "out": false, "keys": false, "t": 1794359725}.
+//               out: the Roamie is on screen, so the slot is empty. keys: it is being typed to, so the keyboard is the
+//               overlay's (when it isn't and the overlay still has the keyboard, the bar may hand it back). t: when this
+//               was written (seconds); it is written again every couple of seconds (host.js), so an old one means
+//               Roamies has gone.
 // Nothing is written unless a bar left a dock.json.
 
 fn dock_dir() -> Option<PathBuf> {
@@ -108,13 +110,31 @@ pub(crate) fn dock_get(window: &tauri::WebviewWindow) -> Option<Value> {
     dock_on(&dock, screen, screens).then_some(dock)
 }
 
-/// What the bar reads back: this copy of Roamies, and whether the Roamie is out of its slot.
-fn dock_note(out: bool, exe: &str, now: u64) -> String {
-    json!({ "pid": std::process::id(), "exe": exe, "out": out, "t": now }).to_string()
+/// What the bar reads back: this copy of Roamies, whether the Roamie is out of its slot, and whether it is being
+/// typed to (keys).
+fn dock_note(out: bool, keys: bool, exe: &str, now: u64) -> String {
+    json!({ "pid": std::process::id(), "exe": exe, "out": out, "keys": keys, "t": now }).to_string()
 }
+
+static DOCK_OUT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static DOCK_KEYS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// Tells the bar whether the Roamie is out of its slot. Only for a bar that asked (it left a dock.json).
 pub(crate) fn dock_state(out: bool) {
+    DOCK_OUT.store(out, std::sync::atomic::Ordering::Relaxed);
+    dock_write();
+}
+
+/// Tells the bar whether the overlay wants the keyboard (something is being typed to the Roamie). A tiling
+/// compositor leaves the keyboard with the overlay after the typing is over, where nothing can be typed any more:
+/// the bar knows its compositor and can hand it back to the window that had it.
+pub(crate) fn dock_keys(on: bool) {
+    DOCK_KEYS.store(on, std::sync::atomic::Ordering::Relaxed);
+    dock_write();
+}
+
+fn dock_write() {
+    let (out, keys) = (DOCK_OUT.load(std::sync::atomic::Ordering::Relaxed), DOCK_KEYS.load(std::sync::atomic::Ordering::Relaxed));
     let Some(dir) = dock_dir() else { return };
     if !dir.join("dock.json").is_file() {
         return;
@@ -123,7 +143,7 @@ pub(crate) fn dock_state(out: bool) {
     let exe = std::env::var("APPIMAGE").ok().filter(|p| !p.is_empty()).or_else(|| std::env::current_exe().ok().map(|p| p.to_string_lossy().into_owned())).unwrap_or_default();
     let now = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
     // Written in place, in one go: a bar watching the file sees the change (a rename would lose its watch).
-    let _ = std::fs::write(dir.join("state.json"), dock_note(out, &exe, now));
+    let _ = std::fs::write(dir.join("state.json"), dock_note(out, keys, &exe, now));
 }
 
 // ---------- click-through by region ----------
@@ -1114,9 +1134,11 @@ mod tests {
 
     #[test]
     fn the_note_for_the_bar_says_who_and_whether_its_out() {
-        let v: Value = serde_json::from_str(&dock_note(true, "/opt/Roamies.AppImage", 1794359725)).unwrap();
-        assert_eq!(v, json!({ "pid": std::process::id(), "exe": "/opt/Roamies.AppImage", "out": true, "t": 1794359725u64 }));
-        assert_eq!(serde_json::from_str::<Value>(&dock_note(false, "", 0)).unwrap()["out"], false);
+        let v: Value = serde_json::from_str(&dock_note(true, false, "/opt/Roamies.AppImage", 1794359725)).unwrap();
+        assert_eq!(v, json!({ "pid": std::process::id(), "exe": "/opt/Roamies.AppImage", "out": true, "keys": false, "t": 1794359725u64 }));
+        assert_eq!(serde_json::from_str::<Value>(&dock_note(false, false, "", 0)).unwrap()["out"], false);
+        // keys: the Roamie is being typed to, so the keyboard is the overlay's; otherwise the bar may hand it back.
+        assert_eq!(serde_json::from_str::<Value>(&dock_note(true, true, "", 0)).unwrap()["keys"], true);
     }
 
     #[test]
