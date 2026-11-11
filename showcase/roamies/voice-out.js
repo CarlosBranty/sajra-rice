@@ -11,6 +11,14 @@
   // Replies that are over: their end arrived, or they were stopped or replaced (auto-listen waits for this).
   const over = new Set();
   const isOver = (x) => { over.add(x); if (over.size > 20) over.delete(over.values().next().value); };
+  // A context with nowhere to play (no audio output on this system) never moves its clock, so what it was handed
+  // would count as playing for ever. Playing needs the clock to have moved in the last couple of seconds.
+  let seenT = -1, seenAt = 0;
+  const moving = () => {
+    const now = performance.now();
+    if (ac.currentTime !== seenT) { seenT = ac.currentTime; seenAt = now; }
+    return now - seenAt < 2000;
+  };
 
   const ctx = () => {
     if (!ac) {
@@ -64,7 +72,7 @@
       }
       if (m.pcm) play(m);
     },
-    playing: () => !!ac && live.length > 0 && ac.currentTime < endAt + 0.05,
+    playing: () => !!ac && live.length > 0 && ac.currentTime < endAt + 0.05 && moving(),
     cps: () => rate,
     // That reply has nothing left to play: its end arrived (or it was stopped), and nothing is still sounding.
     finished(rid) { return !this.playing() && (!rid || over.has(rid)); },
