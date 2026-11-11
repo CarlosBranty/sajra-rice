@@ -35,7 +35,7 @@ import { createSpeaker } from './speaker.mjs';
 import { DEFAULT_VOICE, FISH_CHOICES } from './fish.mjs';
 import { createSecrets, retryLoad } from './secrets.mjs';
 import { createActivity } from './activity.mjs';
-import { bindCommands, canCircle, canSnap, hasHands, hasHotkeys, hasVoice, linuxSession, micTrouble, needsVoiceModel, platformLine, promptWords, seesPointer, stepWaits } from './platform.mjs';
+import { bindCommands, canCircle, canSnap, circleWords, hasHands, hasHotkeys, hasVoice, linuxSession, micTrouble, mousePen, needsVoiceModel, platformLine, promptWords, seesPointer, stepWaits } from './platform.mjs';
 import { keyCards, keyKinds, signInCards } from './providers.mjs';
 import { activityLogs, buildReport, reportDir, reportName, reveal, run, scrubConfig, tail } from './diagnostics.mjs';
 
@@ -88,6 +88,7 @@ const DEFAULTS = {
   language: 'auto', // the reply language: 'auto' (nothing is asked of the model), 'en' or 'es' (speech.mjs LANGUAGES)
   duckOthers: false, duckLevel: 30, // Linux: other apps' sound goes down to this percentage while it listens and speaks (speech.mjs duckOf)
   wakeWord: false, wakePhrase: '', // Linux: saying the phrase starts listening, with no key; the microphone stays on for it (speech.mjs wakeOf)
+  penMouse: true, // Linux on a layer surface: while it listens, the mouse draws on the screen (platform.mjs mousePen)
   theme: 'classic', // the interface's colours: 'classic', or 'system' to follow the desktop's light or dark and its colours (speech.mjs themeOf)
 };
 const LINUX = process.platform === 'linux';
@@ -187,7 +188,10 @@ const HANDS_OK = hasHands(process.platform, process.env.ROAMIES_HANDS);
 const SNAP_OK = canSnap(process.platform, process.env.ROAMIES_HANDS, { session: SESSION, layer: process.env.ROAMIES_LAYER || '', slurp: process.env.ROAMIES_SLURP || '' });
 // The prompt's lines about pointing and walkthroughs, worded for what this computer can do (platform.mjs).
 const SHOW = promptWords({ hands: HANDS_OK, waits: WAITS, example: process.platform === 'darwin' ? '"how do I add a layer mask"' : 'a how-to' });
-const CIRCLE_OK = canCircle(process.platform);
+const CIRCLE_OK = canCircle(process.platform, process.env.ROAMIES_LAYER || '');
+// Linux on a layer surface: circling is the mouse's, while a take is heard, and the Voice page can switch it off.
+const PEN_MOUSE = VOICE_OK && mousePen(process.platform, process.env.ROAMIES_LAYER || '');
+const penOn = () => PEN_MOUSE && config.penMouse !== false;
 // A shortcut as people on this computer say it: "Control+Option+S" on a Mac, "Ctrl+Alt+S" on Windows.
 const keyWords = (accel) => accel.replace(/Key|Digit/g, '').split('+')
   .map((p) => (MAC ? { Alt: 'Option' }[p] ?? p : { Control: 'Ctrl', Command: LINUX ? 'Super' : 'Win' }[p] ?? p)).join('+');
@@ -377,7 +381,7 @@ const livePrompt = (context = '') => {
   const turn = `Live state (current as of this moment):
 ${frontNow ? `${frontNow}\n` : ''}- Editing files, running commands and controlling other apps: ${config.allowActions ? 'ALLOWED' : `switched OFF (tell the user to turn on "Allow File Edits & Commands" on the Behavior page in ${PANEL} if they want it)`}.
 ${VOICE_OK ? `- Voice: ${!config.voice ? 'off' : voiceReady() ? `on; ${HOTKEYS_OK ? `${userName} holds ${talkWords()} to talk` : `${userName} presses the key they bound to ${BIND.talk} to start talking and again to send (a pause sends too)`}${config.autoListen ? '. Auto-listen is on: when your reply to a spoken question ends with a question, the mic opens by itself for their answer' : ''}` : `on, but the speech model isn't downloaded yet (${voiceModel.status === 'downloading' ? 'downloading now' : `the Voice page in ${PANEL}`})`}.` : ''}
-- Shortcuts: ${HOTKEYS_OK ? `show or hide you ${keyWords(keys().summon)}` : `on this Wayland desktop no app can have global shortcuts, so ${userName} binds keys to these commands in their desktop's keyboard settings: ${BIND.summon} (show or hide you), ${BIND.ask} (ask you), ${BIND.list} (the list), ${BIND.talk} (talk)${BIND.snap ? `, ${BIND.snap} (ask about an area)` : ''} and ${BIND.panel} (the panel)`}${SNAP_OK && HOTKEYS_OK ? `; ask about an area ${keyWords(keys().snap)}` : ''}${CIRCLE_OK ? "; while holding the talk keys, moving the cursor round something circles it (no clicking; it snaps shut with a click when the circle closes, and loose lines don't count) and you'll see what they circled" : ''}${HOTKEYS_OK ? `; show the list ${keyWords(keys().list)}` : ''}.${HANDS_OK ? '' : ` ${SNAP_OK ? 'Reading' : 'Asking about an area, reading'} app windows, finding things on screen by their words and working other apps need the Roamies app, which isn't running here; draw there with x, y from a screenshot.`}`;
+- Shortcuts: ${HOTKEYS_OK ? `show or hide you ${keyWords(keys().summon)}` : `on this Wayland desktop no app can have global shortcuts, so ${userName} binds keys to these commands in their desktop's keyboard settings: ${BIND.summon} (show or hide you), ${BIND.ask} (ask you), ${BIND.list} (the list), ${BIND.talk} (talk)${BIND.snap ? `, ${BIND.snap} (ask about an area)` : ''} and ${BIND.panel} (the panel)`}${SNAP_OK && HOTKEYS_OK ? `; ask about an area ${keyWords(keys().snap)}` : ''}${circleWords(process.platform, process.env.ROAMIES_LAYER || '', penOn())}${HOTKEYS_OK ? `; show the list ${keyWords(keys().list)}` : ''}.${HANDS_OK ? '' : ` ${SNAP_OK ? 'Reading' : 'Asking about an area, reading'} app windows, finding things on screen by their words and working other apps need the Roamies app, which isn't running here; draw there with x, y from a screenshot.`}`;
   const memory = `${open ? `Open commitments:\n${open}` : 'No open commitments.'}${done ? `\nDone today (ticked off on the list or by you; still shown struck through until midnight):\n${done}` : ''}
 ${facts.length ? `What you know about ${userName}${total > facts.length ? ` (${facts.length} most relevant of ${total})` : ''}:\n${facts.map((f) => `- ${f.id}: ${f.text}`).join('\n')}` : `You don't know anything lasting about ${userName} yet.`}`;
   return { turn, memory };
@@ -1285,6 +1289,7 @@ function panelState() {
     language: languageOf(config.language), languages: LANGUAGES,
     duck: LINUX ? { ...duckOf(config), levels: DUCK_LEVELS } : null,
     wake: LINUX && VOICE_OK ? wakeOf(config) : null,
+    pen: PEN_MOUSE ? { on: penOn() } : null,
     voice: VOICE_OK ? {
       on: !!config.voice, keys: HOTKEYS_OK ? talkSymbols() : null, ready: voiceReady(), mac: MAC, mute: config.muteWhileTalking !== false, autoListen: !!config.autoListen,
       download: NEEDS_MODEL && config.voice && !voiceReady() ? { status: voiceModel.status, pct: voiceModel.total ? Math.floor((voiceModel.done / voiceModel.total) * 100) : 0, size: sizeLabel() } : null,
@@ -1467,6 +1472,7 @@ async function onMenu(id) {
   else if (id === 'duck' && LINUX) { config.duckOthers = !duckOf(config).on; saveConfig(); voiceConfig(); menu(); }
   else if (id.startsWith('ducklevel:') && LINUX && DUCK_LEVELS.includes(Number(id.slice(10)))) { config.duckLevel = Number(id.slice(10)); saveConfig(); voiceConfig(); menu(); }
   else if (id === 'wake' && LINUX) { config.wakeWord = !wakeOf(config).on; saveConfig(); voiceConfig(); menu(); }
+  else if (id === 'pen' && PEN_MOUSE) { config.penMouse = !penOn(); saveConfig(); ui({ kind: 'pen', on: penOn() }); menu(); }
   else if (id === 'voicedl') startVoiceDownload();
   else if (id === 'voice') {
     config.voice = !config.voice; saveConfig(); voiceConfig(); menu();
@@ -1600,8 +1606,9 @@ function obState() {
     kind: 'state',
     platform: process.platform,
     // What this computer can do (platform.mjs): Ask About an Area, circling while talking, and on Wayland no
-    // global shortcuts (bind: the commands to bind in the desktop's settings instead) and no Cursor size.
-    snap: SNAP_OK, circle: CIRCLE_OK, session: SESSION, bind: HOTKEYS_OK ? null : BIND, sizes: SIZES,
+    // global shortcuts (bind: the commands to bind in the desktop's settings instead) and no Cursor size. The guide
+    // teaches the helper's circling (the talk keys held); the mouse's pen draws only on the overlay, not in the guide.
+    snap: SNAP_OK, circle: CIRCLE_OK && !PEN_MOUSE, session: SESSION, bind: HOTKEYS_OK ? null : BIND, sizes: SIZES,
     step: config.onboardStep ?? 0,
     oauth: signInCards(Object.keys(OAUTH), (id) => oauthOn.get(id), PROVIDER_LABELS),
     apikey: keyCards(AUTH_PROVIDERS, (id) => keyOn.get(id)),
@@ -1708,6 +1715,7 @@ createInterface({ input: process.stdin }).on('line', (line) => {
     ui({ kind: 'size', size: sizeNow() });
     ui({ kind: 'look', look: config.look ?? 'classic' });
     ui({ kind: 'theme', theme: themeOf(config.theme) });
+    if (PEN_MOUSE) ui({ kind: 'pen', on: penOn() });
     if (config.onboarded) ui({ kind: 'greet' });
   } else if (m.type?.startsWith('ob_') || m.type?.startsWith('chat_') || m.type === 'set_keys' || m.type === 'set_actions' || m.type === 'set_login' || m.type === 'keybind_error') onGuide(m).catch((e) => console.error('guide', e));
   else if (m.type?.startsWith('voice')) onVoice(m);

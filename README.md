@@ -29,7 +29,7 @@ voice, keeps track of what you said you'd do and nudges you when it's due.
 
 ## Why Roamies
 
-- **Talk, don't type.** Hold ⌃⌥ (Ctrl+Alt on Windows and Linux), say it, let go. On macOS and Windows, circle something with the cursor while you talk and it sees what you mean.
+- **Talk, don't type.** Hold ⌃⌥ (Ctrl+Alt on Windows and Linux), say it, let go. On macOS and Windows, circle something with the cursor while you talk and it sees what you mean (on Linux, drag round it with the mouse).
 - **It talks back.** Spoken replies in its own voice, with real feeling, through [Fish Audio](https://fish.audio).
 - **It remembers.** What you said you'd do, reminders down to the second, and what matters to you.
 - **It draws on your screen.** Rings the exact button to click, walks you through each step, and sketches answers beside what you're reading.
@@ -78,7 +78,7 @@ clear it all in one go.
 |                        | macOS                      | Windows                     | Linux (beta)                       |
 | ---------------------- | -------------------------- | --------------------------- | ---------------------------------- |
 | Talk to it             | Yes, best on macOS 26+     | Yes, speech runs on your PC | Yes, speech runs on your PC        |
-| Circle while talking   | Yes                        | Yes                         | No                                 |
+| Circle while talking   | Yes                        | Yes                         | With the mouse, on layer surfaces  |
 | Spoken replies         | Yes, with a Fish Audio key | Yes, with a Fish Audio key  | Yes, with a Fish Audio key         |
 | Memory and reminders   | Yes                        | Yes                         | Yes                                |
 | Read windows and point | Yes                        | Yes                         | Points from screenshots only       |
@@ -143,7 +143,8 @@ replies, memory and reminders, screenshots of the screen in use and pointing at 
 files and commands, Ask About an Area on Wayland with `slurp`, Open at Login, and in-app updates for the AppImage (a
 `.deb` or `.rpm` copy opens the download page instead).
 
-**Not yet:** reading or working other apps, circling while talking, and the Cursor size on Wayland.
+**Not yet:** reading or working other apps, circling while talking without layer surfaces (GNOME, X11), and the Cursor
+size on Wayland.
 
 **Wayland** (the default on Ubuntu, Fedora and KDE) doesn't let apps grab keys or see the pointer over other apps, so:
 
@@ -171,6 +172,11 @@ files and commands, Ask About an Area on Wayland with `slurp`, Open at Login, an
   there, after a restart. Drag a rectangle round what you mean, then ask by voice or typing; Esc or a click without
   dragging cancels, and so does leaving it for three minutes. The Roamie steps out of the way while you pick, and
   isn't in the picture. GNOME has no layer surfaces for slurp, and X11 sessions nothing to pick with yet.
+- **Circling while talking** is done with the mouse on compositors with layer surfaces (below): while it listens,
+  drag round or under what you mean, and that part of the screen goes with your words, your strokes drawn on it.
+  Meanwhile the Roamie has every click: a click without dragging gives the mouse back for the rest of that take, and
+  the take ending gives it back in any case. **Draw with the mouse while I listen** on the panel's Voice page
+  (Talking) turns it off, for example when the wake word would take the mouse on a false start.
 - On compositors with layer surfaces (Hyprland, Sway and others built on wlroots, KDE Plasma) the Roamie is a native
   Wayland layer above your windows and bars: it takes no tile or workspace, clicks land on whatever is under it
   everywhere except on the Roamie and what it shows, and it has the keyboard only while you type to it: a click

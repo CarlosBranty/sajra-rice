@@ -525,7 +525,9 @@
           ? (v.download.status === 'downloading' ? `Downloading the voice model… ${v.download.pct}%` : v.download.status === 'error' ? 'The download failed' : `Needs a ${v.download.size} download`)
           : v.keys ? `Hold ${v.keys} to talk` : 'Press your talk shortcut to talk', v.on, () => act('voice'), 'voice'),
         v.download && v.download.status !== 'downloading' ? el('div', { className: 'links' }, link(v.download.status === 'error' ? 'Retry the download' : `Download (${v.download.size})`, () => act('voicedl'), { k: 'voicedl' })) : null,
-        v.mac ? toggle('Mute Mac while talking', 'Other sounds go quiet while you talk', v.mute, () => act('mutetalk'), 'mutetalk') : null) : null,
+        v.mac ? toggle('Mute Mac while talking', 'Other sounds go quiet while you talk', v.mute, () => act('mutetalk'), 'mutetalk') : null,
+        // Linux on a layer surface: the mouse circles or underlines things while I listen, and has every click meanwhile.
+        state.pen ? toggle('Draw with the mouse while I listen', 'Drag round what you mean; a click without dragging stops it', state.pen.on, () => act('pen'), 'pen') : null) : null,
       // Linux: saying the phrase starts listening, as the talk shortcut does. The microphone stays on to hear it.
       state.wake ? group('Wake word', 'Say a phrase and I listen, no key needed. The microphone stays on to hear it; nothing leaves this computer until you say it.', null,
         toggle('Wake word', !v?.on ? 'Needs Voice control on' : state.wake.phrase ? `Say "${state.wake.phrase}" to talk to me` : 'Pick a phrase to call me with', state.wake.on, () => {
@@ -785,7 +787,7 @@
       fishModels: [{ id: 'drama-3', name: 'Drama 3', perM: 50, promo: { perM: 10, until: '2026-12-01T08:00:00Z' } }, { id: 's2.1-pro', name: 'S2.1 Pro', perM: 15 }],
       voice: { on: true, keys: null, ready: true, mac: false, mute: true, download: null },
       // Linux's groups too, so every group of the Voice page can be seen here.
-      duck: { on: true, level: 30, levels: [10, 20, 30, 50] }, wake: { on: true, phrase: 'oye jarvis' },
+      duck: { on: true, level: 30, levels: [10, 20, 30, 50] }, wake: { on: true, phrase: 'oye jarvis' }, pen: { on: true },
       sound: true, actions: false, login: { on: true },
       update: { available: new URLSearchParams(location.search).has('update') ? '0.9.1' : null, installing: false, checking: false, result: null },
       intro: false,

@@ -1,7 +1,7 @@
 // What the model is told about each system, and which features each one gets. Run: npm test
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { bindCommands, canCircle, canSnap, hasHands, hasHotkeys, hasVoice, linuxSession, micTrouble, needsVoiceModel, platformLine, seesPointer } from '../platform.mjs';
+import { bindCommands, canCircle, canSnap, circleWords, mousePen, hasHands, hasHotkeys, hasVoice, linuxSession, micTrouble, needsVoiceModel, platformLine, seesPointer } from '../platform.mjs';
 
 const win = platformLine('win32', { arch: 'x64', release: '10.0.22631' });
 assert.match(win, /^Platform: Windows 11 on x64\./);
@@ -48,6 +48,23 @@ assert.ok(canSnap('darwin', '') && canSnap('win32', 'C:\\Roamies\\roamies-hands.
 assert.ok(!canSnap('win32', '') && !canSnap('linux', '/x/roamies-hands'));
 assert.ok(hasHands('darwin', '') && hasHands('win32', 'x') && !hasHands('win32', ''));
 assert.ok(canCircle('darwin') && canCircle('win32') && !canCircle('linux'));
+// Circling while talking on Linux: a Wayland layer surface takes the mouse while a take is heard (ROAMIES_LAYER=1),
+// and the mouse draws there (mousePen); nowhere else on Linux. macOS and Windows: the helper's pen, as before.
+assert.ok(canCircle('linux', '1') && !canCircle('linux', '') && !canCircle('linux', '0'), 'Linux: layer surfaces only');
+assert.ok(canCircle('darwin', '1') && canCircle('win32', '') && !canCircle('freebsd', '1'), 'the others: as before, layer or not');
+assert.ok(mousePen('linux', '1') && !mousePen('linux', '') && !mousePen('darwin', '1') && !mousePen('win32', '1'), 'the mouse draws only on a layer surface');
+// What the model is told: the helper's words on macOS and Windows, byte for byte; the mouse's on a layer surface,
+// and nothing when it can't be done (or the Voice page switched the mouse off).
+const HELPER = "; while holding the talk keys, moving the cursor round something circles it (no clicking; it snaps shut with a click when the circle closes, and loose lines don't count) and you'll see what they circled";
+assert.equal(circleWords('darwin'), HELPER);
+assert.equal(circleWords('win32', '', false), HELPER, 'the setting is the mouse\'s only');
+assert.equal(circleWords('linux', ''), '', 'X11 and Wayland without layer surfaces: nothing');
+assert.equal(circleWords('linux', '1', false), '', 'switched off on the Voice page: nothing');
+const mouse = circleWords('linux', '1', true);
+assert.match(mouse, /^; while they talk to you, /);
+assert.match(mouse, /dragging with the mouse/, 'the mouse, not the cursor following by itself');
+assert.match(mouse, /a click without dragging/, 'and how to stop it');
+assert.ok(!/talk keys|holding/.test(mouse), 'no talk keys to hold on Wayland');
 // Linux: slurp picks the area, a Wayland layer-shell tool, so a Wayland session whose compositor has layer surfaces
 // (the app says so with ROAMIES_LAYER=1) and slurp there (ROAMIES_SLURP, its path).
 const wlArea = { session: 'wayland', layer: '1', slurp: '/usr/bin/slurp' };

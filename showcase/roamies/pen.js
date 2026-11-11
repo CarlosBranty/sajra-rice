@@ -2,7 +2,8 @@
 // here (voice "ink" messages, in global screen points; voice-win/src/ink.rs). Drawn like voice/ink.swift draws it
 // on macOS: teal with a dark edge and a soft glow, dimmer until it snaps shut round something (then a glow pulse and
 // a tick), and lines that never close fade. The picture sent with what was said is the helper's own capture, with
-// the strokes drawn into it; this canvas is left out of captures like the rest of the overlay.
+// the strokes drawn into it; this canvas is left out of captures like the rest of the overlay. On a Wayland layer
+// surface the mouse draws the same way (penDrag, below) and the shell makes the picture (linux.rs pen_area).
 (() => {
   const R = window.Roamie;
   if (!R || typeof document === 'undefined') return;
@@ -83,5 +84,73 @@
     } else if (m.ev === 'drop' && cur) { fade(cur, 350); cur = null; }
     else if (m.ev === 'fade') { cur = null; for (const s of strokes) if (s.fadeAt == null) fade(s, 450, (+m.after || 0) * 1000); }
     redraw();
+  };
+
+  // ---------- the pen with the mouse ----------
+  // Linux on a Wayland layer surface (host.js): nothing follows the cursor over other apps there, so while a take is
+  // heard the overlay takes the mouse and a press and drag draws. The same smoothing and the same snapping shut as
+  // the helper's (voice-win/src/ink.rs add_point, closing), drawn through R.pen with its messages, in global points.
+  const CLOSE_GAP = 22, MIN_RUN = 110, MIN_SIDE = 26, MIN_FILL = 0.3, START_AFTER = 6;
+  // A point added a little smoothed; false when it was too close to the last one to count.
+  function addPoint(pts, p) {
+    const last = pts.at(-1);
+    if (!last) { pts.push(p); return true; }
+    if (Math.hypot(p[0] - last[0], p[1] - last[1]) < 2) return false;
+    pts.push([last[0] + (p[0] - last[0]) * 0.65, last[1] + (p[1] - last[1]) * 0.65]);
+    return true;
+  }
+  // Big enough both ways, and its outline holds a fair share of its box.
+  function encloses(q) {
+    if (q.length < 3) return false;
+    const xs = q.map((p) => p[0]), ys = q.map((p) => p[1]);
+    const w = Math.max(...xs) - Math.min(...xs), h = Math.max(...ys) - Math.min(...ys);
+    if (w < MIN_SIDE || h < MIN_SIDE) return false;
+    let a = 0;
+    for (let k = 0; k < q.length; k++) { const u = q[k], v = q[(k + 1) % q.length]; a += u[0] * v[1] - v[0] * u[1]; }
+    return Math.abs(a) / 2 >= MIN_FILL * w * h;
+  }
+  // Where the loop the path has just closed starts (an index), or null.
+  function closing(p, gap) {
+    if (p.length < 8) return null;
+    const end = p.at(-1);
+    let run = 0;
+    for (let i = p.length - 1; i > 0;) {
+      run += Math.hypot(p[i][0] - p[i - 1][0], p[i][1] - p[i - 1][1]);
+      i--;
+      if (run >= MIN_RUN && Math.hypot(p[i][0] - end[0], p[i][1] - end[1]) <= gap && encloses(p.slice(i))) return i;
+    }
+    return null;
+  }
+  // shut: the loop it snapped into (the run-up before it goes, as on the helper's).
+  const shut = (d, i) => { d.shut = d.pts.slice(i); d.shut.push(d.shut[0]); R.pen({ ev: 'snap', from: i }); };
+  let drag = null;
+  R.penDrag = {
+    get on() { return !!drag; },
+    down(x, y) { drag = { at: [x, y], pts: null, shut: null }; },
+    move(x, y) {
+      const d = drag;
+      if (!d || d.shut) return;
+      if (!d.pts) {
+        if (Math.hypot(x - d.at[0], y - d.at[1]) < START_AFTER) return;
+        d.pts = [d.at];
+        R.pen({ ev: 'start', x: d.at[0], y: d.at[1] });
+      }
+      if (!addPoint(d.pts, [x, y])) return;
+      const p = d.pts.at(-1);
+      R.pen({ ev: 'pt', x: p[0], y: p[1] });
+      const i = closing(d.pts, CLOSE_GAP);
+      if (i != null) shut(d, i);
+    },
+    // The press ended: the stroke to send (the loop when it snapped shut, nearly closed counting; otherwise the line as
+    // drawn, which stays on screen until the take ends: underlines count here), 'click' for a press that never moved
+    // past a nudge, or null when nothing was pressed.
+    up() {
+      const d = drag;
+      drag = null;
+      if (!d) return null;
+      if (!d.pts) return 'click';
+      if (!d.shut) { const i = closing(d.pts, CLOSE_GAP * 1.8); if (i != null) shut(d, i); }
+      return d.shut ?? d.pts;
+    },
   };
 })();

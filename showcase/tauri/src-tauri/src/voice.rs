@@ -334,14 +334,28 @@ fn handle_voice(app: &AppHandle, msg: Value) {
     }
     match msg.get("type").and_then(Value::as_str) {
         Some("state") => {
+            // A take starts: nothing drawn with the mouse before it goes with its words (linux.rs pen_add).
+            #[cfg(target_os = "linux")]
+            if msg.get("state").and_then(Value::as_str) == Some("listening") {
+                crate::linux::pen_clear();
+            }
             to_overlays(app, &ui);
             to_sidecar(app, &json!({ "type": "voice_state", "state": msg.get("state") }));
         }
         Some("partial") | Some("level") => to_overlays(app, &ui),
         Some("final") => {
             to_overlays(app, &ui);
-            // area: the part of the screen marked with the pen while talking (a PNG, its rect and the strokes).
-            to_sidecar(app, &json!({ "type": "voice", "text": msg.get("text"), "area": msg.get("area"), "ms": msg.get("ms"), "via": msg.get("via") }));
+            // Linux on a layer surface: strokes drawn with the mouse during the take make the area here, in the
+            // helper's shape (linux.rs pen_area); the words go once it is captured.
+            #[cfg(target_os = "linux")]
+            if msg.get("area").is_none_or(Value::is_null) {
+                let loops = crate::linux::pen_take();
+                if !loops.is_empty() {
+                    crate::linux::pen_area(app, loops, move |app, area| to_sidecar(app, &spoken(&msg, Some(&area))));
+                    return;
+                }
+            }
+            to_sidecar(app, &spoken(&msg, msg.get("area")));
         }
         Some("error") => {
             let mut m = msg.clone();
@@ -350,6 +364,12 @@ fn handle_voice(app: &AppHandle, msg: Value) {
         }
         _ => {}
     }
+}
+
+/// What the sidecar hears of the words of a take. area: the part of the screen marked with the pen while talking (a
+/// PNG, its rect and the strokes), the helper's or the mouse's.
+fn spoken(msg: &Value, area: Option<&Value>) -> Value {
+    json!({ "type": "voice", "text": msg.get("text"), "area": area, "ms": msg.get("ms"), "via": msg.get("via") })
 }
 
 #[cfg(all(test, target_os = "linux"))]
@@ -382,6 +402,16 @@ mod tests {
         assert_eq!(wake_cmds(&(None, false), false), vec![json!({ "cmd": "wake", "on": false })]);
         assert_eq!(wake_cmds(&(None, false), true), Vec::<Value>::new());
         assert_eq!(wake_cmds(&(None, true), true), Vec::<Value>::new(), "a reply playing is nobody's business while it's off");
+    }
+
+    #[test]
+    fn the_words_of_a_take_reach_the_sidecar_as_they_always_did() {
+        let area = json!({ "file": "/tmp/m.png", "rect": [1, 2, 320, 220], "strokes": [[[1, 2]]] });
+        let msg = json!({ "type": "final", "text": "this one", "area": area, "ms": 840, "via": "keys" });
+        assert_eq!(spoken(&msg, msg.get("area")), json!({ "type": "voice", "text": "this one", "area": area, "ms": 840, "via": "keys" }), "the helper's area");
+        let plain = json!({ "type": "final", "text": "hi" });
+        assert_eq!(spoken(&plain, plain.get("area")), json!({ "type": "voice", "text": "hi", "area": null, "ms": null, "via": null }), "none, as before");
+        assert_eq!(spoken(&plain, Some(&area))["area"], area, "the mouse's, in the same place");
     }
 
     #[test]

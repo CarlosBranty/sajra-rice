@@ -68,8 +68,21 @@ export const canSnap = (platform, hands, { session = '', layer = '', slurp = '' 
  *  each does. snap: Ask About an Area is on here (canSnap), so `--snap` is one of them. */
 export const bindCommands = (launch, { snap = false } = {}) => Object.fromEntries(['summon', 'talk', 'ask', 'list', 'panel', ...(snap ? ['snap'] : [])].map((k) => [k, `${launch} --${k}`]));
 
-/** Circling something while holding the talk keys: the voice helper draws it, on macOS and Windows. */
-export const canCircle = (platform) => platform === 'darwin' || platform === 'win32';
+/** Circling something while talking: the voice helper draws it while the talk keys are held, on macOS and Windows;
+ *  on Linux the mouse does, on a Wayland layer surface (mousePen). */
+export const canCircle = (platform, layer = '') => platform === 'darwin' || platform === 'win32' || mousePen(platform, layer);
+
+/** Linux's way of circling: on a Wayland layer surface (layer, ROAMIES_LAYER) nothing follows the cursor over other
+ *  apps, but the overlay takes the mouse while a take is heard and a press and drag draws (host.js, pen.js). A
+ *  setting on the Voice page, since the overlay has every click meanwhile. */
+export const mousePen = (platform, layer = '') => platform === 'linux' && layer === '1';
+
+/** What the model is told about circling (the end of the prompt's Shortcuts part), '' where it can't be done or the
+ *  Voice page switched the mouse off (pen). */
+export function circleWords(platform, layer = '', pen = true) {
+  if (mousePen(platform, layer)) return pen ? "; while they talk to you, they can circle or underline things on screen by dragging with the mouse (a click without dragging stops it for that take), and you'll see what they marked" : '';
+  return canCircle(platform, layer) ? "; while holding the talk keys, moving the cursor round something circles it (no clicking; it snaps shut with a click when the circle closes, and loose lines don't count) and you'll see what they circled" : '';
+}
 
 // ---------- what the agent is told about pointing and walkthroughs ----------
 // Finding a thing by its words or by a read_window id is the hands helper's work, and a beat that waits needs the

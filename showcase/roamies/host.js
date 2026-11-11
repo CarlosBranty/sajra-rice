@@ -52,8 +52,9 @@
       const rects = [];
       // A layer surface whose question has the keyboard, which there is every key (focusField): the whole overlay
       // takes clicks meanwhile, so that one anywhere off the Roamie is heard here and gives the keyboard back
-      // (letGo). Only then: an overlay that took every click without the keyboard would just be in the way.
-      if (LAYER && ask && !ask.away) rects.push(0, 0, innerWidth, innerHeight);
+      // (letGo). The same while the pen draws with the mouse (drawing). Only then: an overlay that took every click
+      // otherwise would just be in the way. The shell drops it if it isn't sent again for a few seconds (linux.rs).
+      if (whole()) rects.push(0, 0, innerWidth, innerHeight);
       const grown = (r) => rects.push(Math.floor(r[0]) - 8, Math.floor(r[1]) - 8, Math.ceil(r[2]) + 16, Math.ceil(r[3]) + 16);
       for (const r of Roamie.inkRects?.() ?? []) grown(r);
       const card = Roamie.panelRect?.();
@@ -184,20 +185,69 @@
     ask.h.focus(false);
     hitSync();
   };
-  // A place where only that whole-overlay click area is under the pointer. It is there to hear one click, not to
-  // watch the pointer: the Roamie sees the pointer where it always did, on itself and what it shows, and doesn't run
+  // The whole overlay takes clicks (hitSync): a question has the keyboard, or the pen draws with the mouse.
+  const whole = () => LAYER && ((!!ask && !ask.away) || drawing());
+  // A place where only that whole-overlay click area is under the pointer. It is there to hear a click or a stroke, not
+  // to watch the pointer: the Roamie sees the pointer where it always did, on itself and what it shows, and doesn't run
   // after it across the screen (or come up beside the last place clicked) because a question was open.
-  const blind = (x, y) => LAYER && !!ask && !ask.away && !Roamie.hitTest?.(x, y);
+  const blind = (x, y) => whole() && !Roamie.hitTest?.(x, y);
   if (LAYER) {
-    addEventListener('pointerdown', (e) => { if (blind(e.clientX, e.clientY)) letGo(); }, true);
-    addEventListener('pointermove', (e) => { if (blind(e.clientX, e.clientY)) e.stopImmediatePropagation(); }, true);
+    // The question's release comes first; a press with the pen is the pen's alone (core.js never hears it), unless a
+    // drawing's own button or card took it (ink.js, which hears it first).
+    addEventListener('pointerdown', (e) => {
+      if (!blind(e.clientX, e.clientY)) return;
+      if (ask && !ask.away) return letGo();
+      if (drawing() && Roamie.penDrag && !e.defaultPrevented) { e.stopImmediatePropagation(); Roamie.penDrag.down(...toGlobal(e)); }
+    }, true);
+    // ink.js sets the pointer's look as it moves (it hears it first): over the pen's place it is a crosshair.
+    const pen = () => { if (document.documentElement) document.documentElement.style.cursor = 'crosshair'; };
+    addEventListener('pointermove', (e) => {
+      if (Roamie.penDrag?.on) { e.stopImmediatePropagation(); pen(); Roamie.penDrag.move(...toGlobal(e)); return; }
+      if (blind(e.clientX, e.clientY)) { e.stopImmediatePropagation(); if (drawing()) pen(); }
+    }, true);
+    addEventListener('pointerup', (e) => {
+      if (!Roamie.penDrag?.on) return;
+      e.stopImmediatePropagation();
+      Roamie.penDrag.move(...toGlobal(e));
+      penUp(); penSync();
+    }, true);
   }
+  // A place on the page in global points, the helper's units and the shell's.
+  const toGlobal = (e) => [e.clientX + (Roamie.origin?.x ?? 0), e.clientY + (Roamie.origin?.y ?? 0)];
 
   // ---------- agent events -> body language ----------
   let speech = null, thought = null, nextMood = null, listen = null, heard = null, responding = false;
   // waveTurn: a spoken question whose "thinking" shows as dots beside the cursor (macOS), so the Sidekick
   // shows no thought cloud of its own. research: this turn's answer broke down into points, so it goes on the card.
   let hearing = false; // a voice take is open (the mic is on), so Esc can cancel it
+
+  // ---------- the pen with the mouse (Linux, a layer surface) ----------
+  // On Wayland nothing follows the cursor over other apps, so the helper's pen (circling with the cursor while the
+  // talk keys are held) can't work there. A layer surface gets the pointer wherever its click areas are, though: while
+  // a take is heard, and the Voice page allows it (penOn, the sidecar's 'pen' message), the whole overlay takes clicks
+  // (whole) and a press and drag draws (pen.js penDrag). Each stroke goes to the shell (pen_stroke), which sends the
+  // marked part of the screen with what was said, as the helper does (voice.rs, linux.rs pen_area). A click without a
+  // drag gives the mouse back for the rest of the take (penAway); the take's end, however it comes, gives it back too.
+  // penWas: drawing() as hitSync last heard it. drew: this take drew something, which fades when it ends.
+  let penOn = false, penAway = false, penWas = false, drew = false;
+  const drawing = () => LAYER && penOn && hearing && !penAway;
+  const penUp = () => {
+    const s = Roamie.penDrag?.up();
+    if (s === 'click') penAway = true;
+    else if (s) { drew = true; invoke('pen_stroke', { pts: s.flat() }).catch(() => {}); }
+  };
+  const penSync = () => {
+    if (!LAYER) return;
+    const now = drawing();
+    // Cut short (the take ended, the setting went off): what was drawn so far is a stroke all the same.
+    if (!now && Roamie.penDrag?.on) penUp();
+    if (!hearing && drew) { drew = false; Roamie.pen?.({ ev: 'fade', after: 0.5 }); }
+    if (now === penWas) return;
+    penWas = now;
+    if (document.documentElement) document.documentElement.style.cursor = now ? 'crosshair' : '';
+    hitSync();
+  };
+  if (LAYER) setInterval(penSync, 120);
   let waveTurn = false, research = false, heardText = false, spoken = '', fromWeb = false;
   // An answer that turns into points (or cites sources) reads better on the card than in a bubble.
   const LISTY = /\n\s*(?:[-*•]|\d+[.)])\s+\S|\n\s*sources?\s*:/i;
@@ -394,9 +444,9 @@
     if (m.type === 'ink') { Roamie.pen?.(m); return; }
     const a = getAgent();
     if (!a) return;
-    if ((m.type === 'state' && m.state !== 'listening') || m.type === 'final') hearing = false;
+    if ((m.type === 'state' && m.state !== 'listening') || m.type === 'final') { hearing = false; penSync(); }
     if (m.type === 'state' && m.state === 'listening') {
-      hearing = true;
+      hearing = true; penAway = false; penSync();
       dropAutoListen();
       if (ask) finishAsk(null);
       endTalk();
@@ -472,6 +522,8 @@
     if (m.kind === 'speech') { Roamie.voiceOut?.handle(m); return; } // plays on, even while it changes screens
     if (held) { held.q.push(m); return; }
     if (m.kind === 'sound') { if (Roamie.sfx) Roamie.sfx.enabled = m.on; return; }
+    // Linux, a layer surface: whether the mouse draws while a take is heard (the Voice page; sent only there).
+    if (m.kind === 'pen') { penOn = !!m.on; penSync(); return; }
     if (m.kind === 'size') { for (const t of Roamie.tiles ?? []) t.creature.setForm?.(m.size); return; }
     if (m.kind === 'look') {
       for (const t of Roamie.tiles ?? []) t.creature.setLook?.(m.look);
@@ -526,7 +578,7 @@
     const a = getAgent();
     if (!a || !up()) return;
     if (ask) { finishAsk(null); return; }
-    if (hearing) { hearing = false; send({ type: 'listen_cancel' }); return; }
+    if (hearing) { hearing = false; send({ type: 'listen_cancel' }); penSync(); return; }
     if (responding || Roamie.voiceOut?.playing()) { send({ type: 'menu', id: 'stop' }); Roamie.voiceOut?.stop(); return; }
     // A drawing on screen: Esc takes it all away (and the sidecar forgets its parts).
     if (Roamie.ink?.busy) { Roamie.ink.clear({ all: true }); send({ type: 'ink_cleared' }); return; }

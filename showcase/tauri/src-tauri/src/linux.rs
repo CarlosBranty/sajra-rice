@@ -378,8 +378,6 @@ fn hit_rects(flat: &[f64]) -> Vec<(i32, i32, i32, i32)> {
 /// Makes the rectangles the overlay's input shape: clicks land on them and pass through everywhere else. No cursor
 /// tracking is involved, so it works on Wayland too, where the cursor can't be seen over other apps.
 pub(crate) fn set_hit_rects(window: &tauri::WebviewWindow, flat: &[f64]) {
-    use gtk::cairo::{RectangleInt, Region};
-    use gtk::prelude::WidgetExt;
     let rects = hit_rects(flat);
     // ROAMIES_TRACE=1: the shape goes to stderr, for checking click-through from outside (and for bug reports).
     if trace() {
@@ -388,25 +386,76 @@ pub(crate) fn set_hit_rects(window: &tauri::WebviewWindow, flat: &[f64]) {
     let w = window.clone();
     let _ = window.run_on_main_thread(move || {
         let Ok(top) = w.gtk_window() else { return };
-        // GDK works in the same logical pixels as the page.
-        let list: Vec<RectangleInt> = rects.iter().map(|&(x, y, w, h)| RectangleInt::new(x, y, w, h)).collect();
-        let region = Region::create_rectangles(&list);
-        if layer() {
-            // Through GTK, which keeps the region and puts it back whenever it works out the window's own shape again
-            // (given to GDK alone it is lost then, and the whole surface takes clicks). GDK sends it to the compositor
-            // with the window's next frame, so one is asked for (a pixel of it): after a Roamie has left nothing
-            // draws any more, and its last click areas would stay.
-            top.input_shape_combine_region(Some(&region));
-            top.queue_draw_area(0, 0, 1, 1);
-            return;
-        }
-        let Some(win) = top.window() else { return };
-        win.input_shape_combine_region(&region, 0, 0);
-        // No compositor (a bare X11 window manager): the transparent parts would draw black over the whole screen,
-        // so the window is cut down to the same rectangles.
-        if !win.screen().is_composited() {
-            win.shape_combine_region(Some(&region), 0, 0);
-        }
+        apply_hit_rects(&top, &rects);
+        HITS.with(|hits| hits.borrow_mut().insert(w.label().to_owned(), (Instant::now(), rects, top)));
+        watch_whole();
+    });
+}
+
+/// The input shape itself, on the main thread.
+fn apply_hit_rects(top: &gtk::ApplicationWindow, rects: &[(i32, i32, i32, i32)]) {
+    use gtk::cairo::{RectangleInt, Region};
+    use gtk::prelude::WidgetExt;
+    // GDK works in the same logical pixels as the page.
+    let list: Vec<RectangleInt> = rects.iter().map(|&(x, y, w, h)| RectangleInt::new(x, y, w, h)).collect();
+    let region = Region::create_rectangles(&list);
+    if layer() {
+        // Through GTK, which keeps the region and puts it back whenever it works out the window's own shape again
+        // (given to GDK alone it is lost then, and the whole surface takes clicks). GDK sends it to the compositor
+        // with the window's next frame, so one is asked for (a pixel of it): after a Roamie has left nothing
+        // draws any more, and its last click areas would stay.
+        top.input_shape_combine_region(Some(&region));
+        top.queue_draw_area(0, 0, 1, 1);
+        return;
+    }
+    let Some(win) = top.window() else { return };
+    win.input_shape_combine_region(&region, 0, 0);
+    // No compositor (a bare X11 window manager): the transparent parts would draw black over the whole screen,
+    // so the window is cut down to the same rectangles.
+    if !win.screen().is_composited() {
+        win.shape_combine_region(Some(&region), 0, 0);
+    }
+}
+
+thread_local! {
+    // Each overlay's click areas as its page last sent them, when, and its window (main thread only).
+    static HITS: std::cell::RefCell<std::collections::HashMap<String, (Instant, Vec<(i32, i32, i32, i32)>, gtk::ApplicationWindow)>> = std::cell::RefCell::new(std::collections::HashMap::new());
+}
+
+/// A click area over the whole overlay (a question holding the keyboard, the pen drawing with the mouse: host.js)
+/// that its page hasn't sent again for this long is dropped. The page sends its areas every couple of seconds while
+/// they stay the same, so one that stopped (hung, died, or loading again) can't keep every click on the desktop.
+const WHOLE_STALE: Duration = Duration::from_secs(5);
+
+/// The click areas to keep for an overlay of `size` whose page sent `rects` `age` ago: None while they stand (sent
+/// lately, or none covers the whole overlay); otherwise the same without the ones that cover it all, so the Roamie's
+/// own areas stay.
+fn stale_whole(rects: &[(i32, i32, i32, i32)], size: (i32, i32), age: Duration) -> Option<Vec<(i32, i32, i32, i32)>> {
+    let whole = |r: &(i32, i32, i32, i32)| r.0 <= 0 && r.1 <= 0 && r.0 + r.2 >= size.0 && r.1 + r.3 >= size.1;
+    if age < WHOLE_STALE || size.0 <= 0 || size.1 <= 0 || !rects.iter().any(whole) {
+        return None;
+    }
+    Some(rects.iter().filter(|r| !whole(r)).copied().collect())
+}
+
+/// Looks every second for a whole-overlay click area its page stopped sending (stale_whole), once started. Main
+/// thread only.
+fn watch_whole() {
+    use gtk::prelude::WidgetExt;
+    thread_local!(static ON: std::cell::Cell<bool> = const { std::cell::Cell::new(false) });
+    if ON.with(|on| on.replace(true)) {
+        return;
+    }
+    gtk::glib::timeout_add_local(Duration::from_secs(1), || {
+        HITS.with(|hits| {
+            for (label, (at, rects, top)) in hits.borrow_mut().iter_mut() {
+                let Some(kept) = stale_whole(rects, (top.allocated_width(), top.allocated_height()), at.elapsed()) else { continue };
+                eprintln!("hit rects: {label}'s page stopped sending its whole-overlay click area, dropped it: {kept:?}");
+                apply_hit_rects(top, &kept);
+                *rects = kept;
+            }
+        });
+        gtk::glib::ControlFlow::Continue
     });
 }
 
@@ -1059,6 +1108,189 @@ pub(crate) fn area(app: &AppHandle, id: Value, file: String) {
             fade_overlays(&app2, 1.0);
             crate::to_sidecar(&app2, &area_reply(&id, r));
         });
+    });
+}
+
+// ---------- the pen with the mouse (layer surfaces) ----------
+// macOS and Windows: while the talk keys are held the voice helper follows the cursor and draws its trail, and when
+// the take ends it sends the marked part of the screen with the words (`area`: a PNG with the strokes drawn on it, its
+// rect and the strokes; voice-win/src/ink.rs). On Wayland nothing follows the cursor over other apps, but a layer
+// surface gets the pointer wherever its input region is: while a take is heard the page makes that all of the
+// overlay and draws with the mouse (host.js, pen.js), handing each stroke here (pen_add). When the helper says what
+// was heard, the part of the screen round the strokes goes with it in the helper's own shape (pen_area, from
+// voice.rs), so the sidecar takes it exactly as it takes the helper's.
+
+/// At most this many strokes in a take (the sidecar words eight), of at most this many points each.
+const PEN_STROKES: usize = 8;
+const PEN_POINTS: usize = 4000;
+/// The pen's radius in points (pen.js, voice-win/src/ink.rs).
+const PEN: f64 = 2.8;
+
+/// The strokes drawn in the take being heard, in global points.
+static PEN_LOOPS: Mutex<Vec<Vec<(f64, f64)>>> = Mutex::new(Vec::new());
+
+/// A stroke as the page sends it ([x, y, …] in global points): its points, or None when none makes sense.
+fn pen_stroke(flat: &[f64]) -> Option<Vec<(f64, f64)>> {
+    let pts: Vec<(f64, f64)> = flat.chunks_exact(2).filter(|p| p.iter().all(|v| v.is_finite() && v.abs() < 100_000.0)).map(|p| (p[0], p[1])).take(PEN_POINTS).collect();
+    (!pts.is_empty()).then_some(pts)
+}
+
+/// A stroke drawn with the mouse in the take being heard (the page's pen_stroke). Layer surfaces only.
+pub(crate) fn pen_add(flat: &[f64]) {
+    let Some(stroke) = pen_stroke(flat).filter(|_| layer()) else { return };
+    let mut loops = PEN_LOOPS.lock().unwrap();
+    if loops.len() < PEN_STROKES {
+        loops.push(stroke);
+    }
+}
+
+/// A take starts: nothing drawn before it goes with its words.
+pub(crate) fn pen_clear() {
+    PEN_LOOPS.lock().unwrap().clear();
+}
+
+/// The take's strokes, taken (none: nothing was drawn).
+pub(crate) fn pen_take() -> Vec<Vec<(f64, f64)>> {
+    std::mem::take(&mut *PEN_LOOPS.lock().unwrap())
+}
+
+/// The part of the screen to send for these strokes, [x, y, w, h] in whole points: round them with 48 points to spare,
+/// at least 320×220, and on their screen (`screen`, the same). The helper's capture_box.
+fn pen_box(loops: &[Vec<(f64, f64)>], screen: [f64; 4]) -> Option<[f64; 4]> {
+    let pts: Vec<&(f64, f64)> = loops.iter().flatten().collect();
+    if pts.is_empty() {
+        return None;
+    }
+    let (mut x0, mut x1) = pts.iter().fold((f64::MAX, f64::MIN), |a, p| (a.0.min(p.0), a.1.max(p.0)));
+    let (mut y0, mut y1) = pts.iter().fold((f64::MAX, f64::MIN), |a, p| (a.0.min(p.1), a.1.max(p.1)));
+    (x0, y0, x1, y1) = (x0 - 48.0, y0 - 48.0, x1 + 48.0, y1 + 48.0);
+    if x1 - x0 < 320.0 {
+        let d = (320.0 - (x1 - x0)) / 2.0;
+        (x0, x1) = (x0 - d, x1 + d);
+    }
+    if y1 - y0 < 220.0 {
+        let d = (220.0 - (y1 - y0)) / 2.0;
+        (y0, y1) = (y0 - d, y1 + d);
+    }
+    let [sx, sy, sw, sh] = screen;
+    let (x0, y0, x1, y1) = (x0.max(sx).floor(), y0.max(sy).floor(), x1.min(sx + sw).ceil(), y1.min(sy + sh).ceil());
+    (x1 > x0 && y1 > y0).then_some([x0, y0, x1 - x0, y1 - y0])
+}
+
+/// The strokes as the sidecar gets them: at most 48 points each (plus the last), whole points. The helper's marks.
+fn pen_marks(loops: &[Vec<(f64, f64)>]) -> Vec<Vec<[i64; 2]>> {
+    loops.iter().map(|s| {
+        let step = (s.len() / 48).max(1);
+        let mut picked: Vec<(f64, f64)> = s.iter().step_by(step).copied().collect();
+        if let (Some(&l), Some(&p)) = (s.last(), picked.last()) {
+            if l != p {
+                picked.push(l);
+            }
+        }
+        picked.iter().map(|p| [p.0.round() as i64, p.1.round() as i64]).collect()
+    }).collect()
+}
+
+/// The strokes (in the picture's pixels) drawn onto a picture's bytes (`stride` per row, `n` per pixel, RGB first) as
+/// the helper draws them (voice-win/src/ink.rs draw_strokes): the pen's teal over a dark edge, smooth at the rim. Each
+/// pixel is covered by its nearest segment, looked for only round each segment, so long strokes stay quick. Plain
+/// bytes rather than cairo, whose GDK half wants the main thread.
+fn draw_strokes(px: &mut [u8], (w, h, stride, n): (usize, usize, usize, usize), strokes: &[Vec<(f64, f64)>], r: f64) {
+    let mut pass = |rad: f64, c: [f64; 3], alpha: f64| {
+        let mut cover = vec![0f32; w * h];
+        let span = |lo: f64, hi: f64, max: usize| ((lo - rad - 1.0).floor().clamp(0.0, max as f64) as usize, (hi + rad + 2.0).ceil().clamp(0.0, max as f64) as usize);
+        for s in strokes.iter().filter(|s| !s.is_empty()) {
+            for k in 0..s.len() {
+                let (a, b) = (s[k], s[(k + 1).min(s.len() - 1)]);
+                let ((x0, x1), (y0, y1)) = (span(a.0.min(b.0), a.0.max(b.0), w), span(a.1.min(b.1), a.1.max(b.1), h));
+                let (dx, dy) = (b.0 - a.0, b.1 - a.1);
+                let len2 = dx * dx + dy * dy;
+                for y in y0..y1 {
+                    for x in x0..x1 {
+                        let (qx, qy) = (x as f64 + 0.5, y as f64 + 0.5);
+                        let t = if len2 > 0.0 { (((qx - a.0) * dx + (qy - a.1) * dy) / len2).clamp(0.0, 1.0) } else { 0.0 };
+                        let d = (qx - a.0 - t * dx).hypot(qy - a.1 - t * dy);
+                        let c = (rad + 0.5 - d).clamp(0.0, 1.0) as f32;
+                        let at = &mut cover[y * w + x];
+                        *at = at.max(c);
+                    }
+                }
+            }
+        }
+        for y in 0..h {
+            for x in 0..w {
+                let a = cover[y * w + x] as f64 * alpha;
+                if a <= 0.0 {
+                    continue;
+                }
+                let i = y * stride + x * n;
+                for k in 0..3 {
+                    px[i + k] = (px[i + k] as f64 * (1.0 - a) + c[k] * a).round() as u8;
+                }
+            }
+        }
+    };
+    pass(r + 1.25 * r / PEN, [3.0, 39.0, 34.0], 0.6);
+    pass(r, [120.0, 255.0, 226.0], 1.0);
+}
+
+/// A picture with the strokes (in its pixels) drawn on it (draw_strokes).
+fn draw_pen(pic: &gtk::gdk_pixbuf::Pixbuf, strokes: &[Vec<(f64, f64)>], r: f64) -> Result<gtk::gdk_pixbuf::Pixbuf, String> {
+    use gtk::gdk_pixbuf::Pixbuf;
+    let pic = pic.copy().ok_or("the marked picture couldn't be made")?;
+    let (w, h, stride, n) = (pic.width(), pic.height(), pic.rowstride(), pic.n_channels());
+    if pic.bits_per_sample() != 8 || n < 3 {
+        return Err("the screenshot isn't in a form that can be drawn on".into());
+    }
+    let mut px = pic.read_pixel_bytes().to_vec();
+    draw_strokes(&mut px, (w as usize, h as usize, stride as usize, n as usize), strokes, r);
+    Ok(Pixbuf::from_bytes(&gtk::glib::Bytes::from_owned(px), pic.colorspace(), pic.has_alpha(), 8, w, h, stride))
+}
+
+/// Saves `area`'s part of a picture of the whole desktop to `file` with the strokes (global points) drawn on it, a PNG
+/// shrunk to Claude's cap: the part of the desktop it shows (area_crop).
+fn save_marked(capture: &gtk::gdk_pixbuf::Pixbuf, file: &str, desktop: [f64; 4], area: [f64; 4], loops: &[Vec<(f64, f64)>]) -> Result<[f64; 4], String> {
+    let ((x, y, w, h), bounds) = area_crop((capture.width(), capture.height()), desktop, area).ok_or("The marked area isn't on the screenshot.")?;
+    let k = w as f64 / bounds[2];
+    let strokes: Vec<Vec<(f64, f64)>> = loops.iter().map(|s| s.iter().map(|p| ((p.0 - bounds[0]) * k, (p.1 - bounds[1]) * k)).collect()).collect();
+    let marked = draw_pen(&capture.new_subpixbuf(x, y, w, h), &strokes, PEN * k)?;
+    let pixels = save_fitted_as(&marked, file, "png")?;
+    if trace() {
+        eprintln!("pen: captured {}x{}, kept {:?}, sent {}x{} for {bounds:?}", capture.width(), capture.height(), (x, y, w, h), pixels.0, pixels.1);
+    }
+    Ok(bounds)
+}
+
+/// The helper's `area`: the picture, the part of the screen it shows and the strokes, in whole global points.
+fn pen_reply(file: &str, bounds: [f64; 4], loops: &[Vec<(f64, f64)>]) -> Value {
+    json!({ "file": file, "rect": bounds.map(|v| v.round() as i64), "strokes": pen_marks(loops) })
+}
+
+/// The part of the screen marked with the mouse in a take, captured as a screenshot is (the overlays clear, the portal)
+/// with the strokes drawn on it: `then` hears the helper's `area` (pen_reply), or null when nothing could be captured,
+/// on the main thread. Main thread only.
+pub(crate) fn pen_area(app: &AppHandle, loops: Vec<Vec<(f64, f64)>>, then: impl FnOnce(&AppHandle, Value) + Send + 'static) {
+    let desktop = desktop_bounds(app);
+    let screen = sidekick_screen(app).unwrap_or(desktop);
+    let Some(area) = pen_box(&loops, screen) else { return then(app, Value::Null) };
+    let ms = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_millis());
+    let file = std::env::temp_dir().join(format!("sidekick-marked-{ms}.png")).to_string_lossy().into_owned();
+    fade_overlays(app, 0.0);
+    let app = app.clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(CLEAR);
+        let shot = portal_screenshot();
+        let app2 = app.clone();
+        let _ = app.run_on_main_thread(move || fade_overlays(&app2, 1.0));
+        let marked = match shot.and_then(|path| load_portal_file(&path)).and_then(|p| save_marked(&p, &file, desktop, area, &loops)) {
+            Ok(bounds) => pen_reply(&file, bounds, &loops),
+            Err(e) => {
+                eprintln!("pen: the marked area wasn't captured: {e}");
+                Value::Null
+            }
+        };
+        let app2 = app.clone();
+        let _ = app.run_on_main_thread(move || then(&app2, marked));
     });
 }
 
@@ -2326,5 +2558,83 @@ mod tests {
         assert_eq!(session_from(None, Some("wayland-1")), Session::Wayland);
         assert_eq!(session_from(Some("Wayland"), None), Session::Wayland);
         assert_eq!(session_from(Some("tty"), Some("wayland-0")), Session::Wayland, "a compositor started from a console");
+    }
+
+    #[test]
+    fn a_whole_overlay_click_area_the_page_stopped_sending_is_dropped() {
+        let size = (2304, 1440);
+        let roamie = (1700, 30, 200, 180);
+        let whole = (0, 0, 2304, 1440);
+        let fresh = Duration::from_secs(2);
+        let stale = WHOLE_STALE + Duration::from_millis(100);
+        assert_eq!(stale_whole(&[whole, roamie], size, fresh), None, "sent again lately: it stands");
+        assert_eq!(stale_whole(&[whole, roamie], size, stale), Some(vec![roamie]), "not sent again: it goes, the Roamie's own areas stay");
+        assert_eq!(stale_whole(&[roamie, whole], size, stale), Some(vec![roamie]), "wherever it is in the list");
+        assert_eq!(stale_whole(&[whole], size, stale), Some(vec![]), "alone: nothing takes clicks");
+        assert_eq!(stale_whole(&[(-8, -8, 2320, 1456)], size, stale), Some(vec![]), "a little past the edges is the whole overlay too");
+        // The Roamie's own areas never go, however old they are.
+        assert_eq!(stale_whole(&[roamie], size, Duration::from_secs(3600)), None);
+        assert_eq!(stale_whole(&[], size, Duration::from_secs(3600)), None);
+        assert_eq!(stale_whole(&[(0, 0, 2304, 1400), (0, 0, 2000, 1440)], size, stale), None, "big, but not the whole overlay");
+        assert_eq!(stale_whole(&[whole], (0, 0), stale), None, "a window with no size yet: nothing to tell");
+    }
+
+    #[test]
+    fn a_stroke_from_the_page_is_its_points() {
+        assert_eq!(pen_stroke(&[2400.5, 300.0, 2410.0, 310.0]), Some(vec![(2400.5, 300.0), (2410.0, 310.0)]));
+        assert_eq!(pen_stroke(&[1.0, 2.0, 3.0]), Some(vec![(1.0, 2.0)]), "an odd number out is dropped");
+        assert_eq!(pen_stroke(&[f64::NAN, 2.0, 3.0, 4.0, 1e9, 1.0]), Some(vec![(3.0, 4.0)]), "points that make no sense are dropped");
+        assert_eq!(pen_stroke(&[]), None);
+        assert_eq!(pen_stroke(&[f64::INFINITY, 0.0]), None);
+        assert_eq!(pen_stroke(&vec![5.0; PEN_POINTS * 2 + 40]).map(|s| s.len()), Some(PEN_POINTS), "a runaway one is cut off");
+    }
+
+    fn arc(cx: f64, cy: f64, r: f64, turns: f64) -> Vec<(f64, f64)> {
+        (0..=80).map(|k| {
+            let a = turns * 2.0 * std::f64::consts::PI * k as f64 / 80.0;
+            (cx + r * a.cos(), cy + r * a.sin())
+        }).collect()
+    }
+
+    // The same numbers as the helper's (voice-win/src/ink.rs the_capture_is_round_the_circle_and_on_its_screen).
+    #[test]
+    fn the_marked_part_is_round_the_strokes_and_on_their_screen() {
+        let c = arc(300.0, 300.0, 60.0, 1.0);
+        assert_eq!(pen_box(&[c.clone()], [0.0, 0.0, 1920.0, 1080.0]), Some([140.0, 190.0, 320.0, 220.0]));
+        let edge = arc(30.0, 30.0, 20.0, 1.0);
+        assert_eq!(pen_box(&[edge], [0.0, 0.0, 1920.0, 1080.0]).map(|b| (b[0], b[1])), Some((0.0, 0.0)), "cut to the screen");
+        assert_eq!(pen_box(&[arc(2604.0, 300.0, 60.0, 1.0)], SIDE), Some([2444.0, 190.0, 320.0, 220.0]), "on the second screen, in global points");
+        assert_eq!(pen_box(&[], LAPTOP), None);
+        assert_eq!(pen_box(&[arc(5000.0, 300.0, 60.0, 1.0)], LAPTOP), None, "nowhere on the screen");
+        let long: Vec<(f64, f64)> = (0..200).map(|k| (k as f64, 0.0)).collect();
+        let m = pen_marks(&[long]);
+        assert!(m[0].len() <= 52 && m[0][0] == [0, 0] && m[0].last() == Some(&[199, 0]), "a long stroke is thinned, its ends kept");
+    }
+
+    #[test]
+    fn the_marked_picture_has_the_strokes_drawn_on_it_and_goes_as_the_helpers_does() {
+        use gtk::gdk_pixbuf::{Colorspace, Pixbuf};
+        let dir = scratch("pen");
+        let file = dir.join("marked.png").to_string_lossy().into_owned();
+        let desk = union_bounds(&[LAPTOP, SIDE]);
+        // Both screens at their real size, white: a line across the second screen at y = 300.
+        let capture = Pixbuf::new(Colorspace::Rgb, false, 8, 4224, 1440).expect("a picture");
+        capture.fill(0xffffffff);
+        let stroke = vec![(2500.0, 300.0), (2700.0, 300.0)];
+        let area = pen_box(&[stroke.clone()], SIDE).expect("a box");
+        let bounds = save_marked(&capture, &file, desk, area, &[stroke.clone()]).expect("saved");
+        assert_eq!(bounds, area, "the part of the screen asked for");
+        let p = Pixbuf::from_file(&file).expect("a PNG");
+        assert_eq!((p.width(), p.height()), (bounds[2] as i32, bounds[3] as i32), "at the screen's own scale");
+        // The pen's teal on the line, white away from it (the helper's colours: voice-win/src/ink.rs draw_strokes).
+        let at = |x: f64, y: f64| pixel(&p, (x - bounds[0]) as i32, (y - bounds[1]) as i32);
+        assert_eq!(at(2600.0, 300.0), (0x78, 0xff, 0xe2), "the pen's teal on the line");
+        assert_eq!(at(2600.0, 330.0), (255, 255, 255), "untouched away from it");
+        let edge = at(2600.0, 303.5);
+        assert!(edge.0 < 200 && edge.2 < 230, "a dark edge round it {edge:?}");
+        // What the sidecar gets: the helper's `area`, in the same shape.
+        let reply = pen_reply(&file, bounds, &[stroke]);
+        assert_eq!(reply, json!({ "file": file, "rect": [2440, 190, 320, 220], "strokes": [[[2500, 300], [2700, 300]]] }));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
