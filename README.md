@@ -172,6 +172,14 @@ and comes back when it stops. It needs `pactl` (PipeWire's pulse server or Pulse
 is left alone, and so is Roamies' own voice. If Roamies is killed while the volumes are down, they go back up the
 next time it starts.
 
+**Call it by name:** with **Wake word** on (the panel's **Voice** page, off by default) and a phrase of your own
+typed there (a word or two, like a name, in any language the voice model reads), saying the phrase starts listening
+as `roamies --talk` does, and a pause sends it. What you say right after the phrase, in the same breath, is part of
+the question. The microphone stays on to hear it: when there's a voice, its last few seconds are read on your
+computer, about once a second at most, and nothing leaves it until the phrase is heard. Case, accents and a letter's
+difference in spelling don't matter. It doesn't listen while a reply is being spoken, and a room where somebody (or
+a video) talks all day costs some CPU.
+
 **A home in your bar** (Quickshell, Waybar, eww and the like): a bar can keep a slot for the Roamie. The Roamie then
 comes out of that slot when it has something to do and goes back into it after, and the bar draws it resting there
 meanwhile. The two leave each other notes in `$XDG_RUNTIME_DIR/roamies/`:

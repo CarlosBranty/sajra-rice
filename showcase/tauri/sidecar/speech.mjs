@@ -194,3 +194,20 @@ export const DUCK_LEVELS = [10, 20, 30, 50];
 export const duckOf = (c) => ({ on: c?.duckOthers === true, level: DUCK_LEVELS.includes(c?.duckLevel) ? c.duckLevel : 30 });
 /** What the shell is told: the percentage to lower to, or 0 when it's off (every volume is then left alone). */
 export const duckLevel = (c) => (duckOf(c).on ? duckOf(c).level : 0);
+
+// The wake word (Linux, the panel's Voice page): with the switch on, saying the phrase starts listening as the talk
+// command does. The voice helper listens for it (src-tauri/voice-win); here: the phrase as it's kept.
+export const WAKE_MIN = 2, WAKE_MAX = 40;
+/** A typed phrase, tidied (trimmed, one space between words), or '' when it isn't one: 2 to 40 letters of any
+ *  alphabet, digits and spaces. Nothing else is taken, so what reaches the helper is only ever words to say. */
+export function wakePhrase(v) {
+  if (typeof v !== 'string') return '';
+  const s = v.normalize('NFC').trim().replace(/\s+/g, ' ');
+  const n = [...s].length;
+  return n >= WAKE_MIN && n <= WAKE_MAX && /^[\p{L}\p{M}\p{N} ]+$/u.test(s) ? s : '';
+}
+/** The saved settings as what's used: on only when it was switched on (the microphone never stays open unasked)
+ *  and there is a phrase to listen for. */
+export const wakeOf = (c) => { const phrase = wakePhrase(c?.wakePhrase); return { on: c?.wakeWord === true && !!phrase, phrase }; };
+/** What the shell is told: the phrase to listen for, or '' while it's off (the helper is then never asked). */
+export const wakeFor = (c) => (wakeOf(c).on ? wakeOf(c).phrase : '');

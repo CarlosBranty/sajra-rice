@@ -40,7 +40,11 @@ Each provider's own privacy policy applies to what is sent to it.
   recognition isn't available, Apple's recognizer may use Apple's servers, under Apple's terms.
 - **Windows and Linux:** speech is turned into text on your computer (Parakeet).
 - The microphone is used only while you hold the talk keys (or, on Linux with Wayland, from your talk shortcut
-  until you press it again or pause).
+  until you press it again or pause), unless you switch the wake word on.
+- **Wake word (Linux, off by default):** while it's on, the microphone stays on so Roamies can hear the phrase you
+  picked. What it hears is checked on your computer, a few seconds at a time, for that phrase and nothing else: it
+  isn't saved or logged, and nothing is sent anywhere until the phrase is heard. From there it's a spoken question
+  like any other. It doesn't listen for the phrase while it's speaking a reply.
 - The screen is captured only when Roamies answers something about your screen, or when you mark an area. On Linux
   with Wayland it's taken through your desktop's screenshot portal; the copy the portal saves is deleted right away.
 

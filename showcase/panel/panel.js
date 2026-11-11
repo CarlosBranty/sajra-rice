@@ -400,6 +400,15 @@
       row);
   }
 
+  // A plain text field that opens in place, as a key field does (id: what ui.key holds while it's open). value: what
+  // is saved now, shown ready to change; onsave gets what was typed.
+  function phraseForm(id, value, onsave) {
+    const input = el('input', { type: 'text', id: `key-${id}`, autocomplete: 'off', spellcheck: false, value: value ?? '', placeholder: 'A word or two, like a name', 'aria-label': 'Wake phrase', maxLength: 40 });
+    const save = () => { const v = input.value.trim(); if (!v) return input.focus(); onsave(v); ui.key = null; render(`addkey:${id}`); };
+    input.addEventListener('keydown', (e) => { if (e.key === 'Enter') save(); else if (e.key === 'Escape') { e.stopPropagation(); ui.key = null; render(`addkey:${id}`); } });
+    return el('div', { className: 'keyform', hidden: ui.key !== id }, el('span', { className: 'px field' }, input), btn('Save', save, { k: `save:${id}` }));
+  }
+
   const signIn = (p) => link('Sign in', () => act(`login:${p.id}`), { k: `login:${p.id}`, aria: `Sign in to ${p.label}`, disabled: !!state.loggingIn });
   const addKey = (p) => link(ui.key === p.id ? 'Cancel' : 'Add key', () => { ui.key = ui.key === p.id ? null : p.id; render(ui.key ? `key-${p.id}` : `addkey:${p.id}`); }, { k: `addkey:${p.id}`, aria: `Add ${p.label} API key` });
 
@@ -497,6 +506,16 @@
           el('p', { className: 'sub', textContent: 'Lower to' }),
           picks('Lower to', state.duck.levels.map((l) => [l, `${l}%`]), state.duck.level, (x) => act(`ducklevel:${x}`), 'ducklevel'),
         ] : null) : null,
+      // Linux: saying the phrase starts listening, as the talk shortcut does. The microphone stays on to hear it.
+      state.wake ? group('Wake word', 'Say a phrase and I listen, no key needed. The microphone stays on to hear it; nothing leaves this computer until you say it.', null,
+        toggle('Wake word', !v?.on ? 'Needs Voice control on' : state.wake.phrase ? `Say "${state.wake.phrase}" to talk to me` : 'Pick a phrase to call me with', state.wake.on, () => {
+          if (!state.wake.phrase) { ui.key = 'wake'; render('key-wake'); note('Type the phrase to call me with.'); return; }
+          act('wake');
+        }, 'wake'),
+        el('div', { className: 'setting' },
+          el('span', {}, 'Phrase', el('small', { textContent: state.wake.phrase || 'Not set' })),
+          link(ui.key === 'wake' ? 'Cancel' : state.wake.phrase ? 'Change' : 'Set', () => { ui.key = ui.key === 'wake' ? null : 'wake'; render(ui.key ? 'key-wake' : 'addkey:wake'); }, { k: 'addkey:wake', aria: state.wake.phrase ? 'Change the wake phrase' : 'Set the wake phrase' })),
+        phraseForm('wake', state.wake.phrase, (phrase) => send({ type: 'panel_wake', phrase }))) : null,
     ];
   }
   // Wayland: the commands to bind to keys in the desktop's settings (no app may hold its own shortcuts there).

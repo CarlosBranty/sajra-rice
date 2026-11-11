@@ -823,6 +823,8 @@ pub(crate) fn talk_state(app: &AppHandle, label: &str, hearing: bool, speaking: 
     static TALK: Mutex<Vec<(String, bool, bool)>> = Mutex::new(Vec::new());
     let (hearing, speaking) = talk_set(&mut TALK.lock().unwrap(), label, hearing, speaking, |l| app.get_webview_window(l).is_some());
     duck_send(DuckEvent::Busy(hearing || speaking));
+    // With the wake word on, the voice helper must not take Roamies' own voice saying the phrase for the user's.
+    crate::voice::speaking(app, speaking);
 }
 
 #[cfg(test)]

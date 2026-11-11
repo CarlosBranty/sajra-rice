@@ -21,6 +21,61 @@ thread_local! {
     static ESC_UP: RefCell<std::collections::HashSet<String>> = RefCell::new(std::collections::HashSet::new());
 }
 
+/// The wake word (Linux): the phrase the voice helper listens for to start a take by itself (None while it's off),
+/// and whether a spoken reply is playing (its own voice saying the phrase must start nothing).
+#[cfg(target_os = "linux")]
+static WAKE: Mutex<(Option<String>, bool)> = Mutex::new((None, false));
+
+/// The wake phrase in the sidecar's voice_config: text when the wake word is on, nothing or "" when it's off.
+#[cfg(target_os = "linux")]
+pub(crate) fn wake_of(msg: &Value) -> Option<String> {
+    msg.get("wake").and_then(Value::as_str).map(str::trim).filter(|p| !p.is_empty() && p.chars().count() <= 40).map(str::to_owned)
+}
+
+/// What the helper must hear to be where `wake` says. fresh: it just started, with the wake word off, so only a
+/// phrase needs saying; otherwise the phrase changed, and "off" is said too. With the wake word off and never
+/// switched on, the helper is sent nothing it wasn't sent before.
+#[cfg(target_os = "linux")]
+fn wake_cmds(wake: &(Option<String>, bool), fresh: bool) -> Vec<Value> {
+    match &wake.0 {
+        Some(phrase) => vec![json!({ "cmd": "wake", "on": true, "phrase": phrase }), json!({ "cmd": "speaking", "on": wake.1 })],
+        None if fresh => Vec::new(),
+        None => vec![json!({ "cmd": "wake", "on": false })],
+    }
+}
+
+/// The sidecar's wake word setting: kept for the helpers that start later, and told to the one running when it
+/// changed.
+#[cfg(target_os = "linux")]
+pub(crate) fn set_wake(app: &AppHandle, phrase: Option<String>) {
+    let cmds = {
+        let mut wake = WAKE.lock().unwrap();
+        if wake.0 == phrase {
+            return;
+        }
+        wake.0 = phrase;
+        wake_cmds(&wake, false)
+    };
+    for cmd in cmds {
+        to_voice(app, &cmd);
+    }
+}
+
+/// A spoken reply started or stopped playing on some overlay (linux::talk_state). The helper is told only while
+/// the wake word is on: it then ignores the phrase meanwhile, and for a moment after.
+#[cfg(target_os = "linux")]
+pub(crate) fn speaking(app: &AppHandle, on: bool) {
+    let tell = {
+        let mut wake = WAKE.lock().unwrap();
+        let changed = wake.1 != on;
+        wake.1 = on;
+        changed && wake.0.is_some()
+    };
+    if tell {
+        to_voice(app, &json!({ "cmd": "speaking", "on": on }));
+    }
+}
+
 pub(crate) fn voice_binary() -> Option<PathBuf> {
     helper_binary("roamies-voice")
 }
@@ -55,6 +110,14 @@ pub(crate) fn start_voice(app: &AppHandle) {
     let stdout = child.stdout.take().expect("piped stdout");
     let pid = child.id();
     *state.0.lock().unwrap() = Some(child);
+    // A helper starts with the wake word off: this one (the first, or one restarted after it died) is told the phrase.
+    #[cfg(target_os = "linux")]
+    {
+        let cmds = wake_cmds(&WAKE.lock().unwrap(), true);
+        for cmd in cmds {
+            to_voice(app, &cmd);
+        }
+    }
     let app = app.clone();
     thread::spawn(move || {
         for line in BufReader::new(stdout).lines().map_while(Result::ok) {
@@ -79,6 +142,11 @@ pub(crate) fn start_voice(app: &AppHandle) {
             }
             ours
         };
+        // It may have died mid-take, and can't say listening ended: the overlays are told for it, as when it's stopped.
+        if ours {
+            let app2 = app.clone();
+            let _ = app.run_on_main_thread(move || to_overlays(&app2, &voice_idle()));
+        }
         if ours && state.1.fetch_add(1, Ordering::Relaxed) < 3 {
             thread::sleep(Duration::from_secs(1));
             let app2 = app.clone();
@@ -94,7 +162,13 @@ pub(crate) fn stop_voice(app: &AppHandle) {
         let _ = c.kill();
         let _ = c.wait();
     }
-    to_overlays(app, &json!({ "kind": "voice", "type": "state", "state": "idle" }));
+    to_overlays(app, &voice_idle());
+}
+
+/// What ends listening on the overlays: sent when the helper is stopped, and when it dies by itself (mid-take it
+/// can't say so, and the overlays would show listening, with other apps' sound down, until the next take).
+fn voice_idle() -> Value {
+    json!({ "kind": "voice", "type": "state", "state": "idle" })
 }
 
 pub(crate) fn to_voice(app: &AppHandle, msg: &Value) {
@@ -275,5 +349,43 @@ fn handle_voice(app: &AppHandle, msg: Value) {
             to_sidecar(app, &m);
         }
         _ => {}
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_wake_phrase_is_read_from_voice_config() {
+        assert_eq!(wake_of(&json!({ "type": "voice_config", "wake": "Hey Jarvis" })), Some("Hey Jarvis".to_string()));
+        assert_eq!(wake_of(&json!({ "wake": "  jarvis " })), Some("jarvis".to_string()), "trimmed");
+        assert_eq!(wake_of(&json!({ "wake": "" })), None, "off");
+        assert_eq!(wake_of(&json!({ "wake": "   " })), None);
+        assert_eq!(wake_of(&json!({ "enabled": true, "duck": 30 })), None, "an older sidecar says nothing: off");
+        for odd in [json!(true), json!(1), json!(null), json!(["jarvis"]), json!({ "phrase": "jarvis" })] {
+            assert_eq!(wake_of(&json!({ "wake": odd })), None, "only text is a phrase");
+        }
+        assert_eq!(wake_of(&json!({ "wake": "x".repeat(41) })), None, "longer than any phrase the panel takes");
+        assert_eq!(wake_of(&json!({ "wake": "ñ".repeat(40) })), Some("ñ".repeat(40)), "forty letters, whatever their bytes");
+    }
+
+    #[test]
+    fn the_helper_hears_the_phrase_when_it_changes_and_when_it_starts() {
+        let on = (Some("jarvis".to_string()), false);
+        let wake = json!({ "cmd": "wake", "on": true, "phrase": "jarvis" });
+        // With the phrase goes whether a reply is playing right now, so the helper never guesses.
+        assert_eq!(wake_cmds(&on, false), vec![wake.clone(), json!({ "cmd": "speaking", "on": false })]);
+        assert_eq!(wake_cmds(&on, true), vec![wake.clone(), json!({ "cmd": "speaking", "on": false })], "a helper that starts is told again");
+        assert_eq!(wake_cmds(&(Some("jarvis".to_string()), true), true), vec![wake, json!({ "cmd": "speaking", "on": true })], "mid-reply");
+        // Switched off: the running helper is told once; a new one starts with it off and is told nothing.
+        assert_eq!(wake_cmds(&(None, false), false), vec![json!({ "cmd": "wake", "on": false })]);
+        assert_eq!(wake_cmds(&(None, false), true), Vec::<Value>::new());
+        assert_eq!(wake_cmds(&(None, true), true), Vec::<Value>::new(), "a reply playing is nobody's business while it's off");
+    }
+
+    #[test]
+    fn idle_is_the_message_that_ends_listening_on_the_overlays() {
+        assert_eq!(voice_idle(), json!({ "kind": "voice", "type": "state", "state": "idle" }));
     }
 }

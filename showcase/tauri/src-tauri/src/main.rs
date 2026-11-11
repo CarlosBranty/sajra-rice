@@ -1446,6 +1446,9 @@ fn handle_sidecar(app: &AppHandle, msg: Value) {
             // Linux: the percentage other apps' sound is lowered to while listening and speaking; 0 or nothing: never.
             #[cfg(target_os = "linux")]
             linux::duck_level(msg.get("duck").and_then(Value::as_u64).filter(|l| *l < 100).unwrap_or(0) as u32);
+            // Linux: the phrase the voice helper listens for to start a take by itself; nothing or "": the wake word is off.
+            #[cfg(target_os = "linux")]
+            voice::set_wake(app, voice::wake_of(&msg));
             if msg.get("enabled").and_then(Value::as_bool) == Some(true) {
                 app.state::<Voice>().1.store(0, Ordering::Relaxed);
                 start_voice(app);
