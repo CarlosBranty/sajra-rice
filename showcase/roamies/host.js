@@ -24,12 +24,17 @@
   };
   window.__roamieBuddy = (m) => { Roamie.wake?.(); Roamie.buddy.onEvent?.(m); };
   // handsBusy: Roamies is acting in another app (it may take the real cursor), so clicks always go through.
-  let hot = null, cursor = null, handsBusy = false;
+  // ptrT: when the shell read the last cursor sample (its clock).
+  let hot = null, cursor = null, handsBusy = false, ptrT = null;
   // Linux ("x11" or "wayland", set by the shell): clicks are let through by region instead (below).
   const LINUX = !!window.ROAMIE_LINUX;
+  // Linux on a Wayland compositor with layer-shell: this overlay is a layer surface (linux.rs), the only one there is.
+  const LAYER = !!window.ROAMIE_LAYER;
   const setHot = (h) => { if (!LINUX && h !== hot) { hot = h; invoke('set_hot', { hot: h }).catch(() => { hot = null; }); } };
   window.__roamiePtr = (x, y, t) => {
     if (!window.Roamie?.ptr) return;
+    if (blind(x, y)) return;
+    if (t != null) ptrT = t;
     cursor = [x, y];
     Roamie.ink?.ptr(x, y);
     const h = Roamie.ptr(x, y, t);
@@ -39,11 +44,16 @@
   // Linux: click-through by region. On Wayland the cursor can't be followed over other apps, so instead of flipping
   // the whole window as the cursor comes and goes, the page says which rectangles take clicks (the Roamie, its
   // bubbles, cards and buttons) and the shell makes them the window's input shape. X11 sessions work the same way.
+  let hitSync = () => {};
   if (LINUX) {
     let sent = '', sentAt = 0;
-    setInterval(() => {
+    hitSync = () => {
       if (!window.Roamie?.hitTest) return;
       const rects = [];
+      // A layer surface whose question has the keyboard, which there is every key (focusField): the whole overlay
+      // takes clicks meanwhile, so that one anywhere off the Roamie is heard here and gives the keyboard back
+      // (letGo). Only then: an overlay that took every click without the keyboard would just be in the way.
+      if (LAYER && ask && !ask.away) rects.push(0, 0, innerWidth, innerHeight);
       const grown = (r) => rects.push(Math.floor(r[0]) - 8, Math.floor(r[1]) - 8, Math.ceil(r[2]) + 16, Math.ceil(r[3]) + 16);
       for (const r of Roamie.inkRects?.() ?? []) grown(r);
       const card = Roamie.panelRect?.();
@@ -56,27 +66,31 @@
       if (key === sent && now - sentAt < 2000) return;
       sent = key; sentAt = now;
       invoke('set_hit_rects', { rects }).catch(() => { sent = ''; });
-    }, 120);
+    };
+    setInterval(hitSync, 120);
 
     // A desktop bar that keeps a slot for the Roamie (see linux.rs): the shell reads where the slot is on this
     // screen, and the Roamie comes out of it and goes back into it (agent.js setDock). The bar draws it resting in
     // the slot while it's away, so it is told at once when the Roamie leaves or is back, and every couple of
     // seconds besides: that's how the bar knows Roamies is still running.
+    // A layer surface is the one overlay there is, and the slot is on the screen in use: the overlay goes there
+    // when nothing of the Roamie's is on screen (main.rs follow_dock). Until then the slot isn't on this screen,
+    // and the bar is told all the same: the Roamie is out for every bar, and the shell goes by the same word.
     let docked = false, toldOut = null;
     const tell = (out) => { toldOut = out; invoke('dock_state', { out }).catch(() => { toldOut = null; }); };
     const dockSync = () => {
       const a = getAgent();
-      if (!a?.setDock) return;
-      invoke('dock_get').then((d) => {
+      if (!a?.setDock) return Promise.resolve();
+      return invoke('dock_get').then((d) => {
         // The bar measures in its screen's own px; this overlay covers the same screen.
         const k = d ? innerWidth / d.sw : 0;
         a.setDock(d ? { x: d.x * k, y: d.y * k } : null);
         docked = !!d;
-        if (docked) tell(a.out); else toldOut = null;
+        if (docked || LAYER) tell(a.out); else toldOut = null;
       }).catch(() => {});
     };
     setInterval(dockSync, 2000);
-    setInterval(() => { const a = getAgent(); if (docked && a && a.out !== toldOut) tell(a.out); }, 80);
+    setInterval(() => { const a = getAgent(); if ((docked || LAYER) && a && a.out !== toldOut) tell(a.out); }, 80);
     Roamie.dockSync = dockSync;
   }
 
@@ -94,16 +108,24 @@
   document.addEventListener('DOMContentLoaded', () => document.body.appendChild(field));
   if (document.body) document.body.appendChild(field);
 
+  // away: the question is open without the keyboard (a layer surface gave it back to a click elsewhere, letGo).
   let ask = null;
-  const focusField = () => { typing(true); setTimeout(() => field.focus(), 30); ask?.h.focus(true); };
+  const focusField = () => {
+    if (ask) ask.away = false;
+    typing(true); setTimeout(() => { if (!ask?.away) field.focus(); }, 30); ask?.h.focus(true);
+    if (LAYER) hitSync();
+  };
   const finishAsk = (text) => {
     if (!ask) return;
-    const { id, h, label } = ask;
+    const { id, h, label, away } = ask;
     ask = null;
     if (label != null) field.setAttribute('aria-label', label);
     field.blur(); field.value = '';
-    typing(false);
+    // Given back already when it went to a click elsewhere (letGo).
+    if (!away) typing(false);
     h.close();
+    // A layer surface: its whole-overlay click area goes with the keyboard, now and not at the next look.
+    if (LAYER) hitSync();
     if (id) send({ type: 'answer', id, text });
   };
   const openAsk = (m) => {
@@ -150,6 +172,26 @@
     else if (e.key === 'Escape') { e.preventDefault(); finishAsk(null); }
   });
   field.addEventListener('blur', () => ask?.h.focus(false));
+  // A layer surface holds every key there is while a question has the keyboard, so a click anywhere off the Roamie
+  // and its bubble gives it back for the user to go on working (the click is spent on that: it is heard here because
+  // the whole overlay takes clicks meanwhile, hitSync). The question stays, unanswered, its bubble shown unfocused,
+  // and a click on the bubble takes the keyboard again (onPress: focusField).
+  const letGo = () => {
+    if (!ask || ask.away) return;
+    ask.away = true;
+    typing(false);
+    field.blur();
+    ask.h.focus(false);
+    hitSync();
+  };
+  // A place where only that whole-overlay click area is under the pointer. It is there to hear one click, not to
+  // watch the pointer: the Roamie sees the pointer where it always did, on itself and what it shows, and doesn't run
+  // after it across the screen (or come up beside the last place clicked) because a question was open.
+  const blind = (x, y) => LAYER && !!ask && !ask.away && !Roamie.hitTest?.(x, y);
+  if (LAYER) {
+    addEventListener('pointerdown', (e) => { if (blind(e.clientX, e.clientY)) letGo(); }, true);
+    addEventListener('pointermove', (e) => { if (blind(e.clientX, e.clientY)) e.stopImmediatePropagation(); }, true);
+  }
 
   // ---------- agent events -> body language ----------
   let speech = null, thought = null, nextMood = null, listen = null, heard = null, responding = false;
@@ -390,10 +432,25 @@
   // the page has its new size and the cursor's new position, so it appears right beside the cursor.
   let held = null;
   const flush = () => {
-    if (!held) return;
-    const q = held.q; clearTimeout(held.t); held = null;
-    dispatchEvent(new Event('resize')); // the screen's scale may differ even when its size doesn't
-    for (const m of q) window.__roamieHost(m);
+    if (!held || held.going) return;
+    const h = held; clearTimeout(h.t);
+    const play = () => {
+      held = null;
+      dispatchEvent(new Event('resize')); // the screen's scale may differ even when its size doesn't
+      for (const m of h.q) window.__roamieHost(m);
+    };
+    if (!LAYER) return play();
+    // A layer surface goes to another screen with nothing of the Roamie's on it, often at the very moment something
+    // is to be shown there. Before that is played (messages are held meanwhile, never for long): the slot on this
+    // screen is asked for (another place, in other px), and the Roamie gets a frame here, which is what brings it
+    // the screen's size and the pointer being nowhere on it (while it is away, frames come ten times a second).
+    // Without them it came out of the old screen's slot, to a spot picked on a screen of the old size.
+    h.going = true;
+    const a = getAgent(), n = a?.frames, t0 = performance.now();
+    dispatchEvent(new Event('resize')); Roamie.wake?.();
+    const slot = Promise.race([Roamie.dockSync?.(), new Promise((r) => setTimeout(r, 400))]);
+    const frame = () => (a && a.frames === n && performance.now() - t0 < 400 ? setTimeout(frame, 16) : slot.then(play, play));
+    frame();
   };
   window.__roamieMoved = () => {
     dropAutoListen();
@@ -401,6 +458,10 @@
     if (ask) finishAsk(null);
     endTalk(); listen?.close(); listen = null;
     if (a?.visible) a.hide({ instant: true });
+    // A layer surface: nothing says where the pointer is on the new screen (it is seen only over the Roamie), so
+    // the place it had on the old one, and the home kept there, mean nothing here. Off this screen, then, as one
+    // more of the shell's samples: core.js goes by the last of those.
+    if (LAYER) { a?.unplace?.(); window.__roamiePtr(-1e4, -1e4, ptrT == null ? undefined : ptrT + 1); cursor = null; }
     if (held) return;
     held = { q: [], t: setTimeout(flush, 300) };
     addEventListener('resize', () => requestAnimationFrame(() => requestAnimationFrame(flush)), { once: true });

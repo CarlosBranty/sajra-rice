@@ -112,7 +112,7 @@
     const { m, face, th, put, setPx } = k;
     const tcan = document.createElement('canvas');
     const tctx = tcan.getContext('2d');
-    let b = null, dying = [], now = 0, W = 800, H = 600, mouthT = 0, mouthMode = null, gestT = 0;
+    let b = null, dying = [], now = 0, frames = 0, W = 800, H = 600, mouthT = 0, mouthMode = null, gestT = 0;
     let tool = null, lastPose = null, lookAt = null, actUntil = 0, typedAt = -9;
     // Context handed to tool performances (agent-tools.js): timing, sounds and the face; the task tag shows the rest.
     const C = {
@@ -929,6 +929,10 @@
         setStation(x, y); m.x = x; m.y = y; m.vx = m.vy = 0; m.mode = 'rest'; m.rest = 1;
         station.moving = false; station.flee = 0; station.quietUntil = now + 1;
       },
+      // Forget home: the next appearance picks its first spot afresh (the overlay went to another screen, host.js).
+      unplace: () => { station.x = station.y = null; station.byCursor = null; },
+      // How many frames it has had: each brings the screen's size and the pointer as they are now.
+      get frames() { return frames; },
       setAuto: (on, idle) => { presence.auto = !!on; if (idle) presence.idle = idle; presence.lastActive = now; },
       get visible() { return visible(); },
       // The bar's slot for it ({ x, y } in overlay px), or none.
@@ -1110,7 +1114,7 @@
     const self = {
       ...plugin,
       update: (dt, env) => {
-        now += dt; W = env.w; H = env.h; SAFE = env.safe ?? R.safe;
+        now += dt; frames++; W = env.w; H = env.h; SAFE = env.safe ?? R.safe;
         pen.reduced = !!env.reduced;
         if (pen.held) {
           presence.lastActive = now;

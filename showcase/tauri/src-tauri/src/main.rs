@@ -82,6 +82,12 @@ fn is_overlay(label: &str) -> bool {
     label.starts_with("overlay-")
 }
 
+/// The overlay the sidekick lives in.
+#[cfg(target_os = "linux")]
+fn is_sidekick(label: &str) -> bool {
+    SIDEKICK_OVERLAY.lock().unwrap().as_deref() == Some(label)
+}
+
 fn to_sidecar(app: &AppHandle, msg: &Value) {
     if let Some(stdin) = app.state::<Sidecar>().0.lock().unwrap().as_mut() {
         let _ = writeln!(stdin, "{msg}");
@@ -94,6 +100,8 @@ fn to_overlays(app: &AppHandle, msg: &Value) {
         move_sidekick_to(app, x + w / 2.0, y + h / 2.0);
     } else if starts_interaction(msg) {
         follow_cursor(app);
+        #[cfg(target_os = "linux")]
+        follow_dock(app, true);
     }
     if shows_answer(msg) {
         to_voice(app, &json!({ "cmd": "handoff" }));
@@ -124,6 +132,11 @@ fn to_onboarding(app: &AppHandle, msg: &Value) {
 #[tauri::command]
 fn esc_watch(app: AppHandle, window: WebviewWindow, on: bool) {
     let label = window.label().to_owned();
+    // Linux: also what says something of the Roamie's is on screen there (linux.rs).
+    #[cfg(target_os = "linux")]
+    if is_sidekick(&label) {
+        linux::sidekick_up(on);
+    }
     let app2 = app.clone();
     let _ = app.run_on_main_thread(move || set_esc(&app2, &label, on));
 }
@@ -193,7 +206,13 @@ fn set_hot(window: WebviewWindow, hot: bool) {
 #[tauri::command]
 fn set_hit_rects(window: WebviewWindow, rects: Vec<f64>) {
     #[cfg(target_os = "linux")]
-    linux::set_hit_rects(&window, &rects);
+    {
+        // Something that takes clicks is something on screen (linux.rs).
+        if is_sidekick(window.label()) {
+            linux::sidekick_hits(rects.len() >= 4);
+        }
+        linux::set_hit_rects(&window, &rects);
+    }
     #[cfg(not(target_os = "linux"))]
     let _ = (window, rects);
 }
@@ -1035,6 +1054,28 @@ fn follow_cursor(app: &AppHandle) {
     }
 }
 
+/// Linux with layer surfaces: the pointer is seen only over the Roamie itself, so there is no cursor to follow to
+/// another screen. The sidekick's overlay goes to the screen the desktop's bar says is in use instead (linux.rs
+/// dock_follow), and only when nothing of the Roamie's is on screen: looked at when something starts (starting),
+/// before it is shown, and every couple of seconds (pump_cursor). All of it on the main thread, where GTK is, and one
+/// look at a time; from another thread it is done before whatever is sent to the page next.
+#[cfg(target_os = "linux")]
+fn follow_dock(app: &AppHandle, starting: bool) {
+    if !linux::layer() {
+        return;
+    }
+    let app2 = app.clone();
+    let _ = app.run_on_main_thread(move || {
+        let w = SIDEKICK_OVERLAY.lock().unwrap().clone().and_then(|l| app2.get_webview_window(&l));
+        if let Some((x, y)) = w.and_then(|w| linux::dock_follow(&w)) {
+            move_sidekick_to(&app2, x, y);
+        }
+        if starting {
+            linux::sidekick_started();
+        }
+    });
+}
+
 /// Move the sidekick's overlay to the screen containing (x, y) (cursor_global's units), if it isn't there.
 fn move_sidekick_to(app: &AppHandle, x: f64, y: f64) {
     let Some(label) = SIDEKICK_OVERLAY.lock().unwrap().clone() else { return };
@@ -1046,12 +1087,19 @@ fn move_sidekick_to(app: &AppHandle, x: f64, y: f64) {
         }
     }
     // Linux, as a layer surface (linux.rs): it is handed to the other monitor, where the compositor places and
-    // sizes it.
+    // sizes it. On the main thread, where GTK is (a drawing's place comes in on the sidecar's).
     #[cfg(target_os = "linux")]
     if linux::layer() {
-        linux::layer_move(&w, &mon);
-        let _ = w.eval(safe_js(app, &mon));
-        let _ = w.eval("window.__roamieMoved&&__roamieMoved()");
+        let app2 = app.clone();
+        let _ = app.run_on_main_thread(move || {
+            linux::layer_move(&w, &mon);
+            let safe = safe_js(&app2, &mon);
+            if linux::trace() {
+                eprintln!("overlay moved: {safe}");
+            }
+            let _ = w.eval(safe);
+            let _ = w.eval("window.__roamieMoved&&__roamieMoved()");
+        });
         return;
     }
     // Logical on macOS (one points space across screens); physical on Windows, where a logical size
@@ -1099,7 +1147,9 @@ fn build_overlays(app: &AppHandle) -> tauri::Result<()> {
         let (init, size) = (format!("{init}window.ROAMIE_LINUX={:?};", linux::session().name()), tauri::LogicalSize::new(size.width, size.height - 1.0));
         // Wayland with layer-shell (linux.rs): the overlay is a layer surface, drawn above a bar and not below it. The
         // compositor places and sizes it, so what the builder is told about either below counts for nothing, and it
-        // is built hidden for linux::layer_overlay to finish and show.
+        // is built hidden for linux::layer_overlay to finish and show. It is resizable there, which only means it
+        // takes whatever size the compositor gives it: GTK holds a window that isn't to at least the size it has,
+        // so on a smaller screen (move_sidekick_to) it stayed as big as the one it came from.
         #[cfg(target_os = "linux")]
         let layer = linux::layer();
         #[cfg(not(target_os = "linux"))]
@@ -1109,13 +1159,19 @@ fn build_overlays(app: &AppHandle) -> tauri::Result<()> {
         let label = format!("overlay-{gen}-{i}");
         if mine.iter().any(|id| id == "\"sidekick\"") {
             *SIDEKICK_OVERLAY.lock().unwrap() = Some(label.clone());
+            // A new page: nothing of it is on screen yet, whatever the last one said.
+            #[cfg(target_os = "linux")]
+            {
+                linux::sidekick_up(false);
+                linux::sidekick_hits(false);
+            }
         }
         let w = WebviewWindowBuilder::new(app, label, WebviewUrl::App("desktop.html".into()))
             .title("Roamies")
             .transparent(true)
             .decorations(false)
             .shadow(false)
-            .resizable(false)
+            .resizable(layer)
             .always_on_top(true)
             .visible_on_all_workspaces(true)
             .skip_taskbar(true)
@@ -1276,6 +1332,8 @@ fn pump_cursor(app: AppHandle) {
                         let _ = w.eval(safe_js(&app, &mon));
                     }
                 }
+                // After the safe areas: a move sends the new screen's, which the old one's must not follow.
+                follow_dock(&app, false);
             }
             if let Some((label, x, y)) = linux::layer_pointer(&app) {
                 if sent.insert(label.clone(), (x, y)) != Some((x, y)) {

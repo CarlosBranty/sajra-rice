@@ -165,9 +165,11 @@ commands, Open at Login, and in-app updates for the AppImage (a `.deb` or `.rpm`
 - Screenshots go through your desktop's screenshot portal, which may ask you to allow them.
 - On compositors with layer surfaces (Hyprland, Sway and others built on wlroots, KDE Plasma) the Roamie is a native
   Wayland layer above your windows and bars: it takes no tile or workspace, clicks land on whatever is under it
-  everywhere except on the Roamie and what it shows, and it has the keyboard only while you type to it. The panel
-  opens in the top right corner. Window rules written for the old `Roamies` window no longer match: the layers are
-  named `roamies` and `roamies-panel`. Elsewhere (GNOME) its windows still go through XWayland, as on X11.
+  everywhere except on the Roamie and what it shows, and it has the keyboard only while you type to it: a click
+  anywhere else then gives the keyboard back (that one click goes no further) and leaves the question open, for a
+  click on its bubble to take up again. The panel opens in the top right corner. Window rules written for the old
+  `Roamies` window no longer match: the layers are named `roamies` and `roamies-panel`. Elsewhere (GNOME) its
+  windows still go through XWayland, as on X11.
   `ROAMIES_LAYER_SHELL=0 roamies` keeps the XWayland windows if the layer misbehaves on your compositor, and
   `ROAMIES_LAYER_SHELL=1` asks for the layer where Roamies didn't pick it.
 
@@ -197,7 +199,8 @@ meanwhile. The two leave each other notes in `$XDG_RUNTIME_DIR/roamies/`:
 
 - `dock.json`, written by the bar: `{"x": 1830, "y": 23, "sw": 2304, "sh": 1440, "mx": 0, "my": 0}`. `x`, `y` is the
   centre of the slot, `sw` × `sh` the size of its screen and `mx`, `my` where that screen starts, all in logical pixels.
-  Roamies reads it every couple of seconds; without the file nothing changes.
+  Roamies reads it every couple of seconds; without the file nothing changes. With several screens, write it from the bar
+  of the screen in use and rewrite it when that changes: on compositors with layer-shell the Roamie moves to that screen.
 - `state.json`, written by Roamies: `{"pid": 1234, "exe": "/usr/bin/roamies", "out": false, "keys": false, "t": 1794359725}`.
   `out` is true while the Roamie is on screen (so the slot is empty). `keys` is true while something is being typed to
   it; a tiling compositor leaves the keyboard with the overlay afterwards, so when `keys` is false and the overlay

@@ -161,7 +161,7 @@ pub(crate) fn init() {
     }
 }
 
-fn trace() -> bool {
+pub(crate) fn trace() -> bool {
     static ON: OnceLock<bool> = OnceLock::new();
     *ON.get_or_init(|| std::env::var_os("ROAMIES_TRACE").is_some())
 }
@@ -172,7 +172,8 @@ fn trace() -> bool {
 // of the slot when it has something to do and goes back into it after. The two leave each other notes in
 // $XDG_RUNTIME_DIR/roamies/ (gone at logout):
 //   dock.json   from the bar: {"x": 1830, "y": 23, "sw": 2304, "sh": 1440, "mx": 0, "my": 0}, the slot's centre on a
-//               screen sw × sh at (mx, my), all in that screen's logical px.
+//               screen sw × sh at (mx, my), all in that screen's logical px. With several screens it is the slot on
+//               the one in use, written again when another comes into use: a layer surface goes there (dock_follow).
 //   state.json  from Roamies: {"pid": 1234, "exe": "/usr/bin/roamies", "out": false, "keys": false, "t": 1794359725}.
 //               out: the Roamie is on screen, so the slot is empty. keys: it is being typed to, so the keyboard is the
 //               overlay's (when it isn't and the overlay still has the keyboard, the bar may hand it back). t: when this
@@ -223,6 +224,18 @@ fn dock_read(screen: Option<(f64, f64, f64, f64)>, screens: usize) -> Option<Val
 
 /// The bar's slot for the Roamie, when it is on this overlay's screen.
 pub(crate) fn dock_get(window: &tauri::WebviewWindow) -> Option<Value> {
+    // A layer surface: the screen it was handed to, which is known at once. Where the compositor has put a surface
+    // that just went to another screen is heard a moment later, and the page asks right then (host.js).
+    if layer() {
+        let (tx, rx) = mpsc::channel();
+        let w = window.clone();
+        let _ = window.run_on_main_thread(move || {
+            let _ = tx.send(layer_screens(&w));
+        });
+        if let Ok(Some((Some(here), screens))) = rx.recv_timeout(Duration::from_millis(250)) {
+            return dock_read(Some(screens[here]), screens.len());
+        }
+    }
     let screens = window.available_monitors().map(|m| m.len()).unwrap_or(1);
     dock_read(window.current_monitor().ok().flatten().as_ref().map(logical), screens)
 }
@@ -306,6 +319,34 @@ pub(crate) fn dock_wants_keys() -> bool {
     DOCK_KEYS.load(std::sync::atomic::Ordering::Relaxed)
 }
 
+// What says something of the Roamie's is on screen in the sidekick's overlay. As a layer surface the overlay goes
+// to the screen in use (dock_follow), but never from under any of it. UP: its page holds Esc (the Roamie, a bubble,
+// a question, a drawing, a take, a voice: main.rs esc_watch). HITS: it has click areas (a card left on screen holds
+// no Esc). DOCK_OUT: the Roamie is somewhere between leaving its slot and being back in it (the page of a layer
+// surface says so with or without a slot on its screen). STARTED: something just began there, which the page
+// takes a moment to say.
+static SIDEKICK_UP: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static SIDEKICK_HITS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static SIDEKICK_STARTED: Mutex<Option<Instant>> = Mutex::new(None);
+
+pub(crate) fn sidekick_up(on: bool) {
+    SIDEKICK_UP.store(on, std::sync::atomic::Ordering::Relaxed);
+}
+
+pub(crate) fn sidekick_hits(any: bool) {
+    SIDEKICK_HITS.store(any, std::sync::atomic::Ordering::Relaxed);
+}
+
+pub(crate) fn sidekick_started() {
+    *SIDEKICK_STARTED.lock().unwrap() = Some(Instant::now());
+}
+
+fn sidekick_busy() -> bool {
+    use std::sync::atomic::Ordering::Relaxed;
+    let started = SIDEKICK_STARTED.lock().unwrap().is_some_and(|t| t.elapsed() < Duration::from_secs(1));
+    SIDEKICK_UP.load(Relaxed) || SIDEKICK_HITS.load(Relaxed) || DOCK_OUT.load(Relaxed) || started
+}
+
 fn dock_write() {
     let (out, keys) = (DOCK_OUT.load(std::sync::atomic::Ordering::Relaxed), DOCK_KEYS.load(std::sync::atomic::Ordering::Relaxed));
     let Some(dir) = dock_dir() else { return };
@@ -376,6 +417,47 @@ fn monitor_at(all: &[(i32, i32, i32, i32)], want: (f64, f64, f64, f64)) -> Optio
     all.iter().position(|&(x, y, w, h)| near(x, want.0) && near(y, want.1) && near(w, want.2) && near(h, want.3))
 }
 
+/// Layer surfaces, one overlay for several screens: which of `screens` ((x, y, w, h) in logical px) the overlay
+/// should go to from the one it is on (`here`), or None: it stays. The bar writes its note from the screen in use
+/// and again when another comes into use, so the overlay goes where the note is: only to a screen the note really
+/// names (no note, one that isn't a note or names no screen here: it stays), and never while something of the
+/// Roamie's is on screen (`busy`).
+fn dock_move(note: Option<&str>, here: Option<usize>, screens: &[(f64, f64, f64, f64)], busy: bool) -> Option<usize> {
+    if busy || screens.len() <= 1 {
+        return None;
+    }
+    let dock = dock_from(note?)?;
+    let to = screens.iter().position(|&s| dock_on(&dock, Some(s), screens.len()))?;
+    (Some(to) != here).then_some(to)
+}
+
+/// Every screen as GDK has it ((x, y, w, h) in logical px, the units a bar measures in), and which of them an
+/// overlay's layer surface was handed to (None: the compositor chose). Main thread only.
+fn layer_screens(window: &tauri::WebviewWindow) -> Option<(Option<usize>, Vec<(f64, f64, f64, f64)>)> {
+    use gtk::prelude::*;
+    use gtk_layer_shell::LayerShell;
+    let display = gtk::gdk::Display::default()?;
+    let all: Vec<gtk::gdk::Monitor> = (0..display.n_monitors()).filter_map(|i| display.monitor(i)).collect();
+    let on = window.gtk_window().ok()?.monitor();
+    let here = all.iter().position(|m| Some(m) == on.as_ref());
+    Some((here, all.iter().map(|m| m.geometry()).map(|g| (g.x() as f64, g.y() as f64, g.width() as f64, g.height() as f64)).collect()))
+}
+
+/// Layer surfaces: where the sidekick's overlay should go now (dock_move), as the middle of that screen in global
+/// logical px, which is what main.rs's move_sidekick_to takes there. None: it stays. Main thread only.
+pub(crate) fn dock_follow(window: &tauri::WebviewWindow) -> Option<(f64, f64)> {
+    if !layer() {
+        return None;
+    }
+    let note = std::fs::read_to_string(dock_dir()?.join("dock.json")).ok();
+    let (here, screens) = layer_screens(window)?;
+    let (x, y, w, h) = screens[dock_move(note.as_deref(), here, &screens, sidekick_busy())?];
+    if trace() {
+        eprintln!("screen in use: {w}x{h} at {x},{y}; the overlay was on {:?}", here.map(|i| screens[i]));
+    }
+    Some((x + w / 2.0, y + h / 2.0))
+}
+
 /// GDK's monitor for one of Tauri's: the same screen, found by where it is. Main thread only.
 fn gdk_monitor(mon: &tauri::Monitor) -> Option<gtk::gdk::Monitor> {
     use gtk::prelude::*;
@@ -418,7 +500,8 @@ pub(crate) fn layer_move(window: &tauri::WebviewWindow, mon: &tauri::Monitor) {
     }
 }
 
-/// An overlay asks for the keyboard while something is being typed to the Roamie and gives it up after. The
+/// An overlay asks for the keyboard while something is being typed to the Roamie and gives it up after, or sooner
+/// when a click lands anywhere else (host.js letGo: every key there is would be held from the user otherwise). The
 /// compositor hands it over and, after, back to the window that had it; nothing is focused from here, so the
 /// pointer stays where it is. Exclusive, not on demand: a surface that asks on demand gets the keyboard only when
 /// it is clicked (measured on Hyprland 0.57), and a question opened from a key or by the Roamie itself would sit
@@ -1684,6 +1767,40 @@ mod tests {
         assert_eq!(monitor_at(&all, (0.0, 1440.0, 1280.0, 720.0)), Some(2));
         assert_eq!(monitor_at(&all, (5000.0, 0.0, 1920.0, 1080.0)), None, "unplugged meanwhile");
         assert_eq!(monitor_at(&[], (0.0, 0.0, 1920.0, 1080.0)), None);
+    }
+
+    #[test]
+    fn a_slot_is_only_its_own_screens() {
+        let dock = dock_from(r#"{"x":1500,"y":23,"sw":1920,"sh":1080,"mx":2304,"my":0}"#).unwrap();
+        assert!(dock_on(&dock, Some((2304.0, 0.0, 1920.0, 1080.0)), 2));
+        assert!(!dock_on(&dock, Some((0.0, 0.0, 2304.0, 1440.0)), 2), "another screen's slot isn't this overlay's");
+        assert!(!dock_on(&dock, None, 2), "nor an overlay's whose screen isn't known");
+        assert!(dock_on(&dock, Some((0.0, 0.0, 2304.0, 1440.0)), 1) && dock_on(&dock, None, 1), "the only screen: whatever the note says of it");
+    }
+
+    #[test]
+    fn the_overlay_follows_the_bars_note_to_the_screen_in_use() {
+        // This desktop: a laptop panel at a fractional scale and an external screen to its right.
+        let screens = [(0.0, 0.0, 2304.0, 1440.0), (2304.0, 0.0, 1920.0, 1080.0)];
+        let on_laptop = r#"{"monitor":"eDP-1","x":1803,"y":23,"sw":2304,"sh":1440,"mx":0,"my":0}"#;
+        let on_external = r#"{"monitor":"HDMI-A-1","x":1500,"y":23,"sw":1920,"sh":1080,"mx":2304,"my":0}"#;
+        assert_eq!(dock_move(Some(on_laptop), Some(0), &screens, false), None, "the note names the overlay's screen: it stays");
+        assert_eq!(dock_move(Some(on_external), Some(1), &screens, false), None);
+        assert_eq!(dock_move(Some(on_external), Some(0), &screens, false), Some(1), "the other screen came into use, nothing on screen: it goes there");
+        assert_eq!(dock_move(Some(on_laptop), Some(1), &screens, false), Some(0), "and back");
+        assert_eq!(dock_move(Some(on_external), Some(0), &screens, true), None, "never under something of the Roamie's that is on screen");
+        assert_eq!(dock_move(Some(on_laptop), Some(1), &screens, true), None);
+        assert_eq!(dock_move(Some(on_external), None, &screens, false), Some(1), "an overlay the compositor placed goes where the note says");
+        assert_eq!(dock_move(Some(on_external), Some(0), &screens[..1], false), None, "one screen: nowhere to go");
+        assert_eq!(dock_move(Some(on_external), Some(0), &[], false), None);
+        assert_eq!(dock_move(None, Some(0), &screens, false), None, "no bar left a note");
+        for bad in ["", "{", "[]", r#"{"x":1500,"y":23}"#, r#"{"x":5000,"y":23,"sw":1920,"sh":1080,"mx":2304,"my":0}"#, r#"{"x":"1500","y":23,"sw":1920,"sh":1080,"mx":2304,"my":0}"#] {
+            assert_eq!(dock_move(Some(bad), Some(0), &screens, false), None, "not a note: {bad}");
+        }
+        // A note without a place for its screen says the first one (dock_from), as it always did.
+        assert_eq!(dock_move(Some(r#"{"x":1803,"y":23,"sw":2304,"sh":1440}"#), Some(1), &screens, false), Some(0));
+        assert_eq!(dock_move(Some(r#"{"x":900,"y":23,"sw":1280,"sh":720,"mx":4224,"my":0}"#), Some(0), &screens, false), None, "a screen that isn't there (unplugged meanwhile)");
+        assert_eq!(dock_move(Some(r#"{"x":1500,"y":23,"sw":1920.4,"sh":1079.6,"mx":2303.5,"my":0.3}"#), Some(0), &screens, false), Some(1), "give or take rounding");
     }
 
     #[test]

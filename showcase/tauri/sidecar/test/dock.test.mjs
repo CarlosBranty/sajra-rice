@@ -149,6 +149,34 @@ const travel = (c, to, secs, why) => {
   a.hide({ instant: true });
 }
 
+// The overlay was taken to another screen (a layer surface follows the screen in use): its home was a place on the
+// old one. Forgotten (unplace), the next appearance picks its first spot afresh, by the slot that is on this screen.
+{
+  const c = make((kit) => R.agentPlugin(kit)), a = c.agent;
+  window.ROAMIE_LAYER = true;
+  c.update(DT, env);
+  a.setDock({ x: 1000, y: BAR / 2 });
+  a.show();
+  for (let i = 0; i < 90; i++) c.update(DT, env);
+  const home = a.station;
+  assert.ok(Math.abs(home.x - 1000) < W / 3, `home is by the slot (${home.x}, ${home.y})`);
+  a.hide({ instant: true });
+  // As it was: home is kept from one appearance to the next, wherever the slot is.
+  a.setDock({ x: 400, y: BAR / 2 });
+  a.show();
+  for (let i = 0; i < 90; i++) c.update(DT, env);
+  assert.deepEqual([a.station.x, a.station.y], [home.x, home.y], 'home is kept');
+  a.hide({ instant: true });
+  a.unplace();
+  assert.equal(a.station.x, null, 'no home');
+  a.show();
+  assert.deepEqual(at(c), [400, BAR / 2], 'comes out of the slot on this screen');
+  for (let i = 0; i < 90; i++) c.update(DT, env);
+  assert.ok(Math.abs(a.station.x - 400) < W / 3 && a.station.y < H / 2, `its first spot is by that slot (${a.station.x}, ${a.station.y})`);
+  a.hide({ instant: true });
+  delete window.ROAMIE_LAYER;
+}
+
 // Regression: hiding the Roamie with its shortcut while a typed question was open left the overlay holding the
 // keyboard with nothing on screen (on a tiling desktop nothing else could be typed in until a click).
 {
