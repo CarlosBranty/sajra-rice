@@ -295,6 +295,49 @@ const TAP_LIMIT: f64 = 0.25;
 // A release must last this long to count, so one glitchy frame of key state can't end a session.
 const RELEASE_DEBOUNCE: f64 = 0.09;
 const PAUSE_ENDS: f64 = 1.5;
+// Words that already end like a finished sentence or question ("What time is it?") end a hands-free take on a shorter
+// pause, once a read has heard past the last voiced moment (an older read's full stop says nothing about the words
+// after it).
+const SHORT_PAUSE: f64 = 0.7;
+// Words that end on a full stop only: Parakeet puts one at the end of nearly every read, also one cut off mid-sentence,
+// so it shortens the pause a little, not to SHORT_PAUSE (someone thinking between two sentences mustn't be cut off).
+const MID_PAUSE: f64 = 1.1;
+// A live read heard every word when its audio runs this far past the last voiced moment (a word's end is softer than
+// the voice threshold).
+const READ_MARGIN: f64 = 0.25;
+// A last word that leaves the sentence hanging ("and.", "y.", "the."): Parakeet ends nearly every read with a full stop,
+// also one cut off mid-sentence, so after these the full pause is kept.
+const HANGING: &[&str] = &[
+    "and", "or", "but", "so", "because", "the", "a", "an", "to", "of", "in", "on", "at", "for", "with", "from", "that", "my", "your",
+    "y", "e", "o", "u", "pero", "porque", "que", "de", "del", "al", "el", "la", "los", "las", "un", "una", "en", "con", "por", "para", "mi", "tu",
+];
+
+/// Whether a live transcript ends like a finished sentence or question: a full stop, question or exclamation mark (Parakeet
+/// writes them) after a word that doesn't leave it hanging.
+fn sounds_finished(text: &str) -> bool {
+    let t = text.trim_end_matches(|c: char| c.is_whitespace() || matches!(c, '"' | '\'' | '”' | '’' | '»' | ')'));
+    if !t.ends_with(['.', '?', '!', '…', '？', '！', '。']) {
+        return false;
+    }
+    let last = t.split_whitespace().last().unwrap_or("").trim_matches(|c: char| !c.is_alphanumeric()).to_lowercase();
+    !last.is_empty() && !HANGING.contains(&last.as_str())
+}
+
+/// How long a quiet stretch ends a hands-free take: short when the words sound finished and the last read heard them
+/// all (covered), the full pause otherwise.
+fn pause_ends(text: &str, covered: bool) -> f64 {
+    if !covered || !sounds_finished(text) {
+        return PAUSE_ENDS;
+    }
+    let t = text.trim_end_matches(|c: char| c.is_whitespace() || matches!(c, '"' | '\'' | '”' | '’' | '»' | ')'));
+    if t.ends_with(['?', '!', '？', '！']) { SHORT_PAUSE } else { MID_PAUSE }
+}
+
+/// Whether the last live read heard every word: the audio it read (up to read_upto) runs past the last voiced moment.
+fn read_covers(read_upto: f64, voice_at: f64) -> bool {
+    read_upto >= voice_at + READ_MARGIN
+}
+
 // With a video or music in the room the microphone never goes quiet, so a hands-free take also ends when no new word
 // has come for this long (that sound isn't the user), and gives up when not one word came in the first NOTHING_ENDS.
 const STALL_ENDS: f64 = 3.0;
@@ -331,6 +374,8 @@ struct Voice {
     reading: bool,
     read_at: f64,
     read_len: usize,
+    // Where the audio of the last live read that came back with words ends (this clock).
+    read_upto: f64,
     tail_until: Option<f64>,
     final_until: Option<f64>,
     test_audio: Option<PathBuf>,
@@ -338,6 +383,13 @@ struct Voice {
     ink: ink::Ink,
     tx: Sender<Ev>,
     t0: Instant,
+    // ROAMIES_LATENCY: each take's words go out with when the voice stopped, the take closed (and why) and the words
+    // were ready, on the wall clock the app and its page share.
+    latency: bool,
+    ended_at: f64,
+    ended_why: &'static str,
+    // The take's words are the last live read's (it heard them all), not another read of the whole take.
+    reused: bool,
 }
 
 impl Voice {
@@ -364,6 +416,7 @@ impl Voice {
             reading: false,
             read_at: 0.0,
             read_len: 0,
+            read_upto: f64::NEG_INFINITY,
             tail_until: None,
             final_until: None,
             test_audio,
@@ -371,6 +424,10 @@ impl Voice {
             ink: ink::Ink::default(),
             tx,
             t0: Instant::now(),
+            latency: false,
+            ended_at: 0.0,
+            ended_why: "",
+            reused: false,
         }
     }
 
@@ -451,10 +508,10 @@ impl Voice {
             Phase::Holding => {
                 if released {
                     self.end("released", now);
-                    self.finish();
+                    self.finish(TAIL);
                 } else if now - self.listen_at > MAX_SESSION {
                     self.end("max length", now);
-                    self.finish();
+                    self.finish(TAIL);
                 }
             }
             Phase::HandsFree => {
@@ -464,11 +521,15 @@ impl Voice {
                     self.released_at = None;
                     return;
                 }
-                let quiet = now - self.heard_at.max(self.voice_at);
+                let pause = pause_ends(&self.best, read_covers(self.read_upto, self.voice_at));
+                // The short pause runs from the last voiced moment (a read already heard every word); the full one also
+                // from the last new words, which can still be coming in from a read of audio before it.
+                let quiet = now - if pause < PAUSE_ENDS { self.voice_at } else { self.heard_at.max(self.voice_at) };
                 let stalled = now - self.heard_at > STALL_ENDS;
-                if !self.best.is_empty() && (quiet > PAUSE_ENDS || stalled) {
-                    self.end(if quiet > PAUSE_ENDS { "pause" } else { "no new words" }, now);
-                    self.finish();
+                if !self.best.is_empty() && (quiet > pause || stalled) {
+                    self.end(if quiet <= pause { "no new words" } else if pause < PAUSE_ENDS { "short pause" } else { "pause" }, now);
+                    // A pause was the tail already: nobody is letting go of keys mid-word.
+                    self.finish(if quiet > pause { 0.0 } else { TAIL });
                 } else if self.best.is_empty() && !self.reading && now - self.listen_at > 8.0 && now - self.voice_at > PAUSE_ENDS {
                     self.end("nothing heard", now);
                     self.cancel();
@@ -477,15 +538,22 @@ impl Voice {
                     self.cancel();
                 } else if now - self.listen_at > MAX_SESSION {
                     self.end("max length", now);
-                    self.finish();
+                    self.finish(TAIL);
                 }
             }
             Phase::Finishing => {}
         }
     }
 
-    fn end(&self, why: &str, now: f64) {
+    fn end(&mut self, why: &'static str, now: f64) {
         log(&format!("session end: {why} after {:.1}s", now - self.listen_at));
+        (self.ended_at, self.ended_why) = (now, why);
+    }
+
+    // A moment on this clock as milliseconds on the wall clock, which the app and its page read too.
+    fn wall_ms(&self, t: f64) -> u64 {
+        let wall = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs_f64()).unwrap_or(0.0);
+        ((wall - (self.now() - t)) * 1000.0).round().max(0.0) as u64
     }
 
     fn arm(&mut self, now: f64) {
@@ -511,6 +579,8 @@ impl Voice {
         self.take += 1;
         self.reading = false;
         self.read_len = 0;
+        self.read_upto = f64::NEG_INFINITY;
+        self.reused = false;
     }
 
     fn show_listening(&mut self, mode: &str, now: f64) {
@@ -566,7 +636,10 @@ impl Voice {
     // While listening: re-read the whole take now and then, for live text and pause detection.
     fn maybe_read(&mut self, now: f64) {
         let Some(engine) = &self.engine else { return };
-        if !self.spoke || self.reading || now - self.read_at < READ_EVERY {
+        // The voice just stopped and no read has heard its end yet: one goes now, not on the usual pace, so a finished
+        // sentence can end the take on the short pause and be its words.
+        let ended = now >= self.voice_at + READ_MARGIN && self.read_at < self.voice_at + READ_MARGIN;
+        if !self.spoke || self.reading || (now - self.read_at < READ_EVERY && !ended) {
             return;
         }
         let audio = self.buf.lock().unwrap().clone();
@@ -578,7 +651,8 @@ impl Voice {
         self.reading = engine.send(Job { take: self.take, audio, last: false, wake: false }).is_ok();
     }
 
-    fn finish(&mut self) {
+    // tail: how long the mic stays on first.
+    fn finish(&mut self, tail: f64) {
         if !matches!(self.phase, Phase::Armed | Phase::Holding | Phase::HandsFree) {
             return;
         }
@@ -592,13 +666,18 @@ impl Voice {
         if self.source.is_none() {
             return self.finalize();
         }
-        self.tail_until = Some(self.now() + TAIL);
+        self.tail_until = Some(self.now() + tail);
     }
 
-    // Mic off, then one last read of the whole take; its result ends the session.
+    // Mic off, then one last read of the whole take; its result ends the session. When the last live read heard every
+    // word (nothing was voiced after the audio it read), its words are the take's, without reading it all again.
     fn close_take(&mut self, now: f64) {
         self.stop_audio();
         let audio = std::mem::take(&mut *self.buf.lock().unwrap());
+        if !self.best.is_empty() && read_covers(self.read_upto, self.voice_at) {
+            self.reused = true;
+            return self.finalize();
+        }
         match &self.engine {
             Some(engine) if self.spoke && engine.send(Job { take: self.take, audio, last: true, wake: false }).is_ok() => self.final_until = Some(now + FINAL_TIMEOUT),
             _ => self.finalize(),
@@ -610,6 +689,10 @@ impl Voice {
             return;
         }
         if !last {
+            // The live read out (one at a time) was sent at read_at, with the audio up to then.
+            if self.reading && !text.is_empty() {
+                self.read_upto = self.read_at;
+            }
             self.reading = false;
         }
         // A closing read that came back empty keeps whatever the live reads heard.
@@ -648,6 +731,7 @@ impl Voice {
         self.stop_audio();
         self.tail_until = None;
         self.final_until = None;
+        let take = self.take;
         self.take += 1;
         self.phase = Phase::Idle;
         let text = self.best.trim().to_string();
@@ -658,6 +742,12 @@ impl Voice {
             if let Some(a) = area {
                 msg["area"] = a;
                 log("sent what was said, with the circled area");
+            }
+            if self.latency {
+                let now = self.now();
+                let read = if self.reused { "live" } else { "final" };
+                msg["trace"] = json!({ "take": take, "voiced": self.wall_ms(self.voice_at), "closed": self.wall_ms(self.ended_at), "final": self.wall_ms(now), "why": self.ended_why, "read": read });
+                log(&format!("latency: take {take} voiced→closed {:.0}ms ({}) closed→final {:.0}ms ({read} read)", (self.ended_at - self.voice_at) * 1000.0, self.ended_why, (now - self.ended_at) * 1000.0));
             }
             emit(msg);
         } else if let Some(f) = area.as_ref().and_then(|a| a["file"].as_str()) {
@@ -708,7 +798,7 @@ impl Voice {
             Phase::Armed | Phase::Holding | Phase::HandsFree => {
                 let now = self.now();
                 self.end("toggled", now);
-                self.finish();
+                self.finish(TAIL);
             }
             Phase::Finishing => {}
         }
@@ -998,6 +1088,7 @@ fn main() {
         }
     };
     let mut voice = Voice::new(engine, arg(&args, "--test-audio").map(PathBuf::from), tx.clone());
+    voice.latency = std::env::var_os("ROAMIES_LATENCY").is_some();
     if let Some(c) = arg(&args, "--chord") {
         voice.set_chord(&c.split(',').map(str::to_owned).collect::<Vec<_>>());
     }
@@ -1135,6 +1226,130 @@ mod tests {
         assert_eq!(v.phase, Phase::HandsFree);
         v.tick_keys(t + 2.6);
         assert_eq!(v.phase, Phase::Finishing, "the pause rule is unchanged");
+        let _ = std::fs::remove_file(wav);
+    }
+
+    #[test]
+    fn words_that_sound_finished_end_a_hands_free_take_on_a_shorter_pause() {
+        for done in ["¿qué hora es?", "what time is it?", "What time is it?\"", "Open it!"] {
+            assert!(sounds_finished(done), "{done}");
+            assert_eq!(pause_ends(done, true), SHORT_PAUSE, "{done}");
+            assert_eq!(pause_ends(done, false), PAUSE_ENDS, "{done}: an older read's ending says nothing about the words after it");
+        }
+        // Parakeet ends nearly every read with a full stop, also one cut off mid-sentence ("Front left" read as "Front."),
+        // so a full stop alone only shortens the pause a little: someone thinking between two sentences isn't cut off.
+        for told in ["dime qué ves en pantalla.", "Front.", "open the settings."] {
+            assert!(sounds_finished(told), "{told}");
+            assert_eq!(pause_ends(told, true), MID_PAUSE, "{told}");
+            assert!(MID_PAUSE > SHORT_PAUSE && MID_PAUSE < PAUSE_ENDS);
+        }
+        for open in ["y luego", "the thing is", "Y luego y.", "I want to open the.", ""] {
+            assert!(!sounds_finished(open), "{open}");
+            assert_eq!(pause_ends(open, true), PAUSE_ENDS, "{open}");
+        }
+        assert!(read_covers(2.0, 1.5) && !read_covers(1.6, 1.5), "a read heard every word once it ran past the voice");
+
+        // Live: the voice stopped a second in, and a read sent after that came back with the words.
+        let take = |text: &str, read_upto: f64| {
+            let (mut v, _jobs, wav) = voice();
+            v.toggle();
+            let t = v.listen_at;
+            (v.voice_at, v.read_upto, v.heard_at, v.best) = (t + 1.0, t + read_upto, t + 1.6, text.into());
+            let _ = std::fs::remove_file(wav);
+            (v, t)
+        };
+        let (mut v, t) = take("what time is it?", 1.4);
+        v.tick_keys(t + 1.6);
+        assert_eq!(v.phase, Phase::HandsFree, "0.6 s of quiet: not yet");
+        v.tick_keys(t + 1.75);
+        assert_eq!(v.phase, Phase::Finishing, "0.75 s after a finished question");
+        assert!(v.tail_until.is_some_and(|u| u <= v.now()), "the pause was the tail: it closes at once");
+        for (text, read_upto) in [("the thing is", 1.4), ("what time is it?", 1.1)] {
+            let (mut v, t) = take(text, read_upto);
+            v.tick_keys(t + 2.5);
+            assert_eq!(v.phase, Phase::HandsFree, "{text} (read to {read_upto}): the full pause, from the last new words");
+            v.tick_keys(t + 3.2);
+            assert_eq!(v.phase, Phase::Finishing, "{text}");
+        }
+    }
+
+    #[test]
+    fn a_read_goes_out_as_soon_as_the_voice_stops() {
+        let (mut v, jobs, wav) = voice();
+        v.toggle();
+        let t = v.listen_at;
+        v.spoke = true;
+        v.buf.lock().unwrap().extend(std::iter::repeat(0.1f32).take(RATE as usize * 2));
+        // A live read went out while they were still talking; the voice stopped a moment later.
+        (v.read_at, v.read_len, v.voice_at) = (t + 1.5, RATE as usize, t + 1.7);
+        v.maybe_read(t + 1.9);
+        assert!(jobs.try_recv().is_err(), "within the margin after the voice: not yet");
+        v.maybe_read(t + 2.0);
+        assert!(jobs.try_recv().is_ok_and(|j| !j.last), "a read now, not 0.8 s after the last one: it hears every word");
+        v.reading = false;
+        v.maybe_read(t + 2.3);
+        assert!(jobs.try_recv().is_err(), "then the usual pace");
+        let _ = std::fs::remove_file(wav);
+    }
+
+    #[test]
+    fn the_last_live_read_is_the_take_when_it_heard_every_word() {
+        let (mut v, jobs, wav) = voice();
+        v.toggle();
+        v.on_level(0.5);
+        // A read sent after the voice stopped comes back with the words.
+        v.read_at = v.voice_at + 0.5;
+        v.reading = true;
+        v.on_text(v.take, "what time is it?".into(), false);
+        let _ = said();
+        v.toggle();
+        v.tail_until = Some(0.0);
+        v.tick();
+        assert!(jobs.try_recv().is_err(), "no other read of the whole take");
+        assert_eq!(v.phase, Phase::Idle);
+        assert!(said().iter().any(|e| e["type"] == "final" && e["text"] == "what time is it?"), "the live read's words are sent");
+
+        // The voice went on after the last read: the whole take is read again, as before.
+        v.toggle();
+        v.read_at = v.now();
+        v.reading = true;
+        v.on_text(v.take, "what time".into(), false);
+        v.on_level(0.5);
+        v.toggle();
+        v.tail_until = Some(0.0);
+        v.tick();
+        assert!(jobs.try_recv().is_ok_and(|j| j.last), "a closing read");
+        assert_eq!(v.phase, Phase::Finishing);
+        let _ = std::fs::remove_file(wav);
+    }
+
+    #[test]
+    fn a_take_carries_its_stage_times_only_with_the_latency_trace_on() {
+        let (mut v, jobs, wav) = voice();
+        assert!(!v.latency, "off unless ROAMIES_LATENCY is set");
+        let sent = |v: &mut Voice| {
+            v.toggle();
+            v.on_level(0.5);
+            v.read_at = v.voice_at + 0.5;
+            v.reading = true;
+            v.on_text(v.take, "hi there.".into(), false);
+            let _ = said();
+            v.toggle();
+            v.tail_until = Some(0.0);
+            v.tick();
+            if let Ok(j) = jobs.try_recv() {
+                v.on_text(j.take, "hi there.".into(), true);
+            }
+            said().into_iter().find(|e| e["type"] == "final").expect("the words")
+        };
+        assert!(sent(&mut v).get("trace").is_none(), "nothing extra when off");
+        v.latency = true;
+        let f = sent(&mut v);
+        let tr = &f["trace"];
+        assert_eq!((tr["why"].as_str(), tr["read"].as_str()), (Some("toggled"), Some("live")));
+        let ms = |k: &str| tr[k].as_u64().unwrap_or_else(|| panic!("{k} in {tr}"));
+        assert!(ms("voiced") <= ms("closed") && ms("closed") <= ms("final"), "in order: {tr}");
+        assert!(ms("final") > 1_600_000_000_000, "on the wall clock (ms), which the app and its page share");
         let _ = std::fs::remove_file(wav);
     }
 
