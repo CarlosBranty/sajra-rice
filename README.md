@@ -30,7 +30,7 @@ voice, keeps track of what you said you'd do and nudges you when it's due.
 ## Why Roamies
 
 - **Talk, don't type.** Hold ⌃⌥ (Ctrl+Alt on Windows and Linux), say it, let go. On macOS and Windows, circle something with the cursor while you talk and it sees what you mean (on Linux, drag round it with the mouse).
-- **It talks back.** Spoken replies in its own voice, with real feeling, through [Fish Audio](https://fish.audio).
+- **It talks back.** Spoken replies in its own voice, with real feeling, through [Fish Audio](https://fish.audio). On Windows and Linux there's also a free Spanish voice that runs offline on your computer.
 - **It remembers.** What you said you'd do, reminders down to the second, and what matters to you.
 - **It draws on your screen.** Rings the exact button to click, walks you through each step, and sketches answers beside what you're reading.
 - **It does the clicking.** Opens apps, sites and files, and on macOS and Windows clicks or types in other apps for you.
@@ -79,7 +79,7 @@ clear it all in one go.
 | ---------------------- | -------------------------- | --------------------------- | ---------------------------------- |
 | Talk to it             | Yes, best on macOS 26+     | Yes, speech runs on your PC | Yes, speech runs on your PC        |
 | Circle while talking   | Yes                        | Yes                         | With the mouse, on layer surfaces  |
-| Spoken replies         | Yes, with a Fish Audio key | Yes, with a Fish Audio key  | Yes, with a Fish Audio key         |
+| Spoken replies         | Yes, with a Fish Audio key | Fish Audio, or a local voice (Spanish) | Fish Audio, or a local voice (Spanish) |
 | Memory and reminders   | Yes                        | Yes                         | Yes                                |
 | Read windows and point | Yes                        | Yes                         | Points from screenshots only       |
 | Cards and diagrams     | Yes                        | Yes                         | Yes                                |
@@ -104,6 +104,14 @@ Windows and Linux uses [NVIDIA Parakeet TDT 0.6B v3](https://huggingface.co/nvid
 ([CC BY 4.0](https://creativecommons.org/licenses/by/4.0/)), in the ONNX export by
 [istupakov](https://huggingface.co/istupakov/parakeet-tdt-0.6b-v3-onnx), run with
 [parakeet-rs](https://github.com/altunenes/parakeet-rs). The model (about 670 MB) downloads once at setup and isn't bundled.</sub>
+
+<sub>**Local voice (Spanish)**, Windows and Linux: picked on the panel's Voice page (Replies), it speaks replies on your
+computer, offline, free and with no key, in one voice for every look: the female speaker of
+[Piper](https://github.com/OHF-Voice/piper1-gpl)'s `es_ES` sharvard voice (medium, retrained upstream;
+[CC BY 4.0](https://creativecommons.org/licenses/by/4.0/), from the Sharvard corpus under
+[CC BY 3.0](https://creativecommons.org/licenses/by/3.0/)). It's a Spanish (Spain) voice: replies in other languages
+sound Spanish-accented, so it suits Language set to Español. It downloads once (about 77 MB) the first time it's picked.
+Fish Audio stays the default.</sub>
 
 ## Get started
 

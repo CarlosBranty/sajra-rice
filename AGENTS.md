@@ -33,6 +33,17 @@ starts playing (`voice-out.js`); `~/.gg/sidekick.log` gets one `[latency]` line 
 (`sidecar/latency.mjs`). Debug builds: `ROAMIES_FISH_MODEL=s2.1-pro` (or `drama-3`) voices that run without changing
 the saved setting (an account with no credit stays on the free tier either way).
 
+The local voice (Windows and Linux): `roamies-voice --speak <voice.onnx> [--speaker 1] [--threads 2]` speaks a Piper
+voice as upstream Piper 1.8 (`OHF-Voice/piper1-gpl`) does, in a process of its own that the sidecar starts when the
+voice is picked (`sidecar/localvoice.mjs`, JSON lines; see the top of `voice-win/src/speak.rs`). Text becomes phonemes
+with espeak-ng, built from source by `voice-win/build.rs` at the commit Piper pins (downloaded once and checked; set
+`ESPEAK_NG_SOURCE` to a checkout to build offline; needs CMake and a C compiler), whose Spanish data is compiled at build
+time and embedded in the helper. The VITS model runs on the `ort` Parakeet already links. The voice (`es_ES-sharvard-medium`
+at piper-voices commit cf910fb, speaker F) downloads on first use next to the speech model. `cargo test` there checks
+that text gives the same phoneme ids as Piper 1.8 for five Spanish lines (`voice-win/fixtures/piper18-ids.json`, made
+once with Piper's Python package). Debug builds: `ROAMIES_VOICE_ENGINE=local` (or `fish`) picks the voice for one run
+without changing the saved setting.
+
 ## Commands
 
 ```sh

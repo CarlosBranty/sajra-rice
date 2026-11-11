@@ -80,3 +80,18 @@ await assert.rejects(downloadModel(path.join(TMP, 'e'), { ...opts, model: { ...m
 
 server.close();
 console.log('voice model download tests: passed');
+
+{ // The local voice is pinned like the speech model: one upstream commit, each file's size and SHA-256 (as Hugging
+  // Face's LFS pointer states them for the model), stored next to the speech model.
+  const { LOCAL_VOICE, localModel } = await import('../localvoice.mjs');
+  const { MODEL, modelDir } = await import('../voicemodel.mjs');
+  assert.equal(LOCAL_VOICE.base, 'https://huggingface.co/rhasspy/piper-voices/resolve/cf910fb59f1d79ab3b625a63993a108751c6c25d/es/es_ES/sharvard/medium/');
+  assert.deepEqual(LOCAL_VOICE.files, [
+    { name: 'es_ES-sharvard-medium.onnx', size: 76753841, sha256: '234dc4cf0fdb53ccb76b9b2c4d7ef1330364762674c1b78c1b62d8608c528a54' },
+    { name: 'es_ES-sharvard-medium.onnx.json', size: 5486, sha256: '1910940c6b480e0f7cbce5e0da45c8cbe2557ccbfd86a5d22cda141a3b65f521' },
+  ]);
+  assert.equal(path.dirname(modelDir(LOCAL_VOICE)), path.dirname(modelDir(MODEL)), 'in the same models folder');
+  assert.equal(localModel(), path.join(modelDir(LOCAL_VOICE), 'es_ES-sharvard-medium.onnx'));
+  assert.equal(totalBytes(LOCAL_VOICE), 76759327);
+}
+console.log('local voice download: passed');

@@ -51,6 +51,23 @@ assert.match(voicePage, /state\.duck\.on \? \[[^\]]*picks\('Lower to', state\.du
 assert.match(voicePage, /v\.mac \? toggle\('Mute Mac while talking', 'Other sounds go quiet while you talk', v\.mute, \(\) => act\('mutetalk'\), 'mutetalk'\) : null/, 'the macOS switch is as it was');
 assert.match(voicePage, /picks\('Language', state\.languages, state\.language, \(x\) => act\(`language:\$\{x\}`\), 'language'\)/, 'and so is the Language picker');
 
+// The voice on the Replies tab: Fish Audio or the local voice, offered only where the voice helper is (the sidecar sends
+// engines then); Fish's model picker, key row and key form only for Fish, exactly as before; Fish stays the default.
+assert.match(voicePage, /state\.engines \? \[\n\s+el\('p', \{ className: 'sub', textContent: 'Voice' \}\),\n\s+picks\('Voice', state\.engines, state\.voiceEngine, \(x\) => act\(`voiceengine:\$\{x\}`\), 'voiceengine',/, 'the choice');
+assert.match(voicePage, /!local && state\.replies === 'voice' && state\.fishModels\?\.length \? \[\n\s+el\('p', \{ className: 'sub', textContent: 'Voice model' \}\),\n\s+picks\('Voice model', state\.fishModels\.map\(\(c\) => \[c\.id, c\.name\]\), state\.fishModel, \(x\) => act\(`fishmodel:\$\{x\}`\), 'fishmodel',/, 'the Fish model picker, for Fish only');
+assert.match(voicePage, /local \? null : el\('div', \{ className: 'setting' \},\n\s+el\('span', \{\}, 'Fish Audio key',/, 'the key row, for Fish only');
+assert.match(voicePage, /local \? null : keyForm\('fish', 'Fish Audio', \(key\) => send\(\{ type: 'panel_fishkey', key \}\)\)\)/, 'the key form, for Fish only');
+assert.match(voicePage, /if \(x === 'voice' && !local && !state\.fishKey\) \{ ui\.key = 'fish'; render\('key-fish'\); note\('Add a Fish Audio key to hear me talk\.'\); return; \}/, 'Fish still asks for its key first; the local voice needs none');
+assert.match(voicePage, /'A Spanish voice: replies in other languages sound Spanish-accented\. Pick Español below for the best result\.'/, 'the language rule, said where it applies');
+assert.match(voicePage, /act\('localdl'\)/, 'a download that failed can be retried');
+assert.match(side, /voiceEngine: 'fish', \/\/ 'local'/, 'Fish is the default for everyone');
+assert.match(side, /const VOICE_HELPER = process\.platform === 'darwin' \? '' : process\.env\.ROAMIES_VOICE \|\| '';/, 'never on macOS');
+assert.match(side, /voiceEngine: engineNow\(\), engines: LOCAL_OK \? ENGINES : null,/, 'the panel is told');
+assert.match(side, /else if \(id\.startsWith\('voiceengine:'\) && ENGINES\.some\(\(\[e\]\) => e === id\.slice\(12\)\)\) setEngine\(id\.slice\(12\)\);/, 'and the pick is handled');
+assert.match(side, /const ENGINES = \[\['fish', 'Fish Audio'\], \['local', 'Local voice \(Spanish\)'\]\];/);
+assert.match(shell, /std::env::remove_var\("ROAMIES_VOICE_ENGINE"\);/, 'the debug override is cleared in release builds');
+assert.match(read('../../src-tauri/src/sidecar.rs'), /\.env\("ROAMIES_VOICE", helper_binary\("roamies-voice"\)/, 'the sidecar is told where the voice helper is');
+
 // The overlay says when a take is open and when a reply is playing: on Linux only, when either changes.
 const host = read('../../../roamies/host.js');
 const talk = host.slice(host.indexOf('const talkSync = '), host.indexOf('// Start hidden in auto mode'));

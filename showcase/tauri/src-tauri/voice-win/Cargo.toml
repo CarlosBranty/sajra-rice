@@ -12,6 +12,8 @@ publish = false
 parakeet-rs = "=0.4.3"
 serde_json = "=1.0.154"
 hound = "=3.5.1"
+# The local voice (speak.rs): Unicode NFD of espeak-ng's phonemes, as upstream Piper splits them.
+unicode-normalization = "=0.1.26"
 
 [target.'cfg(any(windows, target_os = "linux"))'.dependencies]
 cpal = "=0.18.2"
@@ -23,6 +25,12 @@ windows-sys = { version = "=0.61.2", features = ["Win32_Foundation", "Win32_Grap
 # The talk chord on X11 sessions (pure Rust, no system library).
 [target.'cfg(target_os = "linux")'.dependencies]
 x11rb = "=0.13.2"
+
+# espeak-ng for the local voice, built from source (build.rs). flate2 and hmac-sha256 are already in the tree (ort-sys).
+[build-dependencies]
+cmake = "=0.1.58"
+flate2 = "=1.1.11"
+hmac-sha256 = "=1.1.15"
 
 [profile.release]
 lto = true

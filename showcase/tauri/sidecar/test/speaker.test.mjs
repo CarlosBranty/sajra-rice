@@ -278,3 +278,164 @@ for (const lang of [undefined, 'auto', 'en', 'fr', null]) {
   assert.deepEqual(out.at(-1), { kind: 'speech', id: r.id, rate: 24000, pcm: clip.pcm });
 }
 console.log('speaker language: passed');
+
+// ---------- the local voice (localvoice.mjs, the helper's --speak mode) ----------
+const { LocalVoice, createLocalEngine, spokenText, LOCAL_RATE } = await import('../localvoice.mjs');
+const { createLatency } = await import('../latency.mjs');
+const { EventEmitter } = await import('node:events');
+// A stand-in for the helper process: records what's written to it; the test answers as the helper would.
+const fakeSpawn = () => {
+  const procs = [];
+  const spawnImpl = (bin, args) => {
+    const p = new EventEmitter();
+    p.bin = bin; p.args = args; p.lines = []; p.killed = false;
+    p.stdout = new EventEmitter(); p.stderr = new EventEmitter();
+    p.stdin = { write: (s) => { p.lines.push(JSON.parse(s)); return true; }, on() {} };
+    p.kill = () => { p.killed = true; };
+    p.send = (m) => p.stdout.emit('data', `${JSON.stringify(m)}\n`);
+    procs.push(p);
+    return p;
+  };
+  return { procs, spawnImpl };
+};
+{ // The helper starts on first use with the voice, speaker F and two threads, and is kept for the next texts.
+  const { procs, spawnImpl } = fakeSpawn();
+  const e = createLocalEngine({ bin: '/x/roamies-voice', model: '/m/v.onnx', spawnImpl });
+  assert.equal(procs.length, 0, 'nothing runs until it is used');
+  const got = [];
+  e.listen('a', { onAudio: (pcm, rate) => got.push(['audio', pcm, rate]), onSaid: () => got.push(['said']), onError: (err) => got.push(['error', err.message]) });
+  e.say('a', 'Hola.'); e.say('a', 'Adiós.');
+  assert.equal(procs.length, 1);
+  assert.deepEqual([procs[0].bin, procs[0].args], ['/x/roamies-voice', ['--speak', '/m/v.onnx', '--speaker', '1', '--threads', '2']]);
+  assert.deepEqual(procs[0].lines, [{ id: 'a', text: 'Hola.' }, { id: 'a', text: 'Adiós.' }]);
+  // Lines can arrive split or together; other ids' audio isn't this one's.
+  procs[0].stdout.emit('data', '{"type":"ready","ms":1900}\n{"type":"audio","id":"a","rate":22050,"pc');
+  procs[0].stdout.emit('data', 'm":"AAA="}\n{"type":"audio","id":"b","rate":22050,"pcm":"BBB="}\n');
+  procs[0].send({ type: 'said', id: 'a' });
+  assert.deepEqual(got, [['audio', 'AAA=', 22050], ['said']]);
+  // Cancelling tells the helper to drop what's queued, and nothing more comes for that id.
+  e.cancel('a');
+  assert.deepEqual(procs[0].lines.at(-1), { cmd: 'cancel', id: 'a' });
+  procs[0].send({ type: 'audio', id: 'a', rate: 22050, pcm: 'CCC=' });
+  assert.equal(got.length, 2);
+  // The process exits: open ids get an error, and the next text starts it again.
+  e.listen('c', { onError: (err) => got.push(['error', err.message]) });
+  procs[0].emit('exit', 1);
+  assert.deepEqual(got.at(-1), ['error', 'The local voice stopped']);
+  e.say('d', 'Otra vez.');
+  assert.equal(procs.length, 2);
+  assert.deepEqual(procs[1].lines, [{ id: 'd', text: 'Otra vez.' }]);
+}
+{ // One reply: voice cues are dropped (never read out), it ends once every text has been said, abort cancels.
+  assert.equal(spokenText('[warm] Hola, [chuckling] ¿qué tal?'), 'Hola, ¿qué tal?');
+  assert.equal(spokenText('[sighing]'), '');
+  const { procs, spawnImpl } = fakeSpawn();
+  const e = createLocalEngine({ bin: 'b', model: 'm', spawnImpl });
+  const ev = [];
+  const v = new LocalVoice({ engine: e, onAudio: (p) => ev.push(p), onEnd: () => ev.push('end'), onError: (err) => ev.push(`error ${err.heard}`) }).open();
+  v.say('[warm] Uno.'); v.say('[pause]'); v.say('Dos.'); v.end();
+  assert.deepEqual(procs[0].lines.map((l) => l.text), ['Uno.', 'Dos.'], 'cue-only text sends nothing');
+  procs[0].send({ type: 'audio', id: v.id, pcm: 'AA==' }); procs[0].send({ type: 'said', id: v.id });
+  assert.deepEqual(ev, ['AA=='], 'not over while a text is still being said');
+  procs[0].send({ type: 'said', id: v.id });
+  assert.deepEqual(ev, ['AA==', 'end']);
+  const w = new LocalVoice({ engine: e, onError: (err) => ev.push(`error ${err.heard}`) }).open();
+  w.say('Tres.'); w.abort();
+  assert.deepEqual(procs[0].lines.at(-1), { cmd: 'cancel', id: w.id });
+  const x = new LocalVoice({ engine: e, onError: (err) => ev.push(`error ${err.heard}`) }).open();
+  x.say('Cuatro.');
+  procs[0].send({ type: 'error', id: x.id, message: 'boom' });
+  assert.equal(ev.at(-1), 'error false', 'failed before any audio');
+}
+// The speaker with the local voice: a fake LocalVoice the test drives, like FakeVoice for Fish.
+const localMade = [];
+class FakeLocal {
+  constructor(o) { Object.assign(this, o); this.said = []; this.ended = false; this.aborted = false; localMade.push(this); }
+  open() { return this; }
+  say(s) { this.said.push(s); }
+  end() { this.ended = true; }
+  abort() { this.aborted = true; }
+}
+const setupLocal = (beatPhrases = [], spanish = []) => {
+  made.length = 0; localMade.length = 0;
+  const out = [], problems = [], logs = [];
+  const sp = createSpeaker({ emit: (m) => out.push(m), onProblem: (p) => problems.push(p), log: (k, d) => logs.push([k, d]), FishVoiceImpl: FakeVoice, LocalVoiceImpl: FakeLocal, account: async () => ({ ok: true, credit: 4.5 }), beatPhrases, spanishBeats: spanish, bundled: () => new Map(BEATS.map((b) => [b, { rate: 24000, pcm: 'Zg==' }])) });
+  return { sp, out, problems, logs };
+};
+{ // Picked but not downloaded yet: no voice. Ready: replies are spoken on this computer, no Fish key needed.
+  const { sp, out, logs } = setupLocal();
+  assert.equal(sp.engine, 'fish', 'Fish Audio stays the default');
+  sp.setEngine('local');
+  assert.equal(sp.on, false); assert.equal(sp.start(), null);
+  sp.setLocal({ fake: true });
+  assert.equal(sp.on, true); assert.equal(sp.hasKey, false);
+  const r = sp.start();
+  assert.deepEqual(out.at(-1), { kind: 'speech', stop: true });
+  r.say('[warm] Hola.'); r.end();
+  const v = localMade.at(-1);
+  assert.deepEqual(v.engine, { fake: true }); assert.deepEqual(v.said, ['[warm] Hola.']); assert.ok(v.ended);
+  assert.equal(made.length, 0, 'no Fish socket');
+  // The helper's base64 PCM goes out as it came, at the voice's rate; the first one is logged for the latency trace.
+  v.onAudio('AQACAA==');
+  assert.deepEqual(out.at(-1), { kind: 'speech', id: r.id, rate: LOCAL_RATE, pcm: 'AQACAA==' });
+  assert.deepEqual(logs.find(([k]) => k === 'speech_first_audio')?.[1]?.model, 'local');
+  v.onEnd();
+  assert.deepEqual(out.at(-1), { kind: 'speech', id: r.id, end: true, chars: 5 });
+}
+{ // The trace's "audio" stage is marked for the local voice, as sidekick.mjs wires the speaker's log to it.
+  const lines = [];
+  const lat = createLatency({ on: true, print: (s) => lines.push(s), now: () => 5000 });
+  let tracing = null;
+  const side = readFileSync(new URL('../sidekick.mjs', import.meta.url), 'utf8');
+  assert.match(side, /if \(tracing && data\?\.id === tracing\.speech && kind === 'speech_first_audio'\) \{ tracing\.about\.model = data\.model; tracing\.mark\('audio'\); \}/, 'the hook in sidekick.mjs');
+  localMade.length = 0;
+  const sp = createSpeaker({ emit: () => {}, LocalVoiceImpl: FakeLocal, FishVoiceImpl: FakeVoice, bundled: () => null, beatPhrases: [],
+    log: (kind, data) => { if (tracing && data?.id === tracing.speech && kind === 'speech_first_audio') { tracing.about.model = data.model; tracing.mark('audio'); } } });
+  sp.setEngine('local'); sp.setLocal({});
+  tracing = lat.start({ take: 1, voiced: 1000, closed: 2000, final: 3000 });
+  const r = sp.start(); tracing.speech = r.id;
+  r.say('Hola.');
+  localMade.at(-1).onAudio('AAA=');
+  assert.ok(lines.some((l) => / audio 1970/.test(l)), 'first audio marked');
+  tracing.done();
+  assert.match(lines.at(-1), /model=local$/);
+}
+{ // A failure before any audio: one problem, the reply ends (the text stays); no Fish retry chain.
+  const { sp, out, problems } = setupLocal();
+  sp.setEngine('local'); sp.setLocal({});
+  const r = sp.start(); r.say('Hola.');
+  localMade.at(-1).onError(Object.assign(new Error('The local voice stopped'), { heard: false }));
+  assert.deepEqual(problems, ['The local voice stopped']);
+  assert.deepEqual(out.at(-1), { kind: 'speech', id: r.id, end: true });
+  assert.equal(localMade.length, 1); assert.equal(made.length, 0);
+}
+{ // Beats are made with the local voice (Spanish lines in Spanish), never Fish's shipped ones, and play at its rate;
+  // a new look doesn't remake them: every look speaks with this one voice.
+  const { sp, out } = setupLocal(BEATS, BEATS_ES);
+  sp.setLanguage('es'); sp.setEngine('local'); sp.setLocal({}); await tick();
+  for (const phrase of BEATS_ES) {
+    const v = localMade.at(-1);
+    assert.deepEqual(v.said, [phrase]); v.onAudio('BwA='); v.onEnd(); await tick(); await tick();
+  }
+  assert.equal(made.length, 0, 'nothing over Fish');
+  const n = localMade.length;
+  sp.setVoice('e13fa398a7f445a685316a3de6089ce7'); await tick();
+  assert.equal(localMade.length, n, 'not remade for another look');
+  const r = sp.start();
+  assert.equal(r.beat(), true);
+  assert.deepEqual(out.at(-1), { kind: 'speech', id: r.id, rate: LOCAL_RATE, pcm: 'BwA=' });
+}
+{ // Back to Fish: exactly the Fish path again (its socket, its rate, its shipped beats), with the key it had.
+  const { sp, out } = setupLocal(BEATS);
+  sp.setKey('k'); sp.setEngine('local'); sp.setLocal({}); sp.setEngine('fish'); await tick();
+  assert.equal(sp.on, true); assert.equal(sp.engine, 'fish');
+  const r = sp.start(); r.say('Hi.');
+  assert.deepEqual(made.at(-1).said, ['Hi.']); assert.equal(made.at(-1).model, 'drama-3');
+  made.at(-1).onAudio(new Uint8Array([1, 0]));
+  assert.deepEqual(out.at(-1), { kind: 'speech', id: r.id, rate: 44100, pcm: Buffer.from([1, 0]).toString('base64') });
+  const r2 = sp.start();
+  assert.equal(r2.beat(), true);
+  assert.deepEqual(out.at(-1), { kind: 'speech', id: r2.id, rate: 24000, pcm: 'Zg==' }, 'the shipped Fish beat');
+  sp.setEngine('nope'); assert.equal(sp.engine, 'fish');
+}
+console.log('speaker local voice: passed');

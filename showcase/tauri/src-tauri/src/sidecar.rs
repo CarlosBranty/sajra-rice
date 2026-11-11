@@ -63,6 +63,10 @@ pub(crate) fn spawn_sidecar(app: &AppHandle) {
     #[cfg(target_os = "linux")]
     cmd.env("ROAMIES_SESSION", crate::linux::session().name()).env("ROAMIES_LAYER", if crate::linux::layer() { "1" } else { "" }).env("ROAMIES_LAUNCH", crate::linux::launch_command())
         .env("ROAMIES_SLURP", crate::linux::slurp().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default());
+    // Windows and Linux: the voice helper also speaks replies with the local voice (its --speak mode), started by the
+    // sidecar when that voice is picked. macOS's helper is the Swift one, without it.
+    #[cfg(not(target_os = "macos"))]
+    cmd.env("ROAMIES_VOICE", helper_binary("roamies-voice").map(|p| p.to_string_lossy().into_owned()).unwrap_or_default());
     if let Some(dir) = script.parent() {
         cmd.current_dir(dir);
     }

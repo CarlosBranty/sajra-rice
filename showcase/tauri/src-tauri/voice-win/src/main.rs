@@ -19,10 +19,12 @@
 // roamies-voice --model <dir> --transcribe <wav>          dev: transcribe a file and exit
 // roamies-voice --model <dir> --test-audio <wav>          dev: a file stands in for the mic ({"cmd":"listen"} starts;
 //                                                         after {"cmd":"wake",…} it plays once, to say the phrase)
+// roamies-voice --speak <voice.onnx> [--speaker 1] [--threads 2]   the local voice: text in, speech out (speak.rs)
 
 mod audio;
 mod ink;
 mod keys;
+mod speak;
 
 use audio::{MicError, Sink, Source};
 use parakeet_rs::{ExecutionConfig, ParakeetTDT, TimestampMode, Transcriber};
@@ -1057,6 +1059,13 @@ fn main() {
         v["mic_allowed"] = json!(keys::mic_allowed());
         emit(v);
         return;
+    }
+    // The local voice runs as a process of its own (the sidecar starts it only when it's picked), so it never slows
+    // down this one's start or its speech-to-text. Two threads by default, to leave Parakeet room.
+    if let Some(voice) = arg(&args, "--speak") {
+        let speaker = arg(&args, "--speaker").and_then(|s| s.parse().ok());
+        let threads = arg(&args, "--threads").and_then(|s| s.parse().ok()).unwrap_or(2);
+        std::process::exit(speak::run(Path::new(&voice), speaker, threads));
     }
     let model = arg(&args, "--model").map(PathBuf::from);
     // Cursor positions and captures in real pixels on every monitor (ink.rs turns them into screen points).

@@ -33,6 +33,7 @@ import { QUESTIONS, openNote, answerTurn, wantsSkip, endsChat, splitTurn, plain,
 import { SpeechText, CueFilter, VOICE_CUES, endsWithQuestion, LANGUAGES, languageOf, languageLine, DUCK_LEVELS, duckOf, duckLevel, WAKE_MIN, WAKE_MAX, wakePhrase, wakeOf, wakeFor, THEMES, themeOf } from './speech.mjs';
 import { createSpeaker } from './speaker.mjs';
 import { createLatency } from './latency.mjs';
+import { LOCAL_VOICE, createLocalEngine, localModel } from './localvoice.mjs';
 import { DEFAULT_VOICE, FISH_CHOICES } from './fish.mjs';
 import { createSecrets, retryLoad } from './secrets.mjs';
 import { createActivity } from './activity.mjs';
@@ -84,7 +85,8 @@ const DEFAULT_KEYS = process.platform === 'win32'
 const DEFAULTS = {
   provider: null, model: null, sound: true, allowActions: false, voice: true,
   onboarded: false, onboardStep: 0, filesAsked: false, keys: DEFAULT_KEYS, muteWhileTalking: true, autoListen: false, setupVersion: 0, size: 'default', look: 'classic', introDone: false,
-  replies: 'text', // 'voice': spoken with Fish Audio as well as shown
+  replies: 'text', // 'voice': spoken with Fish Audio (or the local voice) as well as shown
+  voiceEngine: 'fish', // 'local': spoken on this computer (localvoice.mjs; Linux and Windows)
   fishModel: FISH_CHOICES[0].id, // Drama 3 (most expressive) or S2.1 Pro (natural pace, cheaper)
   language: 'auto', // the reply language: 'auto' (nothing is asked of the model), 'en' or 'es' (speech.mjs LANGUAGES)
   duckOthers: false, duckLevel: 30, // Linux: other apps' sound goes down to this percentage while it listens and speaks (speech.mjs duckOf)
@@ -169,7 +171,64 @@ if (process.env.ROAMIES_FISH_MODEL) speech.setModel(process.env.ROAMIES_FISH_MOD
 // Linux: reading the keyring can pop up an "unlock your keyring" dialog (an auto-login desktop leaves it locked), so it's
 // only read once a key has been saved there (fishKeySaved).
 const fishKeyLoaded = LINUX && !config.fishKeySaved ? Promise.resolve()
-  : retryLoad(() => secrets.get('fish-audio').then((k) => { if (k && !speech.on) { speech.setKey(k); menu(); } }), { onError: (e) => console.error('fish key', e.message) });
+  : retryLoad(() => secrets.get('fish-audio').then((k) => { if (k && !speech.hasKey) { speech.setKey(k); menu(); } }), { onError: (e) => console.error('fish key', e.message) });
+
+// ---------- the local voice (Linux and Windows) ----------
+// The voice helper (its path from the shell, ROAMIES_VOICE) speaks replies on this computer with a Spanish Piper voice,
+// downloaded on first use next to the speech model. Not on macOS, whose voice helper is the Swift one. It speaks every
+// reply whatever the reply language; the panel says other languages sound Spanish-accented.
+const VOICE_HELPER = process.platform === 'darwin' ? '' : process.env.ROAMIES_VOICE || '';
+const LOCAL_OK = !!VOICE_HELPER;
+const ENGINES = [['fish', 'Fish Audio'], ['local', 'Local voice (Spanish)']];
+const LOCAL_DIR = modelDir(LOCAL_VOICE);
+const localVoice = { status: isReady(LOCAL_DIR, LOCAL_VOICE) ? 'ready' : 'missing', done: 0, total: totalBytes(LOCAL_VOICE), error: null };
+// Debug builds (the shell clears it in release ones): ROAMIES_VOICE_ENGINE=local (or fish) picks the voice for this
+// run only, without touching the saved setting.
+const ENGINE_OVERRIDE = ['fish', 'local'].includes(process.env.ROAMIES_VOICE_ENGINE) ? process.env.ROAMIES_VOICE_ENGINE : null;
+const engineNow = () => (LOCAL_OK && (ENGINE_OVERRIDE ?? config.voiceEngine) === 'local' ? 'local' : 'fish');
+let localEngine = null;
+// The speaker follows the pick: the local voice once its files are there (downloading them if not), else Fish.
+function useEngine() {
+  const e = engineNow();
+  if (e === 'local' && localVoice.status === 'ready') {
+    localEngine ??= createLocalEngine({ bin: VOICE_HELPER, model: localModel(LOCAL_DIR), log: logLine });
+    speech.setLocal(localEngine);
+  }
+  speech.setEngine(e);
+  if (e === 'local' && localVoice.status !== 'ready') getLocalVoice();
+  if (e === 'fish') localEngine?.stop(); // its memory back; it starts again if it's picked again
+}
+let localShownAt = 0;
+async function getLocalVoice() {
+  if (!LOCAL_OK || localVoice.status === 'ready' || localVoice.status === 'downloading') return;
+  Object.assign(localVoice, { status: 'downloading', error: null });
+  logLine('local_voice', { phase: 'start', dir: LOCAL_DIR });
+  panel();
+  try {
+    await downloadModel(LOCAL_DIR, { model: LOCAL_VOICE, onProgress: ({ done, total }) => {
+      localVoice.done = done; localVoice.total = total;
+      if (Date.now() - localShownAt > 300) { localShownAt = Date.now(); panel(); }
+    } });
+    localVoice.status = 'ready';
+    logLine('local_voice', { phase: 'ready' });
+    useEngine();
+    if (engineNow() === 'local') speakLine('My local voice is ready.');
+  } catch (e) {
+    localVoice.status = 'error';
+    localVoice.error = e.code === 'disk' ? `Not enough disk space (needs ${sizeLabel(LOCAL_VOICE)}).` : e.code === 'checksum' ? 'Download was damaged. Try again.' : 'Download failed. Check your internet.';
+    logLine('local_voice', { phase: 'error', code: e.code, message: String(e.message ?? e).slice(0, 200) });
+    say(`I couldn't download my local voice. ${localVoice.error}`, 'concerned');
+  }
+  panel();
+}
+function setEngine(e) {
+  if (!LOCAL_OK || (config.voiceEngine ?? 'fish') === e) return;
+  config.voiceEngine = e; saveConfig();
+  agentStale = true; // whether replies are spoken changes the prompt
+  useEngine(); menu();
+  if (e === 'local' && localVoice.status !== 'ready') say(`Downloading my local voice (${sizeLabel(LOCAL_VOICE)}, just this once). I'll tell you when it's ready.`, 'happy');
+}
+setImmediate(useEngine); // once the rest of this file has run (the panel, the overlay)
 
 // ---------- shortcuts ----------
 const MOD_ORDER = ['control', 'option', 'shift', 'command'];
@@ -1042,13 +1101,15 @@ function setLanguage(l) {
 
 async function setReplies(mode) {
   await fishKeyLoaded;
-  if (mode === 'voice' && !speech.on) return fishKeyLogin({ thenVoice: true });
+  // The local voice needs no key: replies are spoken once it's downloaded.
+  if (mode === 'voice' && !speech.on) { if (engineNow() !== 'local') return fishKeyLogin({ thenVoice: true }); getLocalVoice(); }
   if (config.replies === mode) return;
   config.replies = mode; saveConfig();
   agentStale = true; // the spoken and written styles are different prompts
   if (mode === 'text') speech.stop();
   menu(); if (onboarding) obState();
-  if (mode === 'voice') speakLine('Voice is on. This is how I sound.');
+  if (mode === 'voice' && !speech.on) say("Voice is on as soon as my local voice is downloaded.", 'happy');
+  else if (mode === 'voice') speakLine('Voice is on. This is how I sound.');
   else say('Text only from now on.', 'happy');
 }
 
@@ -1064,6 +1125,8 @@ async function removeFishKey() {
   try { await secrets.delete('fish-audio'); } catch { return say(`I couldn't remove the key${MAC ? ' from your Keychain' : LINUX ? ' from your keyring' : ''}. Try again in a moment.`, 'concerned'); }
   speech.setKey(null); speech.stop();
   if (config.fishKeySaved) { config.fishKeySaved = false; saveConfig(); }
+  // With the local voice picked, replies keep being spoken (by it).
+  if (engineNow() === 'local') { menu(); return say('Fish Audio key removed.', 'happy'); }
   if (config.replies === 'voice') { config.replies = 'text'; saveConfig(); agentStale = true; }
   menu();
   say('Fish Audio key removed. Replies are text only.', 'happy');
@@ -1216,7 +1279,7 @@ async function saveDiagnostics() {
       version: VERSION, provider: config.provider, model: config.model, signedIn: [...signedIn].filter(([, on]) => on).map(([p]) => p),
       busy, sidecarUpMinutes: Math.round(process.uptime() / 6) / 10,
       voice: { on: VOICE_OK && config.voice !== false, needsModel: NEEDS_MODEL, model: { status: voiceModel.status, error: voiceModel.error ?? undefined }, hotkeys: HOTKEYS_OK, keys: keys() },
-      replies: config.replies, fishKey: speech.on, hands: hasHands(process.platform, process.env.ROAMIES_HANDS), handsPath: process.env.ROAMIES_HANDS ? 'set' : 'none',
+      replies: config.replies, voiceEngine: engineNow(), fishKey: speech.hasKey, hands: hasHands(process.platform, process.env.ROAMIES_HANDS), handsPath: process.env.ROAMIES_HANDS ? 'set' : 'none',
       update: { available: update.available, result: update.result }, onboarded: config.onboarded, look: config.look, size: config.size,
     };
     const sections = [
@@ -1304,8 +1367,11 @@ function panelState() {
     look: config.look ?? 'classic', looks: LOOKS.map(([id, label]) => [id, label]), name: lookName(),
     size: sizeNow(), sizes: SIZES,
     theme: themeOf(config.theme), themes: THEMES,
-    replies: config.replies === 'voice' ? 'voice' : 'text', fishKey: speech.on,
-    fishModel: speech.pick, fishModels: FISH_CHOICES, fishFree: speech.on && speech.model.endsWith('-free'),
+    replies: config.replies === 'voice' ? 'voice' : 'text', fishKey: speech.hasKey,
+    fishModel: speech.pick, fishModels: FISH_CHOICES, fishFree: speech.engine === 'fish' && speech.on && speech.model.endsWith('-free'),
+    // The voice: Fish Audio or, where the voice helper is, the local one, with its download while it isn't there.
+    voiceEngine: engineNow(), engines: LOCAL_OK ? ENGINES : null,
+    localVoice: LOCAL_OK && engineNow() === 'local' ? { status: localVoice.status, pct: localVoice.total ? Math.floor((localVoice.done / localVoice.total) * 100) : 0, size: sizeLabel(LOCAL_VOICE), error: localVoice.error } : null,
     language: languageOf(config.language), languages: LANGUAGES,
     duck: LINUX ? { ...duckOf(config), levels: DUCK_LEVELS } : null,
     wake: LINUX && VOICE_OK ? wakeOf(config) : null,
@@ -1473,6 +1539,8 @@ async function onMenu(id) {
     config.fishModel = id.slice(10); saveConfig(); speech.setModel(config.fishModel); menu();
   }
   else if (id.startsWith('language:') && LANGUAGES.some(([l]) => l === id.slice(9))) setLanguage(id.slice(9));
+  else if (id.startsWith('voiceengine:') && ENGINES.some(([e]) => e === id.slice(12))) setEngine(id.slice(12));
+  else if (id === 'localdl') getLocalVoice();
   else if (id === 'fishkey') fishKeyLogin();
   else if (id === 'fishkey_remove') removeFishKey();
   else if (id === 'sound') { config.sound = !config.sound; saveConfig(); ui({ kind: 'sound', on: config.sound }); voiceConfig(); menu(); }

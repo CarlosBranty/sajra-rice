@@ -9,11 +9,15 @@
 //   a short line ("One sec.", "On it." and 32 more, picked at random) plays so it's never silent. They're made once
 //   in the voice and kept, so they play instantly. They're English: with Spanish picked as the reply language a short
 //   Spanish line ("Vale, déjame ver.") plays instead, made over Fish in the voice in use when it's picked.
+// - The local voice (localvoice.mjs, Linux and Windows), when it's picked and downloaded: replies are spoken on this
+//   computer instead, with no Fish key. It's one Spanish voice for every look; its beats are made with it, never Fish's
+//   shipped ones. If it fails before any audio the reply stays text, as with Fish.
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { DEFAULT_VOICE, FISH_MODELS, FREE_MODEL, FishVoice, RATE, fishAccount } from './fish.mjs';
 import { languageOf } from './speech.mjs';
+import { LOCAL_RATE, LocalVoice } from './localvoice.mjs';
 
 // One or two words each, so a beat never sounds canned; any of them must fit before a search, a page, the screen or a drawing.
 export const BEATS = [
@@ -45,8 +49,13 @@ export function bundledBeats(dir = path.join(path.dirname(fileURLToPath(import.m
   };
 }
 
-export function createSpeaker({ emit, onProblem = () => {}, log = () => {}, FishVoiceImpl = FishVoice, account = fishAccount, beatPhrases = BEATS, spanishBeats = BEATS_ES, bundled = bundledBeats() }) {
+export function createSpeaker({ emit, onProblem = () => {}, log = () => {}, FishVoiceImpl = FishVoice, LocalVoiceImpl = LocalVoice, account = fishAccount, beatPhrases = BEATS, spanishBeats = BEATS_ES, bundled = bundledBeats() }) {
   let key = null, voice = DEFAULT_VOICE, pref = FISH_MODELS[0], model = pref, seq = 0, current = null, checking = null, lang = 'auto';
+  // engine: 'fish' or 'local'; local: the local voice's engine (localvoice.mjs createLocalEngine) once it's downloaded.
+  let engine = 'fish', local = null;
+  const isLocal = () => engine === 'local';
+  const canWarm = () => (isLocal() ? !!local : !!key);
+  const audio64 = (pcm) => (typeof pcm === 'string' ? pcm : Buffer.from(pcm.buffer, pcm.byteOffset, pcm.byteLength).toString('base64'));
   // The pick and the cheaper ones after it (FISH_MODELS runs from priciest to free).
   const chain = () => FISH_MODELS.slice(Math.max(0, FISH_MODELS.indexOf(pref)));
   let beats = new Map(), recent = [], warming = null; // phrase → [base64 PCM chunks], for the current key and voice
@@ -54,7 +63,7 @@ export function createSpeaker({ emit, onProblem = () => {}, log = () => {}, Fish
   // (languageOf makes anything else Auto), so no beat is ever the only line in another language.
   const phrases = () => (lang === 'es' ? spanishBeats : beatPhrases);
   // A random beat, not one of the last few: one that's already made if there is one, so it plays instantly.
-  const shipped = () => bundled(voice, model);
+  const shipped = () => (isLocal() ? null : bundled(voice, model));
   const ready = (p) => beats.has(p) || !!shipped()?.has(p);
   const pickBeat = () => {
     const all = phrases(), fresh = all.filter((p) => !recent.includes(p));
@@ -67,19 +76,21 @@ export function createSpeaker({ emit, onProblem = () => {}, log = () => {}, Fish
   // Make the beats once, one at a time (well under Fish's concurrency limit). Failures just leave a gap:
   // that beat is then spoken live instead.
   function warm() {
-    const k = key, vo = voice, list = phrases();
+    const k = key, vo = voice, list = phrases(), e = engine, lo = local;
+    const same = () => key === k && voice === vo && engine === e && local === lo;
     warming ??= (async () => {
       for (const phrase of list) {
-        if (key !== k || voice !== vo || phrases() !== list) break;
-        if (beats.has(phrase) || bundled(vo, model)?.has(phrase)) continue; // shipped with the app
+        if (!same() || phrases() !== list) break;
+        if (beats.has(phrase) || shipped()?.has(phrase)) continue; // shipped with the app
         const chunks = await new Promise((done) => {
-          const got = [];
-          const v = new FishVoiceImpl({ key: k, voice: vo, model, onAudio: (pcm) => got.push(Buffer.from(pcm.buffer, pcm.byteOffset, pcm.byteLength).toString('base64')), onEnd: () => done(got), onError: () => done(null) }).open();
+          const got = [], on = { onAudio: (pcm) => got.push(audio64(pcm)), onEnd: () => done(got), onError: () => done(null) };
+          const v = (e === 'local' ? new LocalVoiceImpl({ engine: lo, ...on }) : new FishVoiceImpl({ key: k, voice: vo, model, ...on })).open();
           v.say(phrase); v.end();
         });
-        if (chunks?.length && key === k && voice === vo) beats.set(phrase, chunks);
+        if (chunks?.length && same()) beats.set(phrase, chunks);
       }
-    })().finally(() => { warming = null; if (key === k && voice === vo && phrases() !== list) warm(); });
+    // A switch of voice engine while they were being made: make them in the new one (Fish's own changes call warm()).
+    })().finally(() => { warming = null; if (same() && phrases() !== list) warm(); else if ((engine !== e || local !== lo) && canWarm()) warm(); });
     return warming;
   }
 
@@ -90,7 +101,7 @@ export function createSpeaker({ emit, onProblem = () => {}, log = () => {}, Fish
       // No credit: the free tier. Credit again: back to the best model, else keep the paid one that worked.
       if (a.ok) model = a.credit != null && a.credit <= 0.01 ? FREE_MODEL : model === FREE_MODEL ? pref : model;
       log('fish_account', { ok: a.ok, reason: a.reason, model });
-      if (a.ok) warm();
+      if (a.ok && !isLocal()) warm();
       return a;
     }).finally(() => { checking = null; });
     return checking;
@@ -103,7 +114,7 @@ export function createSpeaker({ emit, onProblem = () => {}, log = () => {}, Fish
 
   /** A new reply's voice, its socket opening now. say(sentence) as they come, then end(). */
   function start() {
-    if (!key) return null;
+    if (isLocal() ? !local : !key) return null;
     stopAll();
     const id = `s${++seq}`, said = [];
     let ended = false, tries = 0, v = null, heard = false, done = false, beat = false, t0 = Date.now();
@@ -120,7 +131,7 @@ export function createSpeaker({ emit, onProblem = () => {}, log = () => {}, Fish
         if (!shippedBeat && !chunks) { me.say(phrase); return true; }
         log('speech_beat', { id, ms: Date.now() - t0 });
         if (shippedBeat) emit({ kind: 'speech', id, rate: shippedBeat.rate, pcm: shippedBeat.pcm });
-        else for (const pcm of chunks) emit({ kind: 'speech', id, rate: RATE, pcm });
+        else for (const pcm of chunks) emit({ kind: 'speech', id, rate: isLocal() ? LOCAL_RATE : RATE, pcm });
         return true;
       },
       end() { if (done || ended) return; ended = true; v.end(); },
@@ -165,6 +176,27 @@ export function createSpeaker({ emit, onProblem = () => {}, log = () => {}, Fish
         },
       }).open();
     };
+    if (isLocal()) {
+      // One voice on this computer: nothing to fall back to, so a failure before any audio leaves the reply as text.
+      v = new LocalVoiceImpl({
+        engine: local,
+        onAudio: (pcm) => {
+          if (done) return;
+          if (!heard) { heard = true; log('speech_first_audio', { id, model: 'local', ms: Date.now() - t0 }); }
+          emit({ kind: 'speech', id, rate: LOCAL_RATE, pcm: audio64(pcm) });
+        },
+        onEnd: () => finish(true),
+        onError: (err) => {
+          if (done) return;
+          log('speech_error', { id, model: 'local', heard: err.heard, message: err.message });
+          if (!heard) onProblem(err.message);
+          finish();
+        },
+      }).open();
+      log('speech_start', { id, model: 'local' });
+      current = me;
+      return me;
+    }
     log('speech_start', { id, model });
     connect(model);
     current = me;
@@ -172,21 +204,36 @@ export function createSpeaker({ emit, onProblem = () => {}, log = () => {}, Fish
   }
 
   return {
-    setKey(k) { if ((k || null) !== key) { beats = new Map(); if (!k) stopAll(); } key = k || null; if (key) check(); },
+    setKey(k) { if ((k || null) !== key && !isLocal()) { beats = new Map(); if (!k) stopAll(); } key = k || null; if (key) check(); },
     // The user's pick. Beats are remade in it; with no credit it stays on the free tier until there is some.
     setModel(m) {
       if (!FISH_MODELS.includes(m) || m === FREE_MODEL || m === pref) return;
-      pref = m; beats = new Map();
+      pref = m; if (!isLocal()) beats = new Map();
       if (model !== FREE_MODEL) model = m;
-      if (key) warm();
+      if (canWarm()) warm();
     },
     // The reply language ('auto', 'en', 'es'; anything else counts as 'auto'). Its beats still missing are made.
-    setLanguage(l) { lang = languageOf(l); if (key) warm(); },
+    setLanguage(l) { lang = languageOf(l); if (canWarm()) warm(); },
     get pick() { return pref; },
-    setVoice(v) { if ((v || DEFAULT_VOICE) !== voice) beats = new Map(); voice = v || DEFAULT_VOICE; if (key) warm(); },
+    // The look's Fish voice. The local voice is the same for every look, so its beats are kept.
+    setVoice(v) { if ((v || DEFAULT_VOICE) !== voice && !isLocal()) beats = new Map(); voice = v || DEFAULT_VOICE; if (canWarm()) warm(); },
+    // 'fish' (the default) or 'local'. Switching stops what's playing; the beats are made again in the new voice.
+    setEngine(e) {
+      if ((e !== 'fish' && e !== 'local') || e === engine) return;
+      engine = e; beats = new Map(); stopAll();
+      if (canWarm()) warm();
+    },
+    // The local voice's engine once its files are there (null: not downloaded). Used while 'local' is picked.
+    setLocal(l) {
+      if ((l || null) === local) return;
+      local = l || null;
+      if (isLocal()) { beats = new Map(); if (local) warm(); else stopAll(); }
+    },
+    get engine() { return engine; },
+    get hasKey() { return !!key; },
     get ready() { return phrases().filter((p) => beats.has(p) || shipped()?.has(p)).length; },
     get model() { return model; },
-    get on() { return !!key; },
+    get on() { return isLocal() ? !!local : !!key; },
     check,
     start,
     stop: stopAll,

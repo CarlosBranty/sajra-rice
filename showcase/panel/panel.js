@@ -497,24 +497,37 @@
       on: { click: () => { if (ui.vtab !== id) { ui.vtab = id; ui.key = null; disarm(); render(`vtab-${id}`); } } },
     }, label);
     const head = el('div', { className: 'mhead' }, el('div', { className: 'tabs', role: 'tablist', 'aria-label': 'Voice' }, tabBtn('replies', 'Replies'), tabBtn('talking', 'Talking'), state.duck ? tabBtn('sounds', 'Other sounds') : null));
+    // The voice (where the voice helper is): Fish Audio, or the local one, spoken on this computer. Only Fish's rows
+    // show for Fish; the local voice shows its download, then whether the reply language suits it.
+    const local = state.voiceEngine === 'local', lv = state.localVoice;
+    const localLine = !lv ? '' : lv.status === 'downloading' ? `Downloading the voice… ${lv.pct}%` : lv.status === 'error' ? `The download failed. ${lv.error ?? ''}`.trim()
+      : lv.status !== 'ready' ? `Needs a ${lv.size} download` : state.language === 'es' ? 'Spoken on this computer, offline and free.'
+      : 'A Spanish voice: replies in other languages sound Spanish-accented. Pick Español below for the best result.';
     const replies = [
       group('Spoken replies', 'Hear me as well as read me.', null,
         picks('Replies', [['text', 'Text only'], ['voice', 'Voice and text']], state.replies, (x) => {
-          if (x === 'voice' && !state.fishKey) { ui.key = 'fish'; render('key-fish'); note('Add a Fish Audio key to hear me talk.'); return; }
+          if (x === 'voice' && !local && !state.fishKey) { ui.key = 'fish'; render('key-fish'); note('Add a Fish Audio key to hear me talk.'); return; }
           act(`replies:${x}`);
         }, 'replies'),
-        state.replies === 'voice' && state.fishModels?.length ? [
+        state.engines ? [
+          el('p', { className: 'sub', textContent: 'Voice' }),
+          picks('Voice', state.engines, state.voiceEngine, (x) => act(`voiceengine:${x}`), 'voiceengine',
+            { fish: 'Fish Audio, online: the most expressive voices, one per look. Needs your own Fish Audio key; billed to your account.', local: 'Made on this computer: offline, free and quick. One Spanish (Spain) voice for every look, downloaded once.' }),
+          local ? el('p', { className: `why${lv?.status === 'error' || (lv?.status === 'ready' && state.language !== 'es') ? ' late' : ''}`, textContent: localLine }) : null,
+          local && lv && (lv.status === 'missing' || lv.status === 'error') ? el('div', { className: 'links' }, link(lv.status === 'error' ? 'Retry the download' : `Download (${lv.size})`, () => act('localdl'), { k: 'localdl' })) : null,
+        ] : null,
+        !local && state.replies === 'voice' && state.fishModels?.length ? [
           el('p', { className: 'sub', textContent: 'Voice model' }),
           picks('Voice model', state.fishModels.map((c) => [c.id, c.name]), state.fishModel, (x) => act(`fishmodel:${x}`), 'fishmodel',
             Object.fromEntries(state.fishModels.map((c) => [c.id, `${WHY_LONG[c.id] ?? ''} ${price(c)}`.trim()]))),
           el('p', { className: `why${state.fishFree ? ' late' : ''}`, textContent: state.fishFree ? "No credit left, so it's on Fish's free tier" : WHY[state.fishModel] ?? '' }),
         ] : null,
-        el('div', { className: 'setting' },
+        local ? null : el('div', { className: 'setting' },
           el('span', {}, 'Fish Audio key', el('small', { textContent: state.fishKey ? `Saved in ${where()}` : 'Needed for spoken replies' })),
           el('span', { className: 'row-btns' },
             link(ui.key === 'fish' ? 'Cancel' : state.fishKey ? 'Change' : 'Add', () => { ui.key = ui.key === 'fish' ? null : 'fish'; render(ui.key ? 'key-fish' : 'addkey:fish'); }, { k: 'addkey:fish', aria: state.fishKey ? 'Change the Fish Audio key' : 'Add a Fish Audio key' }),
             state.fishKey && ui.key !== 'fish' ? armed('Remove', 'Confirm', 'fishkey-remove', 'fishkey_remove', 'Remove the Fish Audio key') : null)),
-        keyForm('fish', 'Fish Audio', (key) => send({ type: 'panel_fishkey', key }))),
+        local ? null : keyForm('fish', 'Fish Audio', (key) => send({ type: 'panel_fishkey', key }))),
       // What I reply in, spoken and written: Auto leaves it to me, a picked one is kept whatever the screen is in.
       state.languages?.length ? group('Language', 'What I reply in, spoken and written.', null,
         picks('Language', state.languages, state.language, (x) => act(`language:${x}`), 'language')) : null,
