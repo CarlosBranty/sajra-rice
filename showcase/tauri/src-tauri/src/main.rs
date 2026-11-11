@@ -291,7 +291,27 @@ fn set_typing(app: AppHandle, window: WebviewWindow, on: bool) {
     linux::dock_keys(on);
     let _ = window.set_focusable(on);
     if on {
-        let _ = window.set_focus();
+        // A bar that hosts the Roamie gives the overlay the keyboard itself (it just read keys in state.json): asked for
+        // from here, a tiling compositor also throws the pointer to the middle of the screen. Should the bar not do it,
+        // it is asked for after all.
+        #[cfg(target_os = "linux")]
+        let hosted = linux::dock_hosted();
+        #[cfg(not(target_os = "linux"))]
+        let hosted = false;
+        if hosted {
+            let w = window.clone();
+            thread::spawn(move || {
+                thread::sleep(Duration::from_millis(600));
+                #[cfg(target_os = "linux")]
+                if linux::dock_wants_keys() && !w.is_focused().unwrap_or(false) {
+                    let _ = w.set_focus();
+                }
+                #[cfg(not(target_os = "linux"))]
+                let _ = w;
+            });
+        } else {
+            let _ = window.set_focus();
+        }
         // Opened from a hotkey (e.g. after an area snap), Roamies isn't the active app and macOS 14+
         // ignores plain focus requests, so make the overlay key directly, then ask to activate.
         #[cfg(target_os = "macos")]

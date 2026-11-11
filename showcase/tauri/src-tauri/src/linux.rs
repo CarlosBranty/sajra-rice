@@ -133,6 +133,16 @@ pub(crate) fn dock_keys(on: bool) {
     dock_write();
 }
 
+/// A bar keeps a slot for the Roamie (it left a dock.json), so it is there to hand the keyboard over and back.
+pub(crate) fn dock_hosted() -> bool {
+    dock_dir().is_some_and(|d| d.join("dock.json").is_file())
+}
+
+/// Something is still being typed to the Roamie.
+pub(crate) fn dock_wants_keys() -> bool {
+    DOCK_KEYS.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 fn dock_write() {
     let (out, keys) = (DOCK_OUT.load(std::sync::atomic::Ordering::Relaxed), DOCK_KEYS.load(std::sync::atomic::Ordering::Relaxed));
     let Some(dir) = dock_dir() else { return };
