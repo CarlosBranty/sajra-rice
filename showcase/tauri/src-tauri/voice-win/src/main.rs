@@ -295,6 +295,10 @@ const TAP_LIMIT: f64 = 0.25;
 // A release must last this long to count, so one glitchy frame of key state can't end a session.
 const RELEASE_DEBOUNCE: f64 = 0.09;
 const PAUSE_ENDS: f64 = 1.5;
+// With a video or music in the room the microphone never goes quiet, so a hands-free take also ends when no new word
+// has come for this long (that sound isn't the user), and gives up when not one word came in the first NOTHING_ENDS.
+const STALL_ENDS: f64 = 3.0;
+const NOTHING_ENDS: f64 = 12.0;
 const MAX_SESSION: f64 = 60.0;
 // Keep the mic open a moment after release so a word said while letting go isn't clipped.
 const TAIL: f64 = 0.3;
@@ -461,11 +465,15 @@ impl Voice {
                     return;
                 }
                 let quiet = now - self.heard_at.max(self.voice_at);
-                if !self.best.is_empty() && quiet > PAUSE_ENDS {
-                    self.end("pause", now);
+                let stalled = now - self.heard_at > STALL_ENDS;
+                if !self.best.is_empty() && (quiet > PAUSE_ENDS || stalled) {
+                    self.end(if quiet > PAUSE_ENDS { "pause" } else { "no new words" }, now);
                     self.finish();
                 } else if self.best.is_empty() && !self.reading && now - self.listen_at > 8.0 && now - self.voice_at > PAUSE_ENDS {
                     self.end("nothing heard", now);
+                    self.cancel();
+                } else if self.best.is_empty() && now - self.listen_at > NOTHING_ENDS {
+                    self.end("no words", now);
                     self.cancel();
                 } else if now - self.listen_at > MAX_SESSION {
                     self.end("max length", now);
@@ -1083,6 +1091,51 @@ mod tests {
         v.toggle();
         assert_eq!(v.phase, Phase::Idle);
         assert!(v.source.is_none());
+    }
+
+    // Regression: with a video playing in the room the microphone never goes quiet, so a hands-free take never saw
+    // its pause and ran to the 60 s limit ("it stays there listening and does nothing").
+    #[test]
+    fn a_take_ends_when_the_words_stop_coming_even_if_the_room_is_never_quiet() {
+        let (mut v, _jobs, wav) = voice();
+        v.toggle();
+        assert_eq!(v.phase, Phase::HandsFree);
+        let t = v.listen_at;
+        // The user said something two seconds in; a video keeps sounding the whole time.
+        v.best = "what is on my screen".into();
+        v.heard_at = t + 2.0;
+        v.voice_at = t + 4.0;
+        v.tick_keys(t + 4.0);
+        assert_eq!(v.phase, Phase::HandsFree, "two seconds without a new word: could be a breath");
+        v.voice_at = t + 5.2;
+        v.tick_keys(t + 5.2);
+        assert_eq!(v.phase, Phase::Finishing, "no new word for over three seconds: that sound isn't them");
+        let _ = std::fs::remove_file(wav);
+
+        // Nothing but that sound, never a word: the take gives up instead of waiting out the minute.
+        let (mut v, _jobs, wav) = voice();
+        v.toggle();
+        let t = v.listen_at;
+        v.voice_at = t + 11.0;
+        v.tick_keys(t + 11.0);
+        assert_eq!(v.phase, Phase::HandsFree, "still inside the time to start talking");
+        v.voice_at = t + 12.5;
+        v.tick_keys(t + 12.5);
+        assert_eq!(v.phase, Phase::Idle, "twelve seconds and not a word");
+        let _ = std::fs::remove_file(wav);
+
+        // As before: a real pause still ends it after a second and a half, and a quiet room with no words after eight.
+        let (mut v, _jobs, wav) = voice();
+        v.toggle();
+        let t = v.listen_at;
+        v.best = "hello".into();
+        v.heard_at = t + 1.0;
+        v.voice_at = t + 1.0;
+        v.tick_keys(t + 2.4);
+        assert_eq!(v.phase, Phase::HandsFree);
+        v.tick_keys(t + 2.6);
+        assert_eq!(v.phase, Phase::Finishing, "the pause rule is unchanged");
+        let _ = std::fs::remove_file(wav);
     }
 
     #[test]
