@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { SpeechText, speakable, CueFilter, VOICE_CUES, CUE_INTENSITY, endsWithQuestion } from '../speech.mjs';
+import { SpeechText, speakable, CueFilter, VOICE_CUES, CUE_INTENSITY, endsWithQuestion, LANGUAGES, languageOf, languageLine } from '../speech.mjs';
 
 const said = (chunks, flushAt = []) => {
   const out = [];
@@ -128,3 +128,24 @@ assert.equal(endsWithQuestion('Ready? 🙂\n'), true);
 assert.equal(endsWithQuestion('He said "really?"'), true);
 assert.equal(endsWithQuestion(''), false);
 assert.equal(endsWithQuestion(null), false);
+
+// The reply language (the Voice page's Language picker): Auto, English or Español.
+assert.deepEqual(LANGUAGES, [['auto', 'Auto'], ['en', 'English'], ['es', 'Español']]);
+for (const [id] of LANGUAGES) assert.equal(languageOf(id), id, `${id} is a choice`);
+// Anything else that was saved (nothing, an old or hand-edited value) is Auto.
+for (const v of [undefined, null, '', 'fr', 'ES', 'spanish', 'toString', 3, true, ['es'], { es: 1 }]) assert.equal(languageOf(v), 'auto', `${JSON.stringify(v)} is auto`);
+// Auto adds nothing to the prompt, so it stays exactly what it was; so does a missing or unknown value.
+for (const v of ['auto', undefined, null, '', 'fr', 'ES', ['es']]) assert.equal(languageLine(v, 'Ana'), '', `${JSON.stringify(v)} adds nothing`);
+{ // A picked language: one line that holds every reply to it, spoken and written, whatever the screen and tools are in.
+  const es = languageLine('es', 'Ana'), en = languageLine('en', 'Ana');
+  for (const [line, name, other] of [[es, 'Spanish', 'English'], [en, 'English', 'Spanish']]) {
+    assert.match(line, new RegExp(`^\\nLanguage: always reply in ${name}, spoken and written`), `${name}: it starts on its own line`);
+    assert.equal(line.trimStart().split('\n').length, 1, `${name}: one line`);
+    assert.ok(!line.includes(other), `${name}: no other language is named`);
+    assert.match(line, /whatever language Ana writes or speaks in/, `${name}: not the language of the question`);
+    assert.match(line, /whatever language the screen, web pages, files, apps or tool results are in/, `${name}: not the language of the screen or tools`);
+    assert.match(line, /tags in square brackets stay exactly as written above/, `${name}: emote and voice tags are not translated`);
+    assert.match(line, /Language on the Voice page/, `${name}: where they picked it`);
+  }
+  assert.match(languageLine('es'), /whatever language the user writes or speaks in/, 'with no name it says the user');
+}

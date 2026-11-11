@@ -207,3 +207,59 @@ console.log('speaker beat variety: passed');
   }
 }
 console.log('bundled beats: passed');
+
+// The beats are English recordings. With another language picked they'd be the one English line in the reply, so
+// none is played, spoken live or made over Fish; on Auto, English, or a value that isn't a choice, they play as before.
+const clip = { rate: 24000, pcm: Buffer.from([9, 9]).toString('base64') };
+const shippedAll = () => new Map(BEATS.map((b) => [b, clip]));
+{ // Español: a slow tool gets no beat, shipped or not, and the reply itself is spoken as usual.
+  const { sp, out } = setup(undefined, BEATS, shippedAll);
+  sp.setLanguage('es');
+  sp.setKey('k'); await tick(); await tick();
+  const r = sp.start(), n = out.length;
+  assert.equal(r.beat(), false, 'no beat in Spanish');
+  assert.equal(out.length, n, 'nothing is played');
+  assert.deepEqual(made.at(-1).said, [], 'and nothing is said live in its place');
+  r.say('Hola.'); r.end();
+  assert.deepEqual(made.at(-1).said, ['Hola.']);
+  made.at(-1).onAudio(new Uint8Array([1, 0])); made.at(-1).onEnd();
+  assert.deepEqual(out.at(-1), { kind: 'speech', id: r.id, end: true, chars: 5 }, 'the reply is spoken as usual');
+}
+{ // Español with no shipped beats: none is made over Fish (they'd never play), and none is spoken live.
+  const { sp, out } = setup(undefined, BEATS);
+  sp.setLanguage('es');
+  sp.setKey('k'); await tick(); await tick();
+  assert.equal(made.filter((v) => v.said.length).length, 0, 'no beat is made in Spanish');
+  const r = sp.start(), n = out.length;
+  assert.equal(r.beat(), false);
+  assert.equal(out.length, n); assert.deepEqual(made.at(-1).said, []);
+  // Back to Auto: they're made now, and the next slow tool gets one again.
+  sp.setLanguage('auto'); await tick();
+  assert.deepEqual(made.at(-1).said, [BEATS[0]], 'beats are made once the language fits');
+  made.at(-1).onAudio(new Uint8Array([5, 0])); made.at(-1).onEnd(); await tick(); await tick();
+  const r2 = sp.start(), live = made.at(-1);
+  assert.equal(r2.beat(), true, 'a beat again on Auto');
+  assert.deepEqual(out.at(-1), { kind: 'speech', id: r2.id, rate: 44100, pcm: Buffer.from([5, 0]).toString('base64') }, 'the one just made');
+  assert.deepEqual(live.said, [], 'not said live');
+}
+// Never set (a config from before the setting), Auto, English, and a value that isn't a choice: the shipped beat plays.
+for (const lang of [undefined, 'auto', 'en', 'fr', null]) {
+  const { sp, out } = setup(undefined, BEATS, shippedAll);
+  if (lang !== undefined) sp.setLanguage(lang);
+  sp.setKey('k'); await tick(); await tick();
+  const r = sp.start();
+  assert.equal(r.beat(), true, `a beat with ${lang}`);
+  assert.deepEqual(out.at(-1), { kind: 'speech', id: r.id, rate: 24000, pcm: clip.pcm }, `the shipped beat with ${lang}`);
+  assert.equal(r.beat(), false, 'once per reply');
+}
+{ // Switching mid-way: Spanish silences the next reply's beat, English brings it back.
+  const { sp, out } = setup(undefined, BEATS, shippedAll);
+  sp.setKey('k'); await tick();
+  sp.setLanguage('es');
+  assert.equal(sp.start().beat(), false);
+  sp.setLanguage('en');
+  const r = sp.start();
+  assert.equal(r.beat(), true);
+  assert.deepEqual(out.at(-1), { kind: 'speech', id: r.id, rate: 24000, pcm: clip.pcm });
+}
+console.log('speaker language: passed');

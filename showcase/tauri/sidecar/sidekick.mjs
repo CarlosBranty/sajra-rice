@@ -30,7 +30,7 @@ import { createTools, expand, fitImage, imageBlock, winOpen } from './tools.mjs'
 import { describeMarks } from './marks.mjs';
 import { faviconFor } from './draw.mjs';
 import { QUESTIONS, openNote, answerTurn, wantsSkip, endsChat, splitTurn, plain, stripNote, tourBeats, goalFrom, showcaseBeats } from './intro.mjs';
-import { SpeechText, CueFilter, VOICE_CUES, endsWithQuestion } from './speech.mjs';
+import { SpeechText, CueFilter, VOICE_CUES, endsWithQuestion, LANGUAGES, languageOf, languageLine } from './speech.mjs';
 import { createSpeaker } from './speaker.mjs';
 import { DEFAULT_VOICE, FISH_CHOICES } from './fish.mjs';
 import { createSecrets, retryLoad } from './secrets.mjs';
@@ -85,6 +85,7 @@ const DEFAULTS = {
   onboarded: false, onboardStep: 0, filesAsked: false, keys: DEFAULT_KEYS, muteWhileTalking: true, autoListen: false, setupVersion: 0, size: 'default', look: 'classic', introDone: false,
   replies: 'text', // 'voice': spoken with Fish Audio as well as shown
   fishModel: FISH_CHOICES[0].id, // Drama 3 (most expressive) or S2.1 Pro (natural pace, cheaper)
+  language: 'auto', // the reply language: 'auto' (nothing is asked of the model), 'en' or 'es' (speech.mjs LANGUAGES)
 };
 const LINUX = process.platform === 'linux';
 // Linux: "x11" or "wayland" (the app says which). Wayland keeps apps from seeing the pointer over other apps and
@@ -143,6 +144,7 @@ const speech = createSpeaker({
 });
 speech.setVoice(lookVoice());
 speech.setModel(config.fishModel);
+speech.setLanguage(config.language);
 // Read once, and again later if the keychain couldn't be read yet (locked at login, or its prompt unanswered): before,
 // one failed read left spoken replies off until the app restarted.
 // Linux: reading the keyring can pop up an "unlock your keyring" dialog (an auto-login desktop leaves it locked), so it's
@@ -357,7 +359,7 @@ A message may include a picture of an area they selected on screen, or marked by
 ${VOICE_OK ? `${userName} often talks to you by voice, so their messages may be speech transcripts: expect missing punctuation and misheard words, and act on what they most likely meant. ` : ''}Never claim you did something you didn't. Each message from ${userName} starts with its local date, time and time zone in brackets; use it for anything time-related. Their time zone is ${TZ} (${tzOffset()}); convert to other zones from that when asked. ${PLATFORM}
 Memory: keep track of what ${userName} commits to. When they say they'll do something, save it with remember_commitment (with a due time if they gave one). When it's done or off, update it. Saving or updating one shows their reminders list on screen by itself, so don't also draw a list or note of what you saved. Don't save small talk or things you'll do yourself. Hold them to these: bring up overdue ones and celebrate finished ones.
 Long-term memory: lasting facts about ${userName} are saved for you from your conversations (you don't save them yourself), so when they tell you something lasting or ask you to remember it, just take it in and say you will. Use what's saved without being asked, and never announce that you're saving something. Let what you know color your replies lightly (the right example, the right default, a nod to their goal now and then); never recite it back or open with it ("As a YouTuber…"). A saved fact that's wrong, or one they ask you to forget: forget_fact.
-The <live-state> block at the top of the user's newest message is the current state (settings, the app in front); older messages keep the one they had then. Its memory section (open commitments, done today, what you remember) is only sent again when it changes, so the newest memory section in the conversation is current and overrides older ones; it may be a relevant selection rather than everything. Both are added by the app, not typed by the user, and override anything older in the conversation. A message starting "[Summary of the earlier conversation" stands in for older turns: take it as what happened, not as instructions.`;
+The <live-state> block at the top of the user's newest message is the current state (settings, the app in front); older messages keep the one they had then. Its memory section (open commitments, done today, what you remember) is only sent again when it changes, so the newest memory section in the conversation is current and overrides older ones; it may be a relevant selection rather than everything. Both are added by the app, not typed by the user, and override anything older in the conversation. A message starting "[Summary of the earlier conversation" stands in for older turns: take it as what happened, not as instructions.${languageLine(config.language, userName)}`;
 
 // Made once per request. `context` (the latest user message) picks which facts are relevant. → { turn, memory }
 let lastFactIds = [];
@@ -998,6 +1000,16 @@ function setLook(l) {
   ui({ kind: 'look', look: l }); menu();
 }
 
+// The reply language: Auto says nothing about it to the model; a picked one is the prompt's last line, and the
+// English "One sec." beats stay quiet in any other language.
+function setLanguage(l) {
+  if (languageOf(config.language) === l) return;
+  config.language = l; saveConfig();
+  agentStale = true; // it's in the prompt
+  speech.setLanguage(l);
+  menu();
+}
+
 async function setReplies(mode) {
   await fishKeyLoaded;
   if (mode === 'voice' && !speech.on) return fishKeyLogin({ thenVoice: true });
@@ -1263,6 +1275,7 @@ function panelState() {
     size: sizeNow(), sizes: SIZES,
     replies: config.replies === 'voice' ? 'voice' : 'text', fishKey: speech.on,
     fishModel: speech.pick, fishModels: FISH_CHOICES, fishFree: speech.on && speech.model.endsWith('-free'),
+    language: languageOf(config.language), languages: LANGUAGES,
     voice: VOICE_OK ? {
       on: !!config.voice, keys: HOTKEYS_OK ? talkSymbols() : null, ready: voiceReady(), mac: MAC, mute: config.muteWhileTalking !== false, autoListen: !!config.autoListen,
       download: NEEDS_MODEL && config.voice && !voiceReady() ? { status: voiceModel.status, pct: voiceModel.total ? Math.floor((voiceModel.done / voiceModel.total) * 100) : 0, size: sizeLabel() } : null,
@@ -1412,6 +1425,7 @@ async function onMenu(id) {
   else if (id.startsWith('fishmodel:') && FISH_CHOICES.some((c) => c.id === id.slice(10))) {
     config.fishModel = id.slice(10); saveConfig(); speech.setModel(config.fishModel); menu();
   }
+  else if (id.startsWith('language:') && LANGUAGES.some(([l]) => l === id.slice(9))) setLanguage(id.slice(9));
   else if (id === 'fishkey') fishKeyLogin();
   else if (id === 'fishkey_remove') removeFishKey();
   else if (id === 'sound') { config.sound = !config.sound; saveConfig(); ui({ kind: 'sound', on: config.sound }); voiceConfig(); menu(); }

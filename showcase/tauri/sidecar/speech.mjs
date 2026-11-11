@@ -171,3 +171,17 @@ export function endsWithQuestion(text) {
     .replace(/[\s*_~`"'”’»)\]]+$/u, '');
   return /[?？]$/.test(s);
 }
+
+// The reply language, picked on the panel's Voice page. Auto is how it always was: nothing is said about language, so
+// the model answers in whichever it sees fit. A picked one is held to, whatever the screen and tools are in.
+export const LANGUAGES = [['auto', 'Auto'], ['en', 'English'], ['es', 'Español']];
+const LANGUAGE_NAMES = { en: 'English', es: 'Spanish' }; // as the prompt names them
+/** The saved setting as one of the choices: anything else (missing, or a value that isn't a choice) is 'auto'. */
+export const languageOf = (v) => (typeof v === 'string' && LANGUAGES.some(([id]) => id === v) ? v : 'auto');
+/** The system prompt's last line for a picked language; '' on Auto, so the prompt is then exactly what it was.
+ *  The tags (emotes, voice cues) are matched by their English names, so they're never translated. */
+export function languageLine(v, who = 'the user') {
+  const name = LANGUAGE_NAMES[languageOf(v)];
+  if (!name) return '';
+  return `\nLanguage: always reply in ${name}, spoken and written (every reply, the short beat before a tool, and the lines, labels and cards you draw), whatever language ${who} writes or speaks in and whatever language the screen, web pages, files, apps or tool results are in. It's their pick (Language on the Voice page of the panel). Only words they ask for in another language (a translation, a message to someone) are in that one, and the tags in square brackets stay exactly as written above.`;
+}

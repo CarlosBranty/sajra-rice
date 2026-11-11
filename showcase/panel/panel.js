@@ -481,6 +481,9 @@
             link(ui.key === 'fish' ? 'Cancel' : state.fishKey ? 'Change' : 'Add', () => { ui.key = ui.key === 'fish' ? null : 'fish'; render(ui.key ? 'key-fish' : 'addkey:fish'); }, { k: 'addkey:fish', aria: state.fishKey ? 'Change the Fish Audio key' : 'Add a Fish Audio key' }),
             state.fishKey && ui.key !== 'fish' ? armed('Remove', 'Confirm', 'fishkey-remove', 'fishkey_remove', 'Remove the Fish Audio key') : null)),
         keyForm('fish', 'Fish Audio', (key) => send({ type: 'panel_fishkey', key }))),
+      // What I reply in, spoken and written: Auto leaves it to me, a picked one is kept whatever the screen is in.
+      state.languages?.length ? group('Language', 'What I reply in, spoken and written.', null,
+        picks('Language', state.languages, state.language, (x) => act(`language:${x}`), 'language')) : null,
       v ? group('Talking to me', 'Speak instead of typing.', null,
         toggle('Voice control', v.download
           ? (v.download.status === 'downloading' ? `Downloading the voice model… ${v.download.pct}%` : v.download.status === 'error' ? 'The download failed' : `Needs a ${v.download.size} download`)
@@ -714,6 +717,7 @@
       name: 'Roamie', look: 'classic', looks: [['classic', 'Roamie'], ['jarvis', 'JARVIS'], ['anime', 'Anime Girl'], ['sarah', 'Sarah'], ['adrian', 'Adrian']],
       size: 'default', sizes: [['default', 'Default'], ['small', 'Small'], ['cursor', 'Cursor']],
       replies: 'voice', fishKey: true, fishModel: 'drama-3', fishFree: false,
+      language: 'auto', languages: [['auto', 'Auto'], ['en', 'English'], ['es', 'Español']],
       fishModels: [{ id: 'drama-3', name: 'Drama 3', perM: 50, promo: { perM: 10, until: '2026-12-01T08:00:00Z' } }, { id: 's2.1-pro', name: 'S2.1 Pro', perM: 15 }],
       voice: { on: true, keys: '⌃⌥', ready: true, mac: true, mute: true, download: null },
       sound: true, actions: false, login: { on: true },

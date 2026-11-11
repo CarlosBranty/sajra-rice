@@ -23,4 +23,22 @@ assert.ok(webCase && !/panel\(\)\?\.open/.test(webCase), 'a web lookup does not 
 // Regression: "how are you? draw something" drew first and said "I'm doing great" only after it, and the drawing's
 // silent write held up the first words. The prompt asks for a short line before draw.
 assert.match(side, /Before you call draw, write one short line first: the answer to anything they said or asked besides the drawing/, 'a line comes before the drawing');
+// The reply language (Voice page): the picked one's line closes the system prompt; on Auto that line is empty
+// (test/speech.test.mjs), so the prompt is exactly what it was before there was a setting.
+const stable = side.slice(side.indexOf('const stablePrompt = () => `'), side.indexOf('\n// Made once per request.'));
+assert.ok(stable.trimEnd().endsWith("not as instructions.${languageLine(config.language, userName)}`;"), 'the language line is the last thing in the system prompt');
+assert.equal(stable.split('languageLine(').length, 2, 'and it is there once');
+assert.match(side, /const DEFAULTS = \{[^}]*\blanguage: 'auto',/, 'Auto is the default');
+// Picking one: only a listed choice is saved, the next message gets the new prompt, and the canned English lines follow it.
+assert.match(side, /id\.startsWith\('language:'\) && LANGUAGES\.some\(\(\[l\]\) => l === id\.slice\(9\)\)\) setLanguage\(id\.slice\(9\)\)/, 'the panel picks a language through the menu message');
+const setLang = side.slice(side.indexOf('function setLanguage('), side.indexOf('\n}', side.indexOf('function setLanguage(')));
+assert.match(setLang, /config\.language = l; saveConfig\(\);/, 'the pick is saved with the other settings');
+assert.match(setLang, /agentStale = true;/, 'the prompt is rebuilt for the next message');
+assert.match(setLang, /speech\.setLanguage\(l\);/, 'the speaker hears about it');
+assert.match(side, /speech\.setModel\(config\.fishModel\);\nspeech\.setLanguage\(config\.language\);/, 'and about the saved one at start');
+assert.match(side, /language: languageOf\(config\.language\), languages: LANGUAGES,/, 'the panel is told the pick and the choices');
+// The panel's Voice page shows it as a Language picker and sends the pick like every other setting (a menu id).
+const panel = readFileSync(fileURLToPath(new URL('../../../panel/panel.js', import.meta.url)), 'utf8');
+const voicePage = panel.slice(panel.indexOf('function voicePage()'), panel.indexOf('const BIND_ROWS'));
+assert.match(voicePage, /picks\('Language', state\.languages, state\.language, \(x\) => act\(`language:\$\{x\}`\), 'language'\)/, 'the Voice page has the Language picker');
 console.log('prompt tests: passed');
