@@ -7,7 +7,8 @@
 // - Each reply has its own id, so audio from one that was stopped can never play over the next.
 // - Beats: when something slow starts (a web search, a page, the screen) and the model hasn't said anything,
 //   a short line ("One sec.", "On it." and 32 more, picked at random) plays so it's never silent. They're made once
-//   in the voice and kept, so they play instantly. They're English, so with another reply language picked none plays.
+//   in the voice and kept, so they play instantly. They're English: with Spanish picked as the reply language a short
+//   Spanish line ("Vale, déjame ver.") plays instead, made over Fish in the voice in use when it's picked.
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -21,6 +22,9 @@ export const BEATS = [
   'Sure, sec.', 'Okay, sec.', 'Roger.', 'Yep.', 'Yep, sec.', 'Two secs.', 'Hold tight.', 'Mm-hmm.', 'Will do.', 'Righto.',
   'Moment.', 'Okay, checking.', 'Sure, checking.', 'Okie-dokie.',
 ];
+// Spanish lines for the same moments (UI copy, the only Spanish in here): made over Fish in the voice in use when Spanish
+// is the reply language, never shipped.
+export const BEATS_ES = ['Vale, déjame ver.', 'Un momento.', 'A ver…', 'Un segundo.', 'Déjame ver.', 'Vale, un momento.'];
 const RECENT = 8; // a beat isn't picked again until this many others have played
 
 // The beats shipped with the app (beats/make.mjs), next to this file or the bundle: (voice, model) → Map of phrase →
@@ -41,33 +45,32 @@ export function bundledBeats(dir = path.join(path.dirname(fileURLToPath(import.m
   };
 }
 
-export function createSpeaker({ emit, onProblem = () => {}, log = () => {}, FishVoiceImpl = FishVoice, account = fishAccount, beatPhrases = BEATS, bundled = bundledBeats() }) {
+export function createSpeaker({ emit, onProblem = () => {}, log = () => {}, FishVoiceImpl = FishVoice, account = fishAccount, beatPhrases = BEATS, spanishBeats = BEATS_ES, bundled = bundledBeats() }) {
   let key = null, voice = DEFAULT_VOICE, pref = FISH_MODELS[0], model = pref, seq = 0, current = null, checking = null, lang = 'auto';
   // The pick and the cheaper ones after it (FISH_MODELS runs from priciest to free).
   const chain = () => FISH_MODELS.slice(Math.max(0, FISH_MODELS.indexOf(pref)));
   let beats = new Map(), recent = [], warming = null; // phrase → [base64 PCM chunks], for the current key and voice
-  // The beats are English: with another reply language picked (Voice page) one would be the only English line in
-  // the reply, so none is played, said live or made. Auto and English play them as always.
-  const beatsFit = () => lang === 'auto' || lang === 'en';
+  // The beats in the reply language (Voice page): the Spanish lines in Spanish, the English ones on Auto and English
+  // (languageOf makes anything else Auto), so no beat is ever the only line in another language.
+  const phrases = () => (lang === 'es' ? spanishBeats : beatPhrases);
   // A random beat, not one of the last few: one that's already made if there is one, so it plays instantly.
   const shipped = () => bundled(voice, model);
   const ready = (p) => beats.has(p) || !!shipped()?.has(p);
   const pickBeat = () => {
-    const fresh = beatPhrases.filter((p) => !recent.includes(p));
-    const pool = [fresh.filter(ready), beatPhrases.filter(ready), fresh, beatPhrases].find((x) => x.length);
-    const phrase = pool?.[Math.floor(Math.random() * pool.length)] ?? BEATS[0];
-    recent = [...recent, phrase].slice(-Math.min(RECENT, Math.max(0, beatPhrases.length - 1)));
+    const all = phrases(), fresh = all.filter((p) => !recent.includes(p));
+    const pool = [fresh.filter(ready), all.filter(ready), fresh, all].find((x) => x.length);
+    const phrase = pool?.[Math.floor(Math.random() * pool.length)];
+    if (phrase) recent = [...recent, phrase].slice(-Math.min(RECENT, Math.max(0, all.length - 1)));
     return phrase;
   };
 
   // Make the beats once, one at a time (well under Fish's concurrency limit). Failures just leave a gap:
   // that beat is then spoken live instead.
   function warm() {
-    if (!beatsFit()) return warming;
-    const k = key, vo = voice;
+    const k = key, vo = voice, list = phrases();
     warming ??= (async () => {
-      for (const phrase of beatPhrases) {
-        if (key !== k || voice !== vo || !beatsFit()) break;
+      for (const phrase of list) {
+        if (key !== k || voice !== vo || phrases() !== list) break;
         if (beats.has(phrase) || bundled(vo, model)?.has(phrase)) continue; // shipped with the app
         const chunks = await new Promise((done) => {
           const got = [];
@@ -76,7 +79,7 @@ export function createSpeaker({ emit, onProblem = () => {}, log = () => {}, Fish
         });
         if (chunks?.length && key === k && voice === vo) beats.set(phrase, chunks);
       }
-    })().finally(() => { warming = null; });
+    })().finally(() => { warming = null; if (key === k && voice === vo && phrases() !== list) warm(); });
     return warming;
   }
 
@@ -107,11 +110,13 @@ export function createSpeaker({ emit, onProblem = () => {}, log = () => {}, Fish
     const me = {
       id,
       say(s) { if (done) return; said.push(s); v.say(s); },
-      /** Something slow is starting: a short beat, unless it's already said something or the beats aren't in the reply language. */
+      /** Something slow is starting: a short beat in the reply language, unless it's already said something. */
       beat() {
-        if (done || beat || said.length || heard || !beatsFit()) return false;
+        if (done || beat || said.length || heard) return false;
+        const phrase = pickBeat();
+        if (!phrase) return false;
         beat = true;
-        const phrase = pickBeat(), shippedBeat = shipped()?.get(phrase), chunks = beats.get(phrase);
+        const shippedBeat = shipped()?.get(phrase), chunks = beats.get(phrase);
         if (!shippedBeat && !chunks) { me.say(phrase); return true; }
         log('speech_beat', { id, ms: Date.now() - t0 });
         if (shippedBeat) emit({ kind: 'speech', id, rate: shippedBeat.rate, pcm: shippedBeat.pcm });
@@ -175,11 +180,11 @@ export function createSpeaker({ emit, onProblem = () => {}, log = () => {}, Fish
       if (model !== FREE_MODEL) model = m;
       if (key) warm();
     },
-    // The reply language ('auto', 'en', 'es'; anything else counts as 'auto'). Back to one the beats fit: any still missing are made.
+    // The reply language ('auto', 'en', 'es'; anything else counts as 'auto'). Its beats still missing are made.
     setLanguage(l) { lang = languageOf(l); if (key) warm(); },
     get pick() { return pref; },
     setVoice(v) { if ((v || DEFAULT_VOICE) !== voice) beats = new Map(); voice = v || DEFAULT_VOICE; if (key) warm(); },
-    get ready() { return beats.size + beatPhrases.filter((p) => !beats.has(p) && shipped()?.has(p)).length; },
+    get ready() { return phrases().filter((p) => beats.has(p) || shipped()?.has(p)).length; },
     get model() { return model; },
     get on() { return !!key; },
     check,
