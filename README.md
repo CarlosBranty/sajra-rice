@@ -194,6 +194,19 @@ meanwhile. The two leave each other notes in `$XDG_RUNTIME_DIR/roamies/`:
   couple of seconds, so an old one means Roamies isn't running. `exe` is the command to run with `--talk`, `--panel`
   or `--summon` when the slot is clicked.
 
+**Your desktop's colours:** with Colors set to System (the panel's Appearance page), Roamies follows the desktop:
+light or dark, and its colours when the bar or shell says them, in a third note in the same folder (with or without a
+slot):
+
+- `theme.json`, written by the bar or shell:
+  `{"light": true, "bg": "#f2e7de", "surface": "#ffffff", "fg": "#100a05", "muted": "#786c61", "line": "#e4d6cb", "accent": "#9e6630", "danger": "#d71921"}`.
+  `light` (true or false) is required. The colours are the background, raised surfaces, text, muted text, lines, the
+  accent and errors, each written as `#rrggbb`; any of them can be left out, and one written any other way is ignored
+  (Roamies then uses its own light or dark colour for it). Everything else Roamies draws is worked out from these few,
+  the character included: its dots run from a dark shade of the accent to a light one. Roamies reads the note every
+  couple of seconds, so rewrite it when your theme changes; without the file it follows the desktop's light or dark
+  setting with its own two schemes.
+
 **Troubleshooting:**
 
 - **No tray icon on GNOME:** GNOME hides tray icons unless the

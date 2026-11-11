@@ -18,21 +18,25 @@
     lines: fixed(4, [[0, 0, 0, 0], [8, 8, 8, 8], [4, 4, 4, 4], [12, 12, 12, 12]].map((r, i) => r.map((v) => v + i))),
   };
 
+  // pal: the levels, darkest to brightest. It can be a function instead (and so can glow): the levels of the colour
+  // scheme in use (theme.js), asked for again every frame, so a change of scheme shows on the next one.
+  const palOf = (o) => (typeof o.pal === 'function' ? o.pal() : o.pal);
+  const gapOf = (pal) => pal[0].map((c) => (c * 0.7) | 0);
   Roamie.ditherKit = (o) => ({
     id: o.id,
     label: o.label,
-    bg: o.bg ?? `rgb(${o.pal[0].join(',')})`,
+    get bg() { return o.bg ?? `rgb(${palOf(o)[0].join(',')})`; },
     create(env) {
       const { clamp, rand } = Roamie;
       const S = (n) => Roamie.sfx?.play(n);
-      const PAL = o.pal, L = PAL.length - 1;
+      let PAL = palOf(o), GAP = gapOf(PAL);
+      const L = PAL.length - 1;
       const { n: PN, t: PT } = PATTERNS[o.pattern ?? 'bayer4'], PM = PN - 1;
       // The dither pattern is pinned to the screen, or to the body while it follows the cursor (tox, toy: its cell),
       // so the shading doesn't crawl across it as it moves.
       let tox = 0, toy = 0;
       const th = (gx, gy) => PT[((gy - toy) & PM) * PN + ((gx - tox) & PM)];
       const K = o.matrix ? 4 : 1;
-      const GAP = PAL[0].map((c) => (c * 0.7) | 0);
       const SCAN = o.scan ?? 1;
       const m = new Roamie.Mover(env, { speed: o.speed ?? 95, accel: 2.4 });
       const face = new Roamie.Face();
@@ -541,7 +545,8 @@
 
       // Plugins (the agent layer) get the kit's drawing helpers and can drive the pose.
       const kit = {
-        o, m, face, sq, hands, PAL, L, th, put, disc, line, setPx, spawn, S, startAct,
+        o, m, face, sq, hands, L, th, put, disc, line, setPx, spawn, S, startAct,
+        get PAL() { return PAL; },
         get P() { return P; }, get R() { return R; }, get gw() { return gw; }, get gh() { return gh; }, get t() { return t; },
         get busy() { return !!act; },
         appear, vanish,
@@ -737,6 +742,8 @@
         },
         paint(env) {
           ready = false; rect = null;
+          const pal = palOf(o);
+          if (pal !== PAL) { PAL = pal; GAP = gapOf(pal); }
           // Drawn natively while it follows (m.native): nothing here until the page takes it back.
           if (!img || pres.state === 'hidden' || m.native) return null;
           d = img.data; clear = !!env.transparent;
@@ -923,7 +930,7 @@
             bctx.drawImage(off, sx, sy, sw, sh, 0, 0, bw, bh);
             ctx.save();
             ctx.globalCompositeOperation = 'lighter';
-            ctx.globalAlpha = o.glow;
+            ctx.globalAlpha = typeof o.glow === 'function' ? o.glow() : o.glow;
             ctx.imageSmoothingEnabled = true;
             ctx.drawImage(bloom, 0, 0, bw, bh, X, Y, DW, DH);
             ctx.restore();

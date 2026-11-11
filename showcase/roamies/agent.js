@@ -109,9 +109,7 @@
   const deferred = () => { let res; const p = new Promise((r) => (res = r)); p.resolve = res; return p; };
 
   R.agentPlugin = (k) => {
-    const { m, face, PAL, L, th, put, setPx } = k;
-    const DARK = PAL[0], EDGE = PAL[Math.max(1, L - 2)], RIM = PAL[L - 1], HOT = PAL[L];
-    const css = (c, a = 1) => `rgba(${c[0]},${c[1]},${c[2]},${a})`;
+    const { m, face, th, put, setPx } = k;
     const tcan = document.createElement('canvas');
     const tctx = tcan.getContext('2d');
     let b = null, dying = [], now = 0, W = 800, H = 600, mouthT = 0, mouthMode = null, gestT = 0;
@@ -278,7 +276,7 @@
     // macOS: while it only follows the cursor in its cursor form (nothing open, nothing playing), the voice helper
     // draws it on the display's clock (buddy.swift) and this page stops repainting. Anything else takes it back at once;
     // until the helper says it's drawing, the page keeps drawing too, so there's never a gap.
-    const nat = { on: false, ask: 0, askAt: 0, ok: 0, back: 0, n: 0 };
+    const nat = { on: false, ask: 0, askAt: 0, ok: 0, back: 0, n: 0, rev: R.theme?.rev ?? 0 };
     const onBuddy = (e) => {
       if (e.state === 'shown' && nat.ask && e.id === nat.ask) { nat.on = true; nat.ask = 0; m.native = true; }
       else if (e.state === 'gone') { nat.on = false; nat.ask = 0; m.native = false; nat.back = now + 5; }
@@ -289,7 +287,11 @@
       const B = R.buddy;
       if (!B) return;
       if (B.onEvent !== onBuddy) B.onEvent = onBuddy;
-      const ok = B.available() && k.form === 'cursor' && k.presence === 'shown' && !!m.drive && !pen.held && !station.moving
+      // The picture the helper was given is in the colours of the scheme it was made in: after a change of scheme
+      // the page takes it back for a moment and hands over a new one.
+      const rev = R.theme?.rev ?? 0, themed = rev === nat.rev;
+      nat.rev = rev;
+      const ok = themed && B.available() && k.form === 'cursor' && k.presence === 'shown' && !!m.drive && !pen.held && !station.moving
         && !!self.quiet?.() && !!k.calmBody?.();
       nat.ok = ok ? nat.ok + dt : 0;
       if (!ok) {
@@ -357,8 +359,8 @@
     // Bubble text: Martian Mono (0.7 em per letter), sized to the bubble's line grid.
     const fontPx = (t) => Math.round(CH * t * 0.64 * 2) / 2;
     const colW = (t) => fontPx(t) * 0.7 + 0.35;
-    const TEXT_INK = '#dcfff6', TEXT_ACCENT = '#78ffe2';
     const T = () => clamp(k.P * 0.42, 1.4, 2.4);
+    // The card look and its colours, which are the scheme's in use each time they're read (glass.js, theme.js).
     const G = R.glass;
     // Padding inside a bubble. The thinking tag is slim, one line, with its three dots before the words.
     const DOTS_W = 24;
@@ -685,7 +687,7 @@
       };
       let curFont = '';
       tctx.textBaseline = 'middle'; tctx.textAlign = 'left';
-      const ink = dim ? css(PAL[L - 2], 0.9) : TEXT_INK, accent = dim ? ink : TEXT_ACCENT;
+      const ink = dim ? G.rgba(G.MID, 0.9) : G.TEXT, accent = dim ? ink : G.ACC, flash = G.FLASH;
       for (let li = first; li <= last; li++) {
         const line = lines[li], cy = (li - s0 + 0.5) * lh;
         // Lines scrolling past the top or bottom fade out instead of being cut in half.
@@ -697,7 +699,7 @@
           if (idx >= shown) break;
           if (line.s[j] === ' ') {
             // A link's underline runs on under the spaces between its words.
-            if (R.md && (bb.sty?.[idx] ?? 0) & R.md.LINK && (bb.sty?.[idx + 1] ?? 0) & R.md.LINK) { tctx.fillStyle = TEXT_ACCENT; tctx.fillRect(j * cw, cy + lh * 0.36, cw, Math.max(1, t * 0.4)); }
+            if (R.md && (bb.sty?.[idx] ?? 0) & R.md.LINK && (bb.sty?.[idx + 1] ?? 0) & R.md.LINK) { tctx.fillStyle = G.ACC; tctx.fillRect(j * cw, cy + lh * 0.36, cw, Math.max(1, t * 0.4)); }
             continue;
           }
           const em = emojiAt(line.s, j);
@@ -708,7 +710,7 @@
           if (f !== curFont) { tctx.font = f; curFont = f; }
           const age = ph ? 9 : now - (bb.at[idx] ?? 0), x = j * cw + (em ? cw * 0.15 : 0), y = cy;
           const marked = md && st & (md.CODE | md.LINK);
-          tctx.fillStyle = age < 0.12 ? '#ffffff' : marked ? accent : ink;
+          tctx.fillStyle = age < 0.12 ? flash : marked ? accent : ink;
           tctx.fillText(ch, x, y);
           if (md && st & md.LINK) tctx.fillRect(x, cy + lh * 0.36, cw, Math.max(1, t * 0.4));
           if (em) j += em.n - 1;
@@ -721,7 +723,7 @@
         if (bb.text) ({ li, col } = caretAt(bb.lines, bb.input.caret ?? bb.text.length));
         if (col >= bb.cols) col = bb.cols - 1;
         const cy = (li - s0) * lh;
-        if (cy > -1 && cy < ih) { tctx.fillStyle = css(HOT); tctx.fillRect(col * cw + 0.5, cy + lh * 0.15, Math.max(1.5, t * 0.8), lh * 0.7); }
+        if (cy > -1 && cy < ih) { tctx.fillStyle = G.rgba(G.HOT, 1); tctx.fillRect(col * cw + 0.5, cy + lh * 0.15, Math.max(1.5, t * 0.8), lh * 0.7); }
       }
       // Clip to the frame as it is this instant: it may still be growing, or shrinking away on close.
       const cx1 = fr.x + fr.w - padX(bb) + 2, cy1 = fr.y + fr.h - padY(bb) - (bb.input?.listen ? (METER + 1) * P : 0) - footH(bb) + 2;

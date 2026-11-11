@@ -9,10 +9,14 @@
 
   // ---------------------------------------------------------------- look
   const P = 4, MONO = '"Martian Mono", ui-monospace, monospace', DOTO = '"Doto", "Martian Mono", ui-monospace, monospace';
-  const ACC = '#78ffe2', HOT = '#e6fffa', MID = '#28c4b8', DEEP = '#0e5c60', EDGE = 'rgba(3,39,34,0.6)';
-  const GLASS = 'rgba(6,22,24,0.94)', TEXT = '#dcfff6', DIM = '#8ab8b0', INKDARK = '#032722';
-  const TONES = { accent: ACC, teal: '#78ffe2', amber: '#ffcf5c', coral: '#ff8a7a', lilac: '#b9a4ff', sky: '#7cc8ff', lime: '#b6f36b', red: '#ff6b6b', white: '#e8fffa' };
-  const LED = ['#051214', '#0e5c60', '#28c4b8', '#78ffe2', '#e6fffa'];
+  // The colours are the scheme's in use (theme.js), under the names this file has for them. They are taken again
+  // whenever the scheme changes (below, where the marks are kept), so everything here draws with the current ones.
+  let ACC, HOT, MID, DEEP, EDGE, GLASS, TEXT, DIM, INKDARK, FLASH, SCRIM, TONES, LED;
+  const colours = (T) => {
+    ({ accent: ACC, hot: HOT, mid: MID, deep: DEEP, edge: EDGE, glass: GLASS, text: TEXT, ink3: DIM, accentInk: INKDARK, flash: FLASH, scrim: SCRIM, tones: TONES, screen: LED } = T);
+    return T;
+  };
+  let scheme = colours(R.theme.now);
   const B4 = [0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5];
   const tone = (t) => TONES[t] || ACC;
   const now = () => performance.now() / 1000;
@@ -21,9 +25,7 @@
   const ease = (u) => (u < 0.5 ? 4 * u * u * u : 1 - (-2 * u + 2) ** 3 / 2);
   const back = (u) => 1 + 2.2 * (u - 1) ** 3 + 1.2 * (u - 1) ** 2;
   const rnd = (a, b) => a + Math.random() * (b - a);
-  const hex = (h) => [1, 3, 5].map((i) => parseInt(h.slice(i, i + 2), 16));
-  const mixHex = (a, b, k) => '#' + hex(a).map((v, i) => Math.round(v + (hex(b)[i] - v) * k).toString(16).padStart(2, '0')).join('');
-  const rgba = (h, a) => `rgba(${hex(h).join(',')},${a})`;
+  const { mix: mixHex, rgba } = R.theme;
   const sfx = (n) => R.sfx?.play(n);
   const reducedMQ = matchMedia('(prefers-reduced-motion: reduce)');
   const reduced = () => reducedMQ.matches;
@@ -143,6 +145,17 @@
     Object.assign(m, { p: m.p ?? 0, alpha: 1, dx: 0, dy: 0, born: now(), alive: true, z: m.z ?? 3, color: m.color ?? ACC });
     marks.push(m); touch(); return m;
   }
+  // A new scheme: its colours from here on, and what's already drawn moves to it. A mark keeps the colour it was
+  // made in (a tone, or the accent), so each is given the same tone of the new scheme; the caption's style is set
+  // again; and everything is painted once more.
+  R.theme.onChange((T) => {
+    const was = scheme.tones;
+    scheme = colours(T);
+    const same = (c) => { for (const k of Object.keys(was)) if (was[k] === c) return T.tones[k]; return c; };
+    for (const m of marks) { m.color = same(m.color); if (m.color0) m.color0 = same(m.color0); }
+    capStyle();
+    touch();
+  });
   const markBox = (m) => { const b = typeof m.box === 'function' ? m.box() : m.box ?? (m.pts ? boxOf(m.pts) : null); return b ? [b[0] + m.dx, b[1] + m.dy, b[2], b[3]] : [0, 0, W, H]; };
   const clampR = (r) => { const x0 = Math.max(0, Math.floor(r[0])), y0 = Math.max(0, Math.floor(r[1])), x1 = Math.min(W, Math.ceil(r[0] + r[2])), y1 = Math.min(H, Math.ceil(r[1] + r[3])); return [x0, y0, Math.max(0, x1 - x0), Math.max(0, y1 - y0)]; };
   // Repaints one area: clears it on both layers, draws the marks that touch it, then the glow (the ink blurred under
@@ -237,7 +250,7 @@
     if (n < str.length) touch(0.1);
     if (o.rim) { c.lineWidth = o.rim; c.strokeStyle = EDGE; c.lineJoin = 'round'; c.strokeText(str.slice(0, n), x0, y); }
     if (n >= str.length || o.land === false) { c.fillStyle = color; c.fillText(str.slice(0, n), x0, y); }
-    else { const head = str.slice(0, Math.max(0, n - 2)); c.fillStyle = color; c.fillText(head, x0, y); c.fillStyle = '#ffffff'; c.fillText(str.slice(head.length, n), x0 + c.measureText(head).width, y); }
+    else { const head = str.slice(0, Math.max(0, n - 2)); c.fillStyle = color; c.fillText(head, x0, y); c.fillStyle = FLASH; c.fillText(str.slice(head.length, n), x0 + c.measureText(head).width, y); }
     c.restore();
     return full;
   }
@@ -318,7 +331,7 @@
     if (o.down) b.translate(0, 2);
     b.fillStyle = mixHex(fill, '#000000', 0.62); b.fill(steppedPath(x, y + (o.down ? 1 : 3), w, h, P));
     b.fillStyle = o.hover ? mixHex(fill, '#ffffff', 0.3) : fill; b.fill(steppedPath(x, y, w, h, P));
-    b.fillStyle = 'rgba(255,255,255,0.55)'; b.fillRect(x + P, y + 1, w - 2 * P, 1.5); b.fillStyle = 'rgba(3,39,34,0.25)'; b.fillRect(x + P, y + h - 2.5, w - 2 * P, 1.5);
+    b.fillStyle = 'rgba(255,255,255,0.55)'; b.fillRect(x + P, y + 1, w - 2 * P, 1.5); b.fillStyle = rgba(INKDARK, 0.25); b.fillRect(x + P, y + h - 2.5, w - 2 * P, 1.5);
     typed(b, str, cx, cy, CHIP(k), INKDARK, type, { anchor: 'middle', baseline: 'middle', land: false });
     b.restore();
   }
@@ -443,7 +456,7 @@
       const [x, y, w, h] = rectOf(m), p = 8, g = (v) => Math.round(v / P) * P, hole = [g(x - p), g(y - p), g(w + 2 * p), g(h + 2 * p)];
       add({ z: 0, part: m.part, screen: true, p: 1, box: () => [0, 0, W, H], draw(b, l, t) {
         const u = clamp((t - this.born) / 0.5, 0, 1), BAND = 6, e = BAND * P;
-        b.fillStyle = `rgba(3,14,16,${0.62 * u})`;
+        b.fillStyle = rgba(SCRIM, 0.62 * u);
         const outer = new Path2D(); outer.rect(0, 0, W, H); outer.rect(hole[0] - e, hole[1] - e, hole[2] + 2 * e, hole[3] + 2 * e); b.fill(outer, 'evenodd');
         // a dithered falloff round the opening (our pixels) instead of a blur
         for (let gy = Math.floor((hole[1] - e) / P); gy < (hole[1] + hole[3] + e) / P; gy++) for (let gx = Math.floor((hole[0] - e) / P); gx < (hole[0] + hole[2] + e) / P; gx++) {
@@ -575,7 +588,7 @@
         chrome(b, x, y, this.cw, this.ch, { edge: o.edge ? colorOf(this, this.color) : ACC });
         if (this.p < 1) return;
         if (bar) {
-          b.fillStyle = 'rgba(120,255,226,0.06)'; b.fillRect(x + 2, y + 2, w - 4, bar - 2);
+          b.fillStyle = rgba(ACC, 0.06); b.fillRect(x + 2, y + 2, w - 4, bar - 2);
           b.fillStyle = DEEP; b.fillRect(x + 2, y + bar, w - 4, 1);
           [0, 1].forEach((k) => { b.fillStyle = k ? DEEP : ACC; b.fillRect(x + 12 + k * 12, y + 11, 5, 5); });
           if (o.title) typed(b, ellipsize(String(o.title).toLowerCase(), w - 90, `500 10px ${MONO}`), x + w / 2, y + 17, `500 10px ${MONO}`, DIM, (t - this.done) / 0.4, { anchor: 'middle' });
@@ -722,7 +735,7 @@
       const c = await card(m, w, h, function (b, l, t, x, y, age) {
         const u = clamp(age / 1, 0, 1);
         if (ready) for (const [gx, gy, v] of cells) { if ((B4[(gy % 4) * 4 + (gx % 4)] + 0.5) / 16 > u * 1.05) continue; b.fillStyle = LED[v]; b.fillRect(x + ix + gx * 3, y + 12 + gy * 3, 3, 3); }
-        else { b.fillStyle = 'rgba(14,92,96,0.25)'; b.fillRect(x + ix, y + 12, pw, ph); typed(b, 'no picture found', x + w / 2, y + 12 + ph / 2, SMALL, DIM, 1, { anchor: 'middle' }); }
+        else { b.fillStyle = rgba(DEEP, 0.25); b.fillRect(x + ix, y + 12, pw, ph); typed(b, 'no picture found', x + w / 2, y + 12 + ph / 2, SMALL, DIM, 1, { anchor: 'middle' }); }
         capRows.forEach((r, i) => typed(b, r, x + w / 2, y + capY + i * capLh, CAPF, TEXT, (age - 0.6 - i * 0.15) / 0.5, { anchor: 'middle' }));
         credRows.forEach((r, i) => typed(b, r, x + w / 2, y + credY + i * 14, `400 10px ${MONO}`, DIM, (age - 0.8) / 0.4, { anchor: 'middle' }));
       }, { title: 'photo' });
@@ -974,7 +987,7 @@
     let hover = false, down = 0, br = null;
     const c = await card(m, w, h, function (b, l, t, x, y, age) {
       // a ticket: notches on both sides, a dashed tear line, a big number
-      b.fillStyle = 'rgba(3,14,16,1)'; for (const sx of [x - 1, x + w - 9]) b.fillRect(sx, y + 36 + off, 10, 10);
+      b.fillStyle = rgba(SCRIM, 1); for (const sx of [x - 1, x + w - 9]) b.fillRect(sx, y + 36 + off, 10, 10);
       b.fillStyle = DEEP; for (let dx = x + 14; dx < x + w - 14; dx += 8) b.fillRect(dx, y + 41 + off, 4, 1);
       titles.forEach((r, i) => typed(b, r, x + 18, y + 26 + i * 22, TF, TEXT, (age - i * 0.2) / 0.4));
       if (m.n != null) typed(b, String(m.n).padStart(2, '0'), x + w - 18, y + 26, `800 18px ${DOTO}`, MID, 1, { anchor: 'end' });
@@ -1058,7 +1071,10 @@
   // ---------------------------------------------------------------- speech: the caption at the bottom
   const cap = document.createElement('div');
   cap.setAttribute('role', 'status'); cap.setAttribute('aria-live', 'polite');
-  Object.assign(cap.style, { position: 'fixed', left: '50%', bottom: '18px', transform: 'translateX(-50%)', maxWidth: 'min(720px, 80vw)', padding: '8px 16px', font: `500 13px ${MONO}`, color: TEXT, background: GLASS, border: `1.5px solid ${ACC}`, boxShadow: `0 0 12px ${rgba(ACC, 0.45)}`, borderRadius: '2px', opacity: '0', transition: 'opacity .2s', pointerEvents: 'none', textAlign: 'center', zIndex: '5' });
+  Object.assign(cap.style, { position: 'fixed', left: '50%', bottom: '18px', transform: 'translateX(-50%)', maxWidth: 'min(720px, 80vw)', padding: '8px 16px', font: `500 13px ${MONO}`, borderRadius: '2px', opacity: '0', transition: 'opacity .2s', pointerEvents: 'none', textAlign: 'center', zIndex: '5' });
+  // Its colours, set again when the scheme changes.
+  function capStyle() { Object.assign(cap.style, { color: TEXT, background: GLASS, border: `1.5px solid ${ACC}`, boxShadow: `0 0 12px ${rgba(ACC, 0.45)}` }); }
+  capStyle();
   const mountCap = () => document.body.appendChild(cap);
   if (document.body) mountCap(); else document.addEventListener('DOMContentLoaded', mountCap);
   const caption = { show(text) { cap.style.bottom = `${(R.safe?.bottom ?? 0) + 18}px`; cap.textContent = text; cap.style.opacity = text ? '1' : '0'; }, hide() { cap.style.opacity = '0'; } };
@@ -1240,7 +1256,7 @@
     if (cw < 4) return;
     chrome(b, x, y, cw, ch);
     if (!this.ready) return;
-    b.fillStyle = 'rgba(120,255,226,0.06)'; b.fillRect(x + 2, y + 2, w - 4, 24);
+    b.fillStyle = rgba(ACC, 0.06); b.fillRect(x + 2, y + 2, w - 4, 24);
     b.fillStyle = DEEP; b.fillRect(x + 2, y + 26, w - 4, 1);
     [0, 1].forEach((k) => { b.fillStyle = k ? DEEP : ACC; b.fillRect(x + 12 + k * 12, y + 11, 5, 5); });
     typed(b, 'reminders', x + w / 2, y + 17, `500 10px ${MONO}`, DIM, (t - this.opened) / 0.4, { anchor: 'middle' });
@@ -1259,7 +1275,7 @@
         if (r.note || r.more) { typed(b, r.note || r.more, x + (r.note ? 40 : 18), ry + 17, SMALL, DIM, (t - this.opened - 0.15) / 0.4); continue; }
         const it = r.i, a = t - (REM.shown.get(it.id) ?? this.opened);
         if (a <= 0) continue;
-        if (this.hoverId === it.id) { b.fillStyle = 'rgba(120,255,226,0.07)'; b.fillRect(x + 4, ry, w - 8, r.h); }
+        if (this.hoverId === it.id) { b.fillStyle = rgba(ACC, 0.07); b.fillRect(x + 4, ry, w - 8, r.h); }
         const ink = it.done ? MID : it.overdue ? TONES.coral : this.color;
         pen(b, l, this, r.ring, clamp(a / 0.3, 0, 1), ink, { key: 'r' + it.id, w: 2.4 });
         wrapped(b, r.lines, x + 40, ry + 18, 19, BODY, it.done ? DIM : TEXT, (a - 0.1) / 0.4);

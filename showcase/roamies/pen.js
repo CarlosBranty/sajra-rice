@@ -6,8 +6,8 @@
 (() => {
   const R = window.Roamie;
   if (!R || typeof document === 'undefined') return;
-  // The pen's colours and size, the same as ink.js and voice/ink.swift.
-  const ACC = '#78ffe2', EDGE = 'rgba(3,39,34,0.6)', RADIUS = 2.8;
+  // The pen's size, the same as ink.js and voice/ink.swift; its colours are the scheme's (theme.js), like ink.js's.
+  const RADIUS = 2.8;
   const reducedMQ = matchMedia('(prefers-reduced-motion: reduce)');
   const loc = (x, y) => [x - (R.origin?.x ?? 0), y - (R.origin?.y ?? 0)];
   let cv = null, ctx = null, raf = 0, cur = null;
@@ -36,7 +36,7 @@
 
   function paint() {
     if (!ctx) return;
-    const d = devicePixelRatio || 1, t = performance.now();
+    const d = devicePixelRatio || 1, t = performance.now(), { accent: ACC, edge: EDGE } = R.theme.now;
     ctx.setTransform(d, 0, 0, d, 0, 0);
     ctx.clearRect(0, 0, innerWidth, innerHeight);
     ctx.lineCap = ctx.lineJoin = 'round';
@@ -59,13 +59,15 @@
       path(s.pts);
       ctx.shadowBlur = 0;
       ctx.strokeStyle = EDGE; ctx.lineWidth = RADIUS * 2 + 2.5; ctx.stroke();
-      ctx.shadowColor = 'rgba(120,255,226,0.75)'; ctx.shadowBlur = glow;
+      ctx.shadowColor = R.theme.rgba(ACC, 0.75); ctx.shadowBlur = glow;
       ctx.strokeStyle = ACC; ctx.lineWidth = RADIUS * 2; ctx.stroke();
     }
     ctx.globalAlpha = 1; ctx.shadowBlur = 0;
     raf = moving ? requestAnimationFrame(paint) : 0;
   }
   const redraw = () => { if (!raf) raf = requestAnimationFrame(paint); };
+  // A line that's still up is drawn again in the new scheme's colours.
+  R.theme.onChange(() => { if (strokes.length) redraw(); });
   const fade = (s, ms, after = 0) => { s.fadeAt = performance.now() + after; s.fadeMs = reducedMQ.matches ? 120 : ms; };
 
   R.pen = (m) => {

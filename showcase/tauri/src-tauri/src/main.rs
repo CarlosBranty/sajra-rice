@@ -211,6 +211,24 @@ fn dock_get(window: WebviewWindow) -> Option<Value> {
     dock
 }
 
+/// What Colors on System comes to: the desktop's note when it left one, else only whether its own setting is light
+/// (the page then uses its fixed light or dark scheme; showcase/roamies/theme.js).
+fn theme_or(note: Option<Value>, light: bool) -> Value {
+    note.unwrap_or_else(|| json!({ "light": light }))
+}
+
+/// The desktop's colour scheme right now, asked for by every page that follows it. Linux: the note a bar or shell
+/// left in $XDG_RUNTIME_DIR/roamies/theme.json (linux.rs), when there is a valid one. Otherwise, and everywhere
+/// else, the desktop's light or dark setting as the window sees it.
+#[tauri::command]
+fn theme_get(window: WebviewWindow) -> Value {
+    #[cfg(target_os = "linux")]
+    let note = linux::theme_note();
+    #[cfg(not(target_os = "linux"))]
+    let note = None;
+    theme_or(note, matches!(window.theme(), Ok(tauri::Theme::Light)))
+}
+
 /// Linux: the Roamie left its slot in the bar (out: true) or is back in it, for the bar to draw it there meanwhile.
 #[tauri::command]
 fn dock_state(out: bool) {
@@ -1537,7 +1555,7 @@ fn main() {
         .manage(TalkChord(Mutex::new(vec!["control".into(), "option".into()])))
         .manage(VoiceModel(Mutex::new(None)))
         .manage(PermGuide(Mutex::new(None)))
-        .invoke_handler(tauri::generate_handler![buddy, ink_wait, set_hot, set_hit_rects, dock_get, dock_state, talk_state, sidecar_send, set_typing, perm_status, perm_request, perm_guide, screen_check, open_settings, onboarding_finish, guide_close, panel_hide, esc_watch, relaunch, focus_guide, guide_aside, drag_window])
+        .invoke_handler(tauri::generate_handler![buddy, ink_wait, set_hot, set_hit_rects, theme_get, dock_get, dock_state, talk_state, sidecar_send, set_typing, perm_status, perm_request, perm_guide, screen_check, open_settings, onboarding_finish, guide_close, panel_hide, esc_watch, relaunch, focus_guide, guide_aside, drag_window])
         .on_menu_event(|app, e| match e.id.as_ref() {
             "quit" => app.exit(0),
             "restart" => spawn_sidecar(app),
@@ -1621,5 +1639,13 @@ mod tests {
         assert_eq!(cli_action(&args(&["roamies", "--talks"])), None);
         assert_eq!(cli_action(&args(&["--talk"])), None, "the first argument is the program");
         assert_eq!(cli_action(&args(&[])), None);
+    }
+
+    #[test]
+    fn system_colours_are_the_desktops_note_or_else_its_light_or_dark() {
+        let note = json!({ "light": true, "bg": "#f2e7de", "accent": "#9e6630" });
+        assert_eq!(theme_or(Some(note.clone()), false), note, "a note wins over the desktop's own setting");
+        assert_eq!(theme_or(None, true), json!({ "light": true }), "no note: light");
+        assert_eq!(theme_or(None, false), json!({ "light": false }), "no note: dark");
     }
 }

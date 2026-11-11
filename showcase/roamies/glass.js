@@ -1,14 +1,13 @@
 // The card look shared by the Sidekick's own UI (bubbles, the thinking tag, task tags, the step list): the same
 // stepped corners, dark glass, teal edge, glint and Martian Mono as the drawings' cards (ink.js) and the reminders.
+// Its colours are the scheme's in use (theme.js), read each time something is drawn.
 (() => {
   const R = window.Roamie;
   if (!R || typeof document === 'undefined') return;
   const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
-  const ACC = '#78ffe2', HOT = '#e6fffa', MID = '#28c4b8', DEEP = '#0e5c60', EDGE = 'rgba(3,39,34,0.6)';
-  const GLASS = 'rgba(6,22,24,0.94)', TEXT = '#dcfff6', DIM = '#8ab8b0', CORAL = '#ff8a7a', NOTE = '#e9a196';
+  const T = () => R.theme.now;
   const MONO = '"Martian Mono", ui-monospace, monospace';
-  const hex = (h) => [1, 3, 5].map((i) => parseInt(h.slice(i, i + 2), 16));
-  const rgba = (h, a) => `rgba(${hex(h).join(',')},${a})`;
+  const { rgb: hex, rgba } = R.theme;
 
   // The outline, clockwise from the top-left; tail: { side: 'top'|'right'|'bottom'|'left', at, to: [x, y] } adds a
   // stepped tail on that side, centred at `at` along it and stepping toward the point `to`.
@@ -37,9 +36,9 @@
 
   // Dark glass with a soft shadow, the accent edge with its glow, and a glint along the top.
   function chrome(c, x, y, w, h, o = {}) {
-    const path = o.path || steppedPath(x, y, w, h, o.corner ?? 8, o.tail), edge = o.edge || ACC;
+    const path = o.path || steppedPath(x, y, w, h, o.corner ?? 8, o.tail), edge = o.edge || T().accent;
     c.save();
-    c.fillStyle = GLASS; c.shadowColor = 'rgba(0,0,0,0.35)'; c.shadowBlur = 14; c.shadowOffsetY = 4; c.fill(path);
+    c.fillStyle = T().glass; c.shadowColor = 'rgba(0,0,0,0.35)'; c.shadowBlur = 14; c.shadowOffsetY = 4; c.fill(path);
     c.shadowColor = rgba(edge, 0.7); c.shadowBlur = 8; c.shadowOffsetY = 0; c.strokeStyle = edge; c.lineWidth = 1.5; c.globalAlpha *= 0.9; c.stroke(path);
     if (o.glint !== false && w > 24) { c.globalAlpha *= 0.6; c.shadowBlur = 0; c.strokeStyle = '#ffffff'; c.lineWidth = 1; c.beginPath(); c.moveTo(x + 12, y + 1.5); c.lineTo(x + Math.min(w * 0.45, 90), y + 1.5); c.stroke(); }
     c.restore();
@@ -47,14 +46,14 @@
 
   const meas = document.createElement('canvas').getContext('2d');
   const textW = (s, font) => { meas.font = font; return meas.measureText(String(s ?? '')).width; };
-  // Words typing themselves in; the last couple land white. Returns the full width.
+  // Words typing themselves in; the last couple land white (the scheme's flash). Returns the full width.
   function typed(c, str, x, y, font, color, u = 1, o = {}) {
     str = String(str ?? '');
     c.save(); c.font = font; c.textBaseline = o.baseline || 'middle'; c.textAlign = 'left';
     const full = c.measureText(str).width, x0 = o.anchor === 'middle' ? x - full / 2 : o.anchor === 'end' ? x - full : x;
     const n = Math.floor(str.length * clamp(u, 0, 1));
     if (n >= str.length) { c.fillStyle = color; c.fillText(str, x0, y); }
-    else if (n > 0) { const head = str.slice(0, Math.max(0, n - 2)); c.fillStyle = color; c.fillText(head, x0, y); c.fillStyle = '#ffffff'; c.fillText(str.slice(head.length, n), x0 + c.measureText(head).width, y); }
+    else if (n > 0) { const head = str.slice(0, Math.max(0, n - 2)); c.fillStyle = color; c.fillText(head, x0, y); c.fillStyle = T().flash; c.fillText(str.slice(head.length, n), x0 + c.measureText(head).width, y); }
     c.restore();
     return full;
   }
@@ -95,17 +94,18 @@
     if (u <= 0) return;
     const path = new Path2D(); pts.slice(0, n).forEach((q, i) => (i ? path.lineTo(q[0], q[1]) : path.moveTo(q[0], q[1])));
     c.save(); c.lineCap = 'round'; c.lineJoin = 'round';
-    c.strokeStyle = EDGE; c.lineWidth = w + 2; c.stroke(path);
+    c.strokeStyle = T().edge; c.lineWidth = w + 2; c.stroke(path);
     c.shadowColor = rgba(color, 0.7); c.shadowBlur = 6; c.strokeStyle = color; c.lineWidth = w; c.stroke(path);
     c.restore();
   }
 
   // A pixel button like the drawings' chips (ink.js): filled is teal with dark ink, otherwise dark glass with a teal
   // edge and light ink. focus adds a bright ring, so the keyboard's choice shows; down presses it into its shadow.
-  const CHIP_F = `700 11px ${MONO}`, INK_DARK = '#032722';
+  const CHIP_F = `700 11px ${MONO}`;
   const mix = (a, b, k) => `rgb(${hex(a).map((v, i) => Math.round(v + (hex(b)[i] - v) * k)).join(',')})`;
   const chipW = (label) => Math.round(textW(label, CHIP_F) + 22);
   function chip(c, x, y, w, h, label, o = {}) {
+    const { accent: ACC, glass: GLASS, text: TEXT, hot: HOT, accentInk: INK_DARK } = T();
     c.save();
     if (o.focus) { c.strokeStyle = HOT; c.lineWidth = 2; c.stroke(steppedPath(x - 3.5, y - 3.5, w + 7, h + 9, 6)); }
     if (o.down) c.translate(0, 2);
@@ -113,7 +113,7 @@
     const face = steppedPath(x, y, w, h, 4);
     if (o.filled) {
       c.fillStyle = o.hover ? mix(ACC, '#ffffff', 0.3) : ACC; c.fill(face);
-      c.fillStyle = 'rgba(255,255,255,0.55)'; c.fillRect(x + 4, y + 1, w - 8, 1.5); c.fillStyle = 'rgba(3,39,34,0.25)'; c.fillRect(x + 4, y + h - 2.5, w - 8, 1.5);
+      c.fillStyle = 'rgba(255,255,255,0.55)'; c.fillRect(x + 4, y + 1, w - 8, 1.5); c.fillStyle = rgba(INK_DARK, 0.25); c.fillRect(x + 4, y + h - 2.5, w - 8, 1.5);
     } else {
       c.fillStyle = GLASS; c.fill(face);
       if (o.hover) { c.fillStyle = rgba(ACC, 0.16); c.fill(face); }
@@ -124,5 +124,11 @@
     c.restore();
   }
 
-  R.glass = { ACC, HOT, MID, DEEP, EDGE, GLASS, TEXT, DIM, CORAL, NOTE, MONO, rgba, stepped, steppedPath, chrome, textW, typed, wrapRows, ringPts, pen, chip, chipW, CHIP_H: 23 };
+  R.glass = {
+    // The colours by the names the drawing code has for them: always the scheme's in use.
+    get ACC() { return T().accent; }, get HOT() { return T().hot; }, get MID() { return T().mid; }, get DEEP() { return T().deep; }, get FAINT() { return T().faint; },
+    get EDGE() { return T().edge; }, get GLASS() { return T().glass; }, get TEXT() { return T().text; }, get DIM() { return T().ink3; },
+    get CORAL() { return T().coral; }, get NOTE() { return T().note; }, get FLASH() { return T().flash; },
+    MONO, rgba, stepped, steppedPath, chrome, textW, typed, wrapRows, ringPts, pen, chip, chipW, CHIP_H: 23,
+  };
 })();

@@ -211,3 +211,9 @@ export function wakePhrase(v) {
 export const wakeOf = (c) => { const phrase = wakePhrase(c?.wakePhrase); return { on: c?.wakeWord === true && !!phrase, phrase }; };
 /** What the shell is told: the phrase to listen for, or '' while it's off (the helper is then never asked). */
 export const wakeFor = (c) => (wakeOf(c).on ? wakeOf(c).phrase : '');
+
+// The colours of the whole interface (the panel's Appearance page): Classic is what it always was; System follows the
+// desktop, light or dark, with the desktop's own colours when it says them (showcase/roamies/theme.js).
+export const THEMES = [['classic', 'Classic'], ['system', 'System']];
+/** The saved setting as one of the choices: anything else (missing, or a value that isn't a choice) is 'classic'. */
+export const themeOf = (v) => (typeof v === 'string' && THEMES.some(([id]) => id === v) ? v : 'classic');

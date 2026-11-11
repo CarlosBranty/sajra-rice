@@ -17,7 +17,7 @@ vm.createContext(ctx);
 const load = (f) => vm.runInContext(fs.readFileSync(new URL(`../../../roamies/${f}`, import.meta.url), 'utf8'), ctx);
 load('core.js');
 vm.runInContext('var Roamie = window.Roamie;', ctx);
-for (const f of ['glass.js', '10-dither.js', 'agent.js']) load(f);
+for (const f of ['theme.js', 'glass.js', '10-dither.js', 'agent.js']) load(f);
 const R = window.Roamie;
 
 const W = 1200, H = 800, BAR = 46;

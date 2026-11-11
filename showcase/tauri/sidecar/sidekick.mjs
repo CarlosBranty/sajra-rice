@@ -30,7 +30,7 @@ import { createTools, expand, fitImage, imageBlock, winOpen } from './tools.mjs'
 import { describeMarks } from './marks.mjs';
 import { faviconFor } from './draw.mjs';
 import { QUESTIONS, openNote, answerTurn, wantsSkip, endsChat, splitTurn, plain, stripNote, tourBeats, goalFrom, showcaseBeats } from './intro.mjs';
-import { SpeechText, CueFilter, VOICE_CUES, endsWithQuestion, LANGUAGES, languageOf, languageLine, DUCK_LEVELS, duckOf, duckLevel, WAKE_MIN, WAKE_MAX, wakePhrase, wakeOf, wakeFor } from './speech.mjs';
+import { SpeechText, CueFilter, VOICE_CUES, endsWithQuestion, LANGUAGES, languageOf, languageLine, DUCK_LEVELS, duckOf, duckLevel, WAKE_MIN, WAKE_MAX, wakePhrase, wakeOf, wakeFor, THEMES, themeOf } from './speech.mjs';
 import { createSpeaker } from './speaker.mjs';
 import { DEFAULT_VOICE, FISH_CHOICES } from './fish.mjs';
 import { createSecrets, retryLoad } from './secrets.mjs';
@@ -88,6 +88,7 @@ const DEFAULTS = {
   language: 'auto', // the reply language: 'auto' (nothing is asked of the model), 'en' or 'es' (speech.mjs LANGUAGES)
   duckOthers: false, duckLevel: 30, // Linux: other apps' sound goes down to this percentage while it listens and speaks (speech.mjs duckOf)
   wakeWord: false, wakePhrase: '', // Linux: saying the phrase starts listening, with no key; the microphone stays on for it (speech.mjs wakeOf)
+  theme: 'classic', // the interface's colours: 'classic', or 'system' to follow the desktop's light or dark and its colours (speech.mjs themeOf)
 };
 const LINUX = process.platform === 'linux';
 // Linux: "x11" or "wayland" (the app says which). Wayland keeps apps from seeing the pointer over other apps and
@@ -1275,6 +1276,7 @@ function panelState() {
     commitments: openCommitments().map((c) => ({ id: c.id, text: c.text, due: c.due ?? null, when: c.due ? fmtWhen(c.due) : '', overdue: !!(c.due && c.due < Date.now()) })),
     look: config.look ?? 'classic', looks: LOOKS.map(([id, label]) => [id, label]), name: lookName(),
     size: sizeNow(), sizes: SIZES,
+    theme: themeOf(config.theme), themes: THEMES,
     replies: config.replies === 'voice' ? 'voice' : 'text', fishKey: speech.on,
     fishModel: speech.pick, fishModels: FISH_CHOICES, fishFree: speech.on && speech.model.endsWith('-free'),
     language: languageOf(config.language), languages: LANGUAGES,
@@ -1434,6 +1436,7 @@ async function onMenu(id) {
   else if (id.startsWith('key:')) apiKeyLogin(id.slice(4));
   else if (id.startsWith('size:') && SIZES.some(([s]) => s === id.slice(5))) { config.size = id.slice(5); saveConfig(); ui({ kind: 'size', size: config.size }); menu(); }
   else if (id.startsWith('look:')) setLook(id.slice(5));
+  else if (id.startsWith('theme:') && THEMES.some(([t]) => t === id.slice(6))) { config.theme = id.slice(6); saveConfig(); ui({ kind: 'theme', theme: config.theme }); menu(); }
   else if (id === 'replies:text') setReplies('text');
   else if (id === 'replies:voice') setReplies('voice');
   else if (id.startsWith('fishmodel:') && FISH_CHOICES.some((c) => c.id === id.slice(10))) {
@@ -1692,6 +1695,7 @@ createInterface({ input: process.stdin }).on('line', (line) => {
     ui({ kind: 'sound', on: config.sound });
     ui({ kind: 'size', size: sizeNow() });
     ui({ kind: 'look', look: config.look ?? 'classic' });
+    ui({ kind: 'theme', theme: themeOf(config.theme) });
     if (config.onboarded) ui({ kind: 'greet' });
   } else if (m.type?.startsWith('ob_') || m.type?.startsWith('chat_') || m.type === 'set_keys' || m.type === 'set_actions' || m.type === 'set_login' || m.type === 'keybind_error') onGuide(m).catch((e) => console.error('guide', e));
   else if (m.type?.startsWith('voice')) onVoice(m);

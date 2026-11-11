@@ -71,6 +71,9 @@ fn trace() -> bool {
 //               overlay's (when it isn't and the overlay still has the keyboard, the bar may hand it back). t: when this
 //               was written (seconds); it is written again every couple of seconds (host.js), so an old one means
 //               Roamies has gone.
+//   theme.json  from the bar or shell, with or without a slot: {"light": true, "bg": "#f2e7de", "surface": "#ffffff",
+//               "fg": "#100a05", "muted": "#786c61", "line": "#e4d6cb", "accent": "#9e6630", "danger": "#d71921"}, the
+//               desktop's colours, used while Colors is on System (theme_note; showcase/roamies/theme.js).
 // Nothing is written unless a bar left a dock.json.
 
 fn dock_dir() -> Option<PathBuf> {
@@ -108,6 +111,27 @@ pub(crate) fn dock_get(window: &tauri::WebviewWindow) -> Option<Value> {
         (p.x as f64 / s, p.y as f64 / s, z.width as f64 / s, z.height as f64 / s)
     });
     dock_on(&dock, screen, screens).then_some(dock)
+}
+
+/// The desktop's colours in a theme.json, or None when it isn't one: `light` has to be true or false. Of the colours
+/// only those written exactly "#rrggbb" are kept (a page puts them in its styles); nothing else in the file is passed on.
+fn theme_from(text: &str) -> Option<Value> {
+    let v: Value = serde_json::from_str(text).ok()?;
+    let mut note = serde_json::Map::new();
+    note.insert("light".into(), Value::Bool(v.get("light")?.as_bool()?));
+    let hex = |c: &&str| c.len() == 7 && c.starts_with('#') && c.bytes().skip(1).all(|b| b.is_ascii_hexdigit());
+    for k in ["bg", "surface", "fg", "muted", "line", "accent", "danger"] {
+        if let Some(c) = v.get(k).and_then(Value::as_str).filter(hex) {
+            note.insert(k.into(), Value::String(c.to_ascii_lowercase()));
+        }
+    }
+    Some(Value::Object(note))
+}
+
+/// The colour note the desktop's bar or shell left, when there is one that makes sense. Read each time it's asked for
+/// (every couple of seconds while Colors is on System), so a desktop changing its colours shows by itself.
+pub(crate) fn theme_note() -> Option<Value> {
+    theme_from(&std::fs::read_to_string(dock_dir()?.join("theme.json")).ok()?)
 }
 
 /// What the bar reads back: this copy of Roamies, whether the Roamie is out of its slot, and whether it is being
@@ -1129,6 +1153,31 @@ mod tests {
         for bad in ["", "[]", "{}", r#"{"x":10,"y":5}"#, r#"{"x":"10","y":5,"sw":100,"sh":50}"#, r#"{"x":10,"y":5,"sw":0,"sh":50}"#, r#"{"x":101,"y":5,"sw":100,"sh":50}"#, r#"{"x":10,"y":-1,"sw":100,"sh":50}"#, r#"{"x":10,"y":5,"sw":1e9,"sh":50}"#] {
             assert_eq!(dock_from(bad), None, "{bad}");
         }
+    }
+
+    #[test]
+    fn a_colour_note_is_light_or_dark_and_only_hex_colours() {
+        let real = r##"{"light":true,"bg":"#f2e7de","surface":"#ffffff","fg":"#100a05","muted":"#786c61","line":"#e4d6cb","accent":"#9e6630","danger":"#d71921"}"##;
+        assert_eq!(theme_from(real), Some(json!({ "light": true, "bg": "#f2e7de", "surface": "#ffffff", "fg": "#100a05", "muted": "#786c61", "line": "#e4d6cb", "accent": "#9e6630", "danger": "#d71921" })));
+        // Light or dark alone is a note; colours are optional, and capitals are the same colour.
+        assert_eq!(theme_from(r#"{"light":false}"#), Some(json!({ "light": false })));
+        assert_eq!(theme_from(r##"{"light":false,"accent":"#9E6630"}"##), Some(json!({ "light": false, "accent": "#9e6630" })));
+        // No file content, not JSON, not an object, or light not said as true or false: no note.
+        for bad in ["", " ", "{", "null", "true", "[]", "[true]", r#""light""#, "{}", r##"{"bg":"#f2e7de"}"##, r#"{"light":"true"}"#, r#"{"light":1}"#, r#"{"light":null}"#, r#"{"light":[true]}"#] {
+            assert_eq!(theme_from(bad), None, "{bad}");
+        }
+        // A colour that isn't exactly #rrggbb is left out, whatever it is; the good one beside it stays.
+        let not_colours = [
+            r#""red""#, r##""#fff""##, r##""#12345g""##, r##""#1234567""##, r##""#12345""##, r##"" #123456""##, r##""#123456 ""##, r##""#123456\n""##, r##""123456#""##, r##""#éé12""##, r##""#ｆｆｆｆｆｆ""##,
+            r#""url(javascript:alert(1))""#, r#""rgb(1,2,3)""#, r##""#123456;color:red""##, r##""#12345\"""##, r##""#1234';""##, r#""""#, "123456", "1193046", "null", "true", r##"["#123456"]"##, r##"{"hex":"#123456"}"##,
+        ];
+        for bad in not_colours {
+            let got = theme_from(&format!(r##"{{"light":true,"bg":{bad},"fg":"#100a05"}}"##));
+            assert_eq!(got, Some(json!({ "light": true, "fg": "#100a05" })), "{bad}");
+        }
+        // Nothing else in the file leaves here: no other key, and no colour under a name that isn't one of the seven.
+        let extra = theme_from(r##"{"light":true,"paint":"wall","s2":"#faefe6","font":"x;}body{display:none","bg":"#f2e7de","nested":{"bg":"#000000"}}"##);
+        assert_eq!(extra, Some(json!({ "light": true, "bg": "#f2e7de" })));
     }
 
     #[test]

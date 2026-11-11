@@ -441,6 +441,7 @@
     return [
       group('Look', 'Each look has its own name and voice.', null, lookTiles()),
       group('Size', 'How big I am on your screen.', null, picks('Size', state.sizes, state.size, (x) => act(`size:${x}`), 'size')),
+      group('Colors', 'Mine, or your desktop\'s: light or dark, as it is.', null, picks('Colors', state.themes, state.theme, (x) => act(`theme:${x}`), 'theme')),
     ];
   }
   // The looks as live tiles: each one's character, playing, at the size picked below. Kept between renders (a state update mustn't restart
@@ -755,6 +756,7 @@
       commitments: [{ id: 'c1', text: 'Send the launch email', when: 'Fri 7 Nov, 10:00', overdue: false }, { id: 'c2', text: 'Book the dentist', when: 'Mon 3 Nov, 09:00', overdue: true }],
       name: 'Roamie', look: 'classic', looks: [['classic', 'Roamie'], ['jarvis', 'JARVIS'], ['anime', 'Anime Girl'], ['sarah', 'Sarah'], ['adrian', 'Adrian']],
       size: 'default', sizes: [['default', 'Default'], ['small', 'Small'], ['cursor', 'Cursor']],
+      theme: 'classic', themes: [['classic', 'Classic'], ['system', 'System']],
       replies: 'voice', fishKey: true, fishModel: 'drama-3', fishFree: false,
       language: 'auto', languages: [['auto', 'Auto'], ['en', 'English'], ['es', 'Español']],
       fishModels: [{ id: 'drama-3', name: 'Drama 3', perM: 50, promo: { perM: 10, until: '2026-12-01T08:00:00Z' } }, { id: 's2.1-pro', name: 'S2.1 Pro', perM: 15 }],

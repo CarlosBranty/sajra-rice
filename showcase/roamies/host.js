@@ -414,6 +414,9 @@
       field.setAttribute('aria-label', `Message for ${NAMES[m.look] ?? NAMES.classic}`);
       return;
     }
+    // Colours: 'classic', or 'system': then the shell says what the desktop's scheme is (its note, or just light or
+    // dark), now and every couple of seconds, and a change is drawn at once (theme.js). Classic asks nothing.
+    if (m.kind === 'theme') { Roamie.theme.follow(m.theme, () => invoke('theme_get')); return; }
     if (!getAgent()) return;
     if (m.kind === 'hands') {
       // on/off: it is acting in another app. In between: where each step lands (global screen points) and when a
