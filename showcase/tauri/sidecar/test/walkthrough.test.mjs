@@ -45,6 +45,8 @@ if (process.platform === 'linux' && !process.env.ROAMIES_HANDS) {
     const segs = [];
     const made = createTools({
       allowActions: () => false, ask: async () => false, openUrl: noop, onCommitments: noop, showList: noop, fmtWhen: String, commitmentsText: () => '', userName: 'Kai', askShell, waits,
+      // No window source (on Hyprland the one from hyprctl): the drawing doesn't depend on the desktop it runs on.
+      winSource: null,
       ui: (m) => {
         if (m.kind !== 'agent' || m.e.type !== 'draw') return;
         segs.push(m.e);

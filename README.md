@@ -181,6 +181,12 @@ needs its development files (`libgtk-layer-shell-dev`, `gtk-layer-shell-devel`).
 
 On X11 sessions the shortcuts work as on Windows (hold Ctrl+Alt to talk, Ctrl+Alt+S to show or hide).
 
+**On Hyprland** Roamies asks the compositor where your windows are (`hyprctl -j clients` and `monitors`, read only),
+as it asks its helper on macOS and Windows: a frame drawn round a window takes that window's edges, cards go beside
+the window you're in instead of over it, and a drawing goes away when another window comes to the front, that window
+moves, or you switch workspace. Other Linux desktops don't say where windows are, so there frames stay as drawn and a
+drawing doesn't notice the window changing. It still can't read or work the windows themselves.
+
 **Quiet while you talk:** with **Lower other sounds** on (the panel's **Voice** page, off by default), every other
 app's sound goes down while Roamies listens and while it speaks a reply, to 10, 20, 30 or 50 % of what each app had,
 and comes back when it stops. It needs `pactl` (PipeWire's pulse server or PulseAudio). A sound that starts meanwhile

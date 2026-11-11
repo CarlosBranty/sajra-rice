@@ -52,6 +52,11 @@ export const needsVoiceModel = (platform) => platform === 'win32' || platform ==
  *  helper is there (Roamies sets ROAMIES_HANDS to it). */
 export const hasHands = (platform, hands) => platform === 'darwin' || !!hands;
 
+/** Linux in a Hyprland session: the compositor says where windows are (hypr.mjs), which gives the draw tool three of
+ *  the helper's window features without the helper: frames fitted to a window, cards beside it, marks cleared when
+ *  the window or workspace changes. Not hasHands: nothing finds things by their words or works other apps there. */
+export const onHyprland = (platform, env = process.env) => platform === 'linux' && !!env.HYPRLAND_INSTANCE_SIGNATURE;
+
 /** Ask About an Area (the snap shortcut and menu item): the helper's area selection, on macOS and Windows.
  *  Linux has no hands helper yet, so none of the three below. */
 export const canSnap = (platform, hands) => platform === 'darwin' || (platform === 'win32' && !!hands);

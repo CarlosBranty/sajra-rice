@@ -11,7 +11,8 @@ import { ASK, BLOCK, checkDrawAction, checkOpen, checkRead, checkUrl, checkWrite
 import dns from 'node:dns/promises';
 import { CARDS, DrawArgs, checkDraw, createParts, faviconFor, photoFor, pickTextMatch, resolveTargets } from './draw.mjs';
 import { plain } from './intro.mjs';
-import { drawWords, hasHands, linuxSession, stepWaits } from './platform.mjs';
+import { createHypr } from './hypr.mjs';
+import { drawWords, hasHands, linuxSession, onHyprland, stepWaits } from './platform.mjs';
 import { addCommitment, forgetFact, parseDue, updateCommitment } from './store.mjs';
 
 const HOME = os.homedir();
@@ -124,6 +125,10 @@ const actionsOff = `File edits and commands are switched off. Tell the user to t
 // "hands": the bundled helper that captures one window or area and reads/controls other apps (hands/main.swift on
 // macOS, hands-win on Windows; same commands and JSON). A .mjs one (a test's fake) runs on this Node.
 const HANDS = process.env.ROAMIES_HANDS || '';
+// Where windows are without the helper: on Hyprland the compositor says (hypr.mjs; same reply shapes as the helper's
+// windows and locate front). Only for drawing: frames fitted to a window, cards beside it, marks cleared when the
+// window or workspace changes. Everything else of the helper's stays off.
+const WINDOWS = !HANDS && onHyprland(process.platform) ? createHypr() : null;
 /** Where a beat that waits shows a button to press (waits 'chip'): which beat's button reads Done, the last of several
  *  that wait. -1 when one or none does: its button reads Next, since more steps may follow in another call. */
 export const doneBeat = (beats) => { const w = beats.flatMap((b, i) => (b.wait ? [i] : [])); return w.length > 1 ? w.at(-1) : -1; };
@@ -238,7 +243,8 @@ const GIT_SAFE = {
 
 // askShell: Linux asks the app itself for screenshots and copying ({type:'screenshot'|'clipboard', …} → its answer).
 // waits: how a drawing's beat waits here (this computer's way unless a test says otherwise).
-export function createTools({ allowActions, ui, ask, openUrl, onCommitments, showList, fmtWhen, commitmentsText, userName, onPlan = () => {}, speak = () => false, onHandoff = () => {}, watchClicks = () => {}, onInkGone = () => {}, askShell = async () => ({ ok: false, error: 'Roamies isn\'t running.' }), waits = WAITS }) {
+// winSource: where windows are without the helper ({ windows(), front() }, as WINDOWS; null: nowhere).
+export function createTools({ allowActions, ui, ask, openUrl, onCommitments, showList, fmtWhen, commitmentsText, userName, onPlan = () => {}, speak = () => false, onHandoff = () => {}, watchClicks = () => {}, onInkGone = () => {}, askShell = async () => ({ ok: false, error: 'Roamies isn\'t running.' }), waits = WAITS, winSource = WINDOWS }) {
   let axNudged = 0;
   let lastShot = null; // how the latest screenshot's pixels map to screen points (see pointing.mjs)
   let lastRead = null; // { win, controls } from the latest read_window, to catch ids that went stale
@@ -406,10 +412,13 @@ export function createTools({ allowActions, ui, ask, openUrl, onCommitments, sho
   // The window a drawing belongs to: the front window's id and place. Its title isn't part of it (a page updating
   // its title, a document being edited, isn't the screen changing).
   // Its rect and app too, so a click can be told to be in it.
+  // On Hyprland the id is the window's address and the workspace's; with no window on the workspace in use, that
+  // workspace alone, so switching to an empty one is a change too.
+  const winOf = (w) => ({ key: `${w.id}|${(w.bounds ?? []).map((v) => Math.round(v / 4)).join(',')}`, rect: w.bounds ?? null, app: w.app ?? '' });
   const frontWin = async () => {
-    if (!HANDS) return null;
+    if (!HANDS) { const f = await winSource?.front().catch(() => null); return f?.window ? winOf(f.window) : f?.workspace != null ? { key: `@${f.workspace}`, rect: null, app: '' } : null; }
     const r = await runHands(['locate', 'front'], { timeout: 900 });
-    try { const w = JSON.parse(r.stdout.trim().split('\n').pop() || '{}').window; return w ? { key: `${w.id}|${(w.bounds ?? []).map((v) => Math.round(v / 4)).join(',')}`, rect: w.bounds ?? null, app: w.app ?? '' } : null; } catch { return null; }
+    try { const w = JSON.parse(r.stdout.trim().split('\n').pop() || '{}').window; return w ? winOf(w) : null; } catch { return null; }
   };
   const frontKey = async () => (await frontWin())?.key ?? '';
   // What the front window shows: a browser's address (without the #part), else its title, less what changes on its
@@ -436,7 +445,7 @@ export function createTools({ allowActions, ui, ask, openUrl, onCommitments, sho
   }
   // When another window comes to the front, or that window moves or closes, the drawing no longer sits on what it was about.
   function watchStale() {
-    if (!HANDS || ink.watch) return;
+    if (!(HANDS || winSource) || ink.watch) return;
     ink.watch = setInterval(async () => {
       if (ink.active) return;
       if (!windowBound()) { clearInterval(ink.watch); ink.watch = null; watchClicks(false); return; }
@@ -534,8 +543,8 @@ export function createTools({ allowActions, ui, ask, openUrl, onCommitments, sho
       },
       // The open windows' boxes, front to back (once per segment), for frames drawn round a whole window.
       windows() {
-        if (!HANDS) return Promise.resolve([]);
-        wins ??= hands('windows').then((r) => (r.windows ?? []).map((w) => w.bounds).filter(Array.isArray), () => []);
+        if (!HANDS && !winSource) return Promise.resolve([]);
+        wins ??= (HANDS ? hands('windows') : winSource.windows()).then((r) => (r?.windows ?? []).map((w) => w.bounds).filter(Array.isArray), () => []);
         return wins;
       },
       // The screenshot is checked once per segment (not for every point of a traced outline).
@@ -614,7 +623,7 @@ export function createTools({ allowActions, ui, ask, openUrl, onCommitments, sho
     const stopped = () => { if (ctx?.signal?.aborted) clearAllInk(); return 'Stopped.'; };
     // Where there's room for cards: the screen minus the front window; and what's on it, so names avoid covering words.
     const hasCards = beats.some((b) => b.marks.some((m) => CARDS.includes(m.kind)));
-    const win = hasCards && HANDS ? (await hands('locate', 'front').catch(() => null))?.window?.bounds ?? null : null;
+    const win = hasCards && (HANDS || winSource) ? (await (HANDS ? hands('locate', 'front') : winSource.front()).catch(() => null))?.window?.bounds ?? null : null;
     const busy = lastRead?.turn === turn ? lastRead.controls.filter((c) => !c.offscreen && c.bounds).slice(0, 300).map((c) => c.bounds) : [];
     ink.active++;
     // Lookups are shared until a click or hover (then the screen may have changed, and words are retried a moment).
@@ -663,7 +672,7 @@ export function createTools({ allowActions, ui, ask, openUrl, onCommitments, sho
         await new Promise((res) => setTimeout(res, 350));
       }
     } finally { ink.active--; }
-    if (windowBound()) { [ink.win, ink.page] = await Promise.all([frontWin(), frontPage()]); ink.front = ink.win?.key ?? ''; watchStale(); if (ink.win) watchClicks(true); }
+    if (windowBound()) { [ink.win, ink.page] = await Promise.all([frontWin(), frontPage()]); ink.front = ink.win?.key ?? ''; watchStale(); if (ink.win && HANDS) watchClicks(true); } // (clicks come from the helpers; Hyprland gives none)
     const list = parts.describe(drawn);
     // The lines were already said (and captioned) as it drew. Said here, right before the reply is written, so the
     // reply doesn't say them again: models restated each step after a walkthrough even with the rule in the prompt.
