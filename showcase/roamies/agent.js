@@ -131,6 +131,11 @@
     // ptr: the real cursor whenever it's on this screen (even when it hasn't moved for a while), else null.
     const presence = { auto: false, idle: 1.5, summonIdle: 4.5, lastActive: 0, summoned: false, cursor: null, ptr: null, n: 0 };
     let SAFE = R.safe;
+    // Linux, with a desktop bar that keeps a slot for it (host.js): the bar draws it resting there, and here it comes
+    // out of the slot and goes back into it. The slot's centre, in overlay px.
+    let dock = null;
+    // Where the body is wholly behind the bar at the slot (the bar is drawn over this overlay).
+    const dockPt = () => (dock ? [dock.x, Math.max(SAFE.top, dock.y * 2) - k.R * 1.3] : null);
     // The visible screen: overlay minus menu bar / Dock / taskbar.
     const bounds = () => ({ l: SAFE.left, t: SAFE.top, r: W - SAFE.right, b: H - SAFE.bottom });
 
@@ -159,8 +164,8 @@
       const onInk = (x, y) => !!R.inkHit && [[0, 0], [-1, 0], [1, 0], [0, -1], [0, 1], [-0.7, -0.7], [0.7, -0.7], [-0.7, 0.7], [0.7, 0.7]].some(([dx, dy]) => R.inkHit(x + dx * r * 1.2, y + dy * r * 1.2));
       const usable = c.filter(([x, y]) => spotOK(x, y) && !onInk(x, y));
       const clear = usable.filter(([x, y]) => cx == null || Math.hypot(x - cx, y - cy) >= AVOID());
-      // Shortest trip from where it is; the very first spot prefers the bottom-right corner.
-      const ref = fromX != null ? [fromX, fromY] : [S.r, S.b];
+      // Shortest trip from where it is; the very first spot prefers the bottom-right corner, or by its slot in the bar.
+      const ref = fromX != null ? [fromX, fromY] : dock ? [dock.x, S.t] : [S.r, S.b];
       if (clear.length) return clear.sort((p, q) => Math.hypot(p[0] - ref[0], p[1] - ref[1]) - Math.hypot(q[0] - ref[0], q[1] - ref[1]))[0];
       if (usable.length && cx != null) return usable.sort((p, q) => Math.hypot(q[0] - cx, q[1] - cy) - Math.hypot(p[0] - cx, p[1] - cy))[0];
       // Nowhere better (cards fill the free space): stay where it is rather than jump to the middle of the screen.
@@ -324,7 +329,8 @@
     };
     const nextVariant = () => (ORDER.includes(forcedVariant) ? forcedVariant : ORDER[presence.n++ % ORDER.length]);
     // Popping up at the cursor: in place (materialize or crt), never dropping in from the top of the screen.
-    const entrance = () => { let v = nextVariant(); if (v === 'drop' && station.byCursor && !forcedVariant) v = nextVariant(); return v; };
+    const entrance = () => { if (dock && !forcedVariant) return 'dock'; let v = nextVariant(); if (v === 'drop' && station.byCursor && !forcedVariant) v = nextVariant(); return v; };
+    const exit = () => (dock && !forcedVariant ? 'dock' : nextVariant());
     const visible = () => k.presence === 'shown' || k.presence === 'in';
     // Bubbles and tools wait until the body has (nearly) arrived.
     const stage = () => k.presence === 'shown' || (k.presence === 'in' && k.presU > 0.72);
@@ -345,7 +351,7 @@
       if (visible()) return;
       fol.keep = false; // a new appearance picks its side afresh
       const [x, y] = spot();
-      k.appear(entrance(), x, y);
+      k.appear(entrance(), x, y, dockPt());
     };
     const MAX_COLS = 38, MAX_LINES = 7, THINK_COLS = 28, THINK_LINES = 1, METER = 7;
     // Bubble text: Martian Mono (0.7 em per letter), sized to the bubble's line grid.
@@ -825,14 +831,14 @@
         presence.lastActive = now; presence.summoned = summoned;
         if (visible()) { if (summoned) comeToCursor(); return false; }
         const [x, y] = spot();
-        return k.appear(variant ?? entrance(), x, y);
+        return k.appear(variant ?? entrance(), x, y, dockPt());
       },
       hide: ({ instant = false, variant } = {}) => {
         if (pen.held) penRelease();
         if (b) close(b);
         if (tool) tool.finish(true);
         presence.summoned = false;
-        return k.vanish(instant ? null : variant ?? nextVariant(), instant);
+        return k.vanish(instant ? null : variant ?? exit(), instant, dockPt());
       },
       toggle: () => (visible() ? api.hide() : api.show({ summoned: true })),
       // First-run hello: drop in from the menu bar right under the tray icon (x in overlay px) and point up at it.
@@ -922,6 +928,10 @@
       },
       setAuto: (on, idle) => { presence.auto = !!on; if (idle) presence.idle = idle; presence.lastActive = now; },
       get visible() { return visible(); },
+      // The bar's slot for it ({ x, y } in overlay px), or none.
+      setDock: (d) => { dock = Number.isFinite(d?.x) && Number.isFinite(d?.y) ? { x: d.x, y: d.y } : null; },
+      // Anywhere on screen, from the first frame of its entrance to the last of its exit.
+      get out() { return k.presence !== 'hidden'; },
       // The speech bubble is still typing its words out.
       typing: () => !!b && b.kind === 'speech' && b.shown < b.text.length,
       get station() { return { ...station }; },
@@ -1123,7 +1133,7 @@
           const busyNow = b || dying.length || tool || pen.held || now < actUntil || m.dragging || m.flung || hover || k.presence === 'in' || R.panel?.working;
           if (busyNow) presence.lastActive = now;
           const idleFor = presence.summoned ? presence.summonIdle : presence.idle;
-          if (k.presence === 'shown' && now - presence.lastActive > idleFor) { presence.summoned = false; k.vanish(nextVariant()); }
+          if (k.presence === 'shown' && now - presence.lastActive > idleFor) { presence.summoned = false; k.vanish(exit(), false, dockPt()); }
         }
         if (!onStage) {
           // Bubbles closed by hide() still need to finish dissolving (unseen) so their promises settle.

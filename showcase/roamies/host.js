@@ -57,6 +57,27 @@
       sent = key; sentAt = now;
       invoke('set_hit_rects', { rects }).catch(() => { sent = ''; });
     }, 120);
+
+    // A desktop bar that keeps a slot for the Roamie (see linux.rs): the shell reads where the slot is on this
+    // screen, and the Roamie comes out of it and goes back into it (agent.js setDock). The bar draws it resting in
+    // the slot while it's away, so it is told at once when the Roamie leaves or is back, and every couple of
+    // seconds besides: that's how the bar knows Roamies is still running.
+    let docked = false, toldOut = null;
+    const tell = (out) => { toldOut = out; invoke('dock_state', { out }).catch(() => { toldOut = null; }); };
+    const dockSync = () => {
+      const a = getAgent();
+      if (!a?.setDock) return;
+      invoke('dock_get').then((d) => {
+        // The bar measures in its screen's own px; this overlay covers the same screen.
+        const k = d ? innerWidth / d.sw : 0;
+        a.setDock(d ? { x: d.x * k, y: d.y * k } : null);
+        docked = !!d;
+        if (docked) tell(a.out); else toldOut = null;
+      }).catch(() => {});
+    };
+    setInterval(dockSync, 2000);
+    setInterval(() => { const a = getAgent(); if (docked && a && a.out !== toldOut) tell(a.out); }, 80);
+    Roamie.dockSync = dockSync;
   }
 
   let agent = null;
@@ -458,6 +479,7 @@
     if (!a) return setTimeout(ready, 150);
     a.setAuto(true);
     a.hide({ instant: true });
+    Roamie.dockSync?.(); // before its first entrance
     send({ type: 'ui_ready' });
   };
   ready();

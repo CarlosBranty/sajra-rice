@@ -166,6 +166,18 @@ commands, Open at Login, and in-app updates for the AppImage (a `.deb` or `.rpm`
 
 On X11 sessions the shortcuts work as on Windows (hold Ctrl+Alt to talk, Ctrl+Alt+S to show or hide).
 
+**A home in your bar** (Quickshell, Waybar, eww and the like): a bar can keep a slot for the Roamie. The Roamie then
+comes out of that slot when it has something to do and goes back into it after, and the bar draws it resting there
+meanwhile. The two leave each other notes in `$XDG_RUNTIME_DIR/roamies/`:
+
+- `dock.json`, written by the bar: `{"x": 1830, "y": 23, "sw": 2304, "sh": 1440, "mx": 0, "my": 0}`. `x`, `y` is the
+  centre of the slot, `sw` × `sh` the size of its screen and `mx`, `my` where that screen starts, all in logical pixels.
+  Roamies reads it every couple of seconds; without the file nothing changes.
+- `state.json`, written by Roamies: `{"pid": 1234, "exe": "/usr/bin/roamies", "out": false, "t": 1794359725}`. `out` is
+  true while the Roamie is on screen (so the slot is empty). `t` is when it was written, in seconds; it's rewritten every
+  couple of seconds, so an old one means Roamies isn't running. `exe` is the command to run with `--talk`, `--panel`
+  or `--summon` when the slot is clicked.
+
 **Troubleshooting:**
 
 - **No tray icon on GNOME:** GNOME hides tray icons unless the

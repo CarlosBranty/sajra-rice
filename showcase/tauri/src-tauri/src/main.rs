@@ -198,6 +198,28 @@ fn set_hit_rects(window: WebviewWindow, rects: Vec<f64>) {
     let _ = (window, rects);
 }
 
+/// Linux: the slot a desktop bar keeps for the Roamie on this overlay's screen (linux.rs), or null: no bar asked.
+#[tauri::command]
+fn dock_get(window: WebviewWindow) -> Option<Value> {
+    #[cfg(target_os = "linux")]
+    let dock = linux::dock_get(&window);
+    #[cfg(not(target_os = "linux"))]
+    let dock = {
+        let _ = window;
+        None
+    };
+    dock
+}
+
+/// Linux: the Roamie left its slot in the bar (out: true) or is back in it, for the bar to draw it there meanwhile.
+#[tauri::command]
+fn dock_state(out: bool) {
+    #[cfg(target_os = "linux")]
+    linux::dock_state(out);
+    #[cfg(not(target_os = "linux"))]
+    let _ = out;
+}
+
 /// macOS: hand the cursor-form sidekick to the voice helper to draw while it just follows the cursor (on: true, with
 /// its picture, motion and follow rules in this overlay's CSS px), or take it back (on: false). False when there's no
 /// helper to draw it, so the page keeps drawing it itself.
@@ -1468,7 +1490,7 @@ fn main() {
         .manage(TalkChord(Mutex::new(vec!["control".into(), "option".into()])))
         .manage(VoiceModel(Mutex::new(None)))
         .manage(PermGuide(Mutex::new(None)))
-        .invoke_handler(tauri::generate_handler![buddy, ink_wait, set_hot, set_hit_rects, sidecar_send, set_typing, perm_status, perm_request, perm_guide, screen_check, open_settings, onboarding_finish, guide_close, panel_hide, esc_watch, relaunch, focus_guide, guide_aside, drag_window])
+        .invoke_handler(tauri::generate_handler![buddy, ink_wait, set_hot, set_hit_rects, dock_get, dock_state, sidecar_send, set_typing, perm_status, perm_request, perm_guide, screen_check, open_settings, onboarding_finish, guide_close, panel_hide, esc_watch, relaunch, focus_guide, guide_aside, drag_window])
         .on_menu_event(|app, e| match e.id.as_ref() {
             "quit" => app.exit(0),
             "restart" => spawn_sidecar(app),

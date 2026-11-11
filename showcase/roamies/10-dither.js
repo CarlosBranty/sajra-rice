@@ -288,11 +288,16 @@
       // materialize: LED pixels sparkle in from the centre / beam up and away from the top down
       // crt: a scanline powers on and opens into the body / collapses to a line, then a dot
       // drop: falls in from the top edge and lands / crouches and jumps off the top edge
+      // dock: dashes out of a desktop bar's slot to its spot / dashes back into it (the agent layer says where the
+      //       slot is; without one it's the plain materialize)
       const PRES = {
         materialize: { in: 0.72, out: 0.8, sIn: 'materialize', sOut: 'dematerialize' },
         crt: { in: 0.56, out: 0.55, sIn: 'crt_on', sOut: 'crt_off' },
         drop: { in: 0.62, out: 0.66, sIn: 'drop', sOut: null },
+        dock: { in: 0.5, out: 0.46, sIn: 'whoosh', sOut: 'whoosh' },
       };
+      // The performance to play: 'dock' needs the slot ([x, y]) it comes from or goes to.
+      const presV = (variant, slot) => (PRES[variant] && (variant !== 'dock' || slot) ? variant : 'materialize');
       const smooth = (x) => (x <= 0 ? 0 : x >= 1 ? 1 : x * x * (3 - 2 * x));
       const teleport = (x, y) => {
         m.x = x; m.y = y; m.vx = m.vy = 0; m.tx = x; m.ty = y; m.mode = 'rest'; m.rest = 1.5; m.flung = false; m.dragging = false;
@@ -308,22 +313,22 @@
           spawn(x + s * rand(0.2, 0.9) * R, y, s * rand(60, 220), rand(-120, -20), 420, rand(0, 1) < 0.5 ? L : L - 1, i % 3 === 0 ? 1 : 0, 1.8);
         }
       };
-      const appear = (variant, x = m.x, y = m.y) => {
+      const appear = (variant, x = m.x, y = m.y, from = null) => {
         if (pres.state === 'shown' || pres.state === 'in') return false;
-        const v = PRES[variant] ? variant : 'materialize';
+        const v = presV(variant, from);
         x = clamp(x, R * 1.5, EW - R * 1.5); y = clamp(y, R * 1.6, EH - R * 1.5);
-        Object.assign(pres, { state: 'in', u: 0, v, tx: x, ty: y, landed: false, launched: false, crouched: false });
+        Object.assign(pres, { state: 'in', u: 0, v, tx: x, ty: y, slot: from, landed: false, launched: false, crouched: false });
         act = null;
-        teleport(x, v === 'drop' ? -R * 2.4 : y);
+        if (v === 'dock') teleport(from[0], from[1]); else teleport(x, v === 'drop' ? -R * 2.4 : y);
         face.set(v === 'drop' ? 'surprised' : null, v === 'drop' ? 0.7 : 0);
         S(PRES[v].sIn);
         return true;
       };
-      const vanish = (variant, instant = false) => {
+      const vanish = (variant, instant = false, to = null) => {
         if (instant) { Object.assign(pres, { state: 'hidden', u: 1 }); act = null; pending = null; parts.length = 0; m.dragging = false; return true; }
         if (pres.state === 'hidden' || pres.state === 'out') return false;
-        const v = PRES[variant] ? variant : 'materialize';
-        Object.assign(pres, { state: 'out', u: 0, v, tx: m.x, ty: m.y, landed: false, launched: false, crouched: false });
+        const v = presV(variant, to);
+        Object.assign(pres, { state: 'out', u: 0, v, tx: m.x, ty: m.y, slot: to, landed: false, launched: false, crouched: false });
         act = null; pending = null; m.mode = 'rest'; m.vx = m.vy = 0; m.dragging = false; m.flung = false;
         if (PRES[v].sOut) S(PRES[v].sOut);
         if (v === 'materialize') face.set('happy', 0.5);
@@ -356,6 +361,12 @@
             streak(1);
             if (Math.random() < dt * 50) spawn(m.x + rand(-0.4, 0.4) * R, m.y + R * 1.1, rand(-20, 20), rand(10, 60), 0, L - 1, 0, 2.6);
           }
+        } else if (p.v === 'dock') {
+          // One straight dash, stretched along the way: slowing as it arrives on its spot, speeding up into the slot.
+          const coming = p.state === 'in', e = coming ? 1 - Math.pow(1 - u, 3) : Math.pow(u, 2.2);
+          const [x0, y0, x1, y1] = coming ? [p.slot[0], p.slot[1], p.tx, p.ty] : [p.tx, p.ty, p.slot[0], p.slot[1]];
+          m.x = x0 + (x1 - x0) * e; m.y = y0 + (y1 - y0) * e;
+          m.ang = Math.atan2(y1 - y0, x1 - x0); m.stretch = (coming ? 1 - e : e) * 0.4;
         } else {
           m.stretch = Roamie.damp(m.stretch, 0, 8, dt);
           if (p.v === 'materialize' && p.state === 'in' && u < 0.7) {
@@ -609,7 +620,7 @@
           if (pres.state === 'hidden') { blinkCut(); plug?.update?.(dt, env); return; }
           const performing = pres.state === 'in' || pres.state === 'out';
           // Popping up beside the cursor: the agent layer keeps it moving with the cursor during the entrance.
-          if (performing && pres.state === 'in' && pres.v !== 'drop' && m.drive) { m.drive(dt, env); pres.tx = m.x; pres.ty = m.y; }
+          if (performing && pres.state === 'in' && pres.v !== 'drop' && pres.v !== 'dock' && m.drive) { m.drive(dt, env); pres.tx = m.x; pres.ty = m.y; }
           if (performing) presStep(dt); else m.update(dt, env);
           morphStep(dt);
           blinkStep(dt);

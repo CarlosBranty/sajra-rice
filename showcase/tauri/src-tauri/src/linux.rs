@@ -7,7 +7,7 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde_json::{json, Value};
 use tauri::{AppHandle, Manager};
@@ -57,6 +57,73 @@ pub(crate) fn init() {
 fn trace() -> bool {
     static ON: OnceLock<bool> = OnceLock::new();
     *ON.get_or_init(|| std::env::var_os("ROAMIES_TRACE").is_some())
+}
+
+// ---------- a desktop bar that hosts the Roamie ----------
+
+// A bar (Quickshell, Waybar, …) can keep a slot for the Roamie: it draws it resting there, and the Roamie comes out
+// of the slot when it has something to do and goes back into it after. The two leave each other notes in
+// $XDG_RUNTIME_DIR/roamies/ (gone at logout):
+//   dock.json   from the bar: {"x": 1830, "y": 23, "sw": 2304, "sh": 1440, "mx": 0, "my": 0}, the slot's centre on a
+//               screen sw × sh at (mx, my), all in that screen's logical px.
+//   state.json  from Roamies: {"pid": 1234, "exe": "/usr/bin/roamies", "out": false, "t": 1794359725}. out: the Roamie
+//               is on screen, so the slot is empty. t: when this was written (seconds); it is written again every couple
+//               of seconds (host.js), so an old one means Roamies has gone.
+// Nothing is written unless a bar left a dock.json.
+
+fn dock_dir() -> Option<PathBuf> {
+    std::env::var_os("XDG_RUNTIME_DIR").filter(|d| !d.is_empty()).map(|d| PathBuf::from(d).join("roamies"))
+}
+
+/// The slot in a bar's dock.json, or None when it isn't one: every number there, finite, and the slot on its screen.
+fn dock_from(text: &str) -> Option<Value> {
+    let v: Value = serde_json::from_str(text).ok()?;
+    let n = |k: &str| v.get(k).and_then(Value::as_f64).filter(|n| n.is_finite() && n.abs() < 100_000.0);
+    let (x, y, sw, sh) = (n("x")?, n("y")?, n("sw")?, n("sh")?);
+    if sw < 1.0 || sh < 1.0 || !(0.0..=sw).contains(&x) || !(0.0..=sh).contains(&y) {
+        return None;
+    }
+    Some(json!({ "x": x, "y": y, "sw": sw, "sh": sh, "mx": n("mx").unwrap_or(0.0), "my": n("my").unwrap_or(0.0) }))
+}
+
+/// Whether the slot is on this screen ((x, y, w, h) in logical px): the only screen there is, or the one the bar
+/// measured, give or take rounding.
+fn dock_on(dock: &Value, screen: Option<(f64, f64, f64, f64)>, screens: usize) -> bool {
+    if screens <= 1 {
+        return true;
+    }
+    let Some((x, y, w, h)) = screen else { return false };
+    let near = |k: &str, v: f64| dock[k].as_f64().is_some_and(|d| (d - v).abs() <= 2.0);
+    near("mx", x) && near("my", y) && near("sw", w) && near("sh", h)
+}
+
+/// The bar's slot for the Roamie, when it is on this overlay's screen.
+pub(crate) fn dock_get(window: &tauri::WebviewWindow) -> Option<Value> {
+    let dock = dock_from(&std::fs::read_to_string(dock_dir()?.join("dock.json")).ok()?)?;
+    let screens = window.available_monitors().map(|m| m.len()).unwrap_or(1);
+    let screen = window.current_monitor().ok().flatten().map(|m| {
+        let (s, p, z) = (m.scale_factor(), m.position(), m.size());
+        (p.x as f64 / s, p.y as f64 / s, z.width as f64 / s, z.height as f64 / s)
+    });
+    dock_on(&dock, screen, screens).then_some(dock)
+}
+
+/// What the bar reads back: this copy of Roamies, and whether the Roamie is out of its slot.
+fn dock_note(out: bool, exe: &str, now: u64) -> String {
+    json!({ "pid": std::process::id(), "exe": exe, "out": out, "t": now }).to_string()
+}
+
+/// Tells the bar whether the Roamie is out of its slot. Only for a bar that asked (it left a dock.json).
+pub(crate) fn dock_state(out: bool) {
+    let Some(dir) = dock_dir() else { return };
+    if !dir.join("dock.json").is_file() {
+        return;
+    }
+    // The AppImage's own path when run from one (the program inside it lives in a mount that goes away).
+    let exe = std::env::var("APPIMAGE").ok().filter(|p| !p.is_empty()).or_else(|| std::env::current_exe().ok().map(|p| p.to_string_lossy().into_owned())).unwrap_or_default();
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+    // Written in place, in one go: a bar watching the file sees the change (a rename would lose its watch).
+    let _ = std::fs::write(dir.join("state.json"), dock_note(out, &exe, now));
 }
 
 // ---------- click-through by region ----------
@@ -421,6 +488,34 @@ pub(crate) fn open_releases_page() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_bars_slot_is_read_only_when_it_makes_sense() {
+        let d = dock_from(r#"{"monitor":"eDP-1","x":1830,"y":23.5,"sw":2304,"sh":1440}"#).expect("a slot");
+        assert_eq!(d, json!({ "x": 1830.0, "y": 23.5, "sw": 2304.0, "sh": 1440.0, "mx": 0.0, "my": 0.0 }));
+        assert_eq!(dock_from(r#"{"x":10,"y":5,"sw":100,"sh":50,"mx":1920,"my":-40}"#).unwrap()["mx"], 1920.0);
+        for bad in ["", "[]", "{}", r#"{"x":10,"y":5}"#, r#"{"x":"10","y":5,"sw":100,"sh":50}"#, r#"{"x":10,"y":5,"sw":0,"sh":50}"#, r#"{"x":101,"y":5,"sw":100,"sh":50}"#, r#"{"x":10,"y":-1,"sw":100,"sh":50}"#, r#"{"x":10,"y":5,"sw":1e9,"sh":50}"#] {
+            assert_eq!(dock_from(bad), None, "{bad}");
+        }
+    }
+
+    #[test]
+    fn the_slot_belongs_to_the_screen_the_bar_measured() {
+        let d = dock_from(r#"{"x":900,"y":20,"sw":1920,"sh":1080,"mx":2304,"my":0}"#).unwrap();
+        assert!(dock_on(&d, None, 1), "one screen: it's that one, whatever it reports");
+        assert!(dock_on(&d, Some((0.0, 0.0, 800.0, 600.0)), 1));
+        assert!(dock_on(&d, Some((2304.0, 0.0, 1920.0, 1080.0)), 2));
+        assert!(dock_on(&d, Some((2303.4, 0.6, 1921.0, 1079.0)), 2), "rounding");
+        assert!(!dock_on(&d, Some((0.0, 0.0, 2304.0, 1440.0)), 2), "the other screen");
+        assert!(!dock_on(&d, None, 2));
+    }
+
+    #[test]
+    fn the_note_for_the_bar_says_who_and_whether_its_out() {
+        let v: Value = serde_json::from_str(&dock_note(true, "/opt/Roamies.AppImage", 1794359725)).unwrap();
+        assert_eq!(v, json!({ "pid": std::process::id(), "exe": "/opt/Roamies.AppImage", "out": true, "t": 1794359725u64 }));
+        assert_eq!(serde_json::from_str::<Value>(&dock_note(false, "", 0)).unwrap()["out"], false);
+    }
 
     #[test]
     fn the_autostart_entry_quotes_the_program() {
