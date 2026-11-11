@@ -112,7 +112,7 @@
     c.fillStyle = o.filled ? mix(ACC, '#000000', 0.62) : 'rgba(0,0,0,0.45)'; c.fill(steppedPath(x, y + (o.down ? 1 : 3), w, h, 4));
     const face = steppedPath(x, y, w, h, 4);
     if (o.filled) {
-      c.fillStyle = o.hover ? mix(ACC, '#ffffff', 0.3) : ACC; c.fill(face);
+      c.fillStyle = o.hover ? mix(ACC, T().lift, 0.3) : ACC; c.fill(face);
       c.fillStyle = 'rgba(255,255,255,0.55)'; c.fillRect(x + 4, y + 1, w - 8, 1.5); c.fillStyle = rgba(INK_DARK, 0.25); c.fillRect(x + 4, y + h - 2.5, w - 8, 1.5);
     } else {
       c.fillStyle = GLASS; c.fill(face);
@@ -126,7 +126,7 @@
 
   R.glass = {
     // The colours by the names the drawing code has for them: always the scheme's in use.
-    get ACC() { return T().accent; }, get HOT() { return T().hot; }, get MID() { return T().mid; }, get DEEP() { return T().deep; }, get FAINT() { return T().faint; },
+    get ACC() { return T().accent; }, get HOT() { return T().hot; }, get MID() { return T().mid; }, get THINK() { return T().think; }, get DEEP() { return T().deep; }, get FAINT() { return T().faint; },
     get EDGE() { return T().edge; }, get GLASS() { return T().glass; }, get TEXT() { return T().text; }, get DIM() { return T().ink3; },
     get CORAL() { return T().coral; }, get NOTE() { return T().note; }, get FLASH() { return T().flash; },
     MONO, rgba, stepped, steppedPath, chrome, textW, typed, wrapRows, ringPts, pen, chip, chipW, CHIP_H: 23,

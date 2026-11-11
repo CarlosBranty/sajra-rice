@@ -77,6 +77,7 @@ const CLASSIC = {
   rule: '#12302e', hover: '#0d2a2a', well: '#030c0d',
   glass: 'rgba(6,22,24,0.94)', text: '#dcfff6', hot: '#e6fffa', mid: '#28c4b8', deep: '#0e5c60', faint: '#3f8f88',
   edge: 'rgba(3,39,34,0.6)', coral: '#ff8a7a', note: '#e9a196', flash: '#ffffff', scrim: '#030e10',
+  think: '#28c4b8', lift: '#ffffff',
   // The rest of what onboarding.css and panel.css had written out (theme-pages.test.mjs is about these).
   field: '#061719', tip: '#08201f', bar: '#0b1f21', track: '#0b2224', press: '#0b2526', pressHi: '#0d2e2e', picked: '#0a2a28',
   key: '#0c2a2c', lit: '#0e3a36', disabled: '#1c3634', disabledInk: '#7f9f9a', bubble: '#04191b', bubbleInk: '#d6fff6',
@@ -379,7 +380,7 @@ await rule('speech and thought bubbles, questions, task tags and the step list',
   const S = T.now, now = await scenes();
   for (const k of names) { none(now[k], WAS[k], k); assert.ok(now[k].includes(S.glass), `${k}: on the scheme's glass`); assert.equal(now[k].length, WAS[k].length, `${k}: as many colours as before (${now[k]})`); }
   assert.ok(now.say.includes(S.text) && now.say.includes(S.accent) && now.say.includes(S.hot));
-  assert.ok(now.input.includes(T.rgba(S.mid, 0.9)) && now.input.includes(T.rgba(S.hot, 1)), 'the placeholder and the caret');
+  assert.ok(now.input.includes(T.rgba(S.think, 0.9)) && now.input.includes(T.rgba(S.hot, 1)), 'the placeholder and the caret');
   assert.ok(now.toolFail.includes(S.coral) && now.trail.includes(S.note) && now.trail.includes(S.faint) && now.trail.includes(T.rgba(S.accent, 0.06)));
 });
 
@@ -488,6 +489,29 @@ await rule('the setting is saved, shown on the Appearance page and reaches the o
   const shell = read('../../src-tauri/src/main.rs');
   assert.match(shell, /generate_handler!\[[^\]]*\bset_hit_rects, theme_get, dock_get, dock_state, talk_state, sidecar_send,/, 'the command is registered');
   assert.match(shell, /#\[tauri::command\]\nfn theme_get\(window: WebviewWindow\) -> Value \{/);
+});
+
+// Found by an independent check: two things were drawn with less contrast than the scheme promised. The thinking
+// tag's words go on at 0.9 alpha (so less than the role's own colour), and a filled chip under the pointer was
+// lightened toward white whatever colour its label was.
+await rule('thinking words and a hovered filled chip read on every scheme', () => {
+  const over = (fg, a, bg) => { const f = TH.rgb(fg), b = TH.rgb(bg); return '#' + f.map((v, i) => Math.round(v * a + b[i] * (1 - a)).toString(16).padStart(2, '0')).join(''); };
+  const C = TH.schemes.classic;
+  assert.equal(C.think, C.mid, 'Classic: the thinking words are the mid accent, as they were');
+  assert.equal(C.lift, '#ffffff', 'Classic: a hovered chip is lightened, as it was');
+  for (const [name, s] of [['light', TH.schemes.light], ['dark', TH.schemes.dark], ['note', TH.fromNote(NOTE)], ['night note', TH.fromNote(NIGHT)]]) {
+    const glass = '#' + TH.rgb(s.glass).slice(0, 3).map((v) => v.toString(16).padStart(2, '0')).join('');
+    const drawn = over(s.think, 0.9, glass);
+    assert.ok(ratio(drawn, glass) >= 3, `${name}: thinking words at 0.9 on glass read (${ratio(drawn, glass).toFixed(2)})`);
+    const hovered = TH.mix(s.accent, s.lift, 0.3);
+    assert.ok(ratio(s.accentInk, hovered) >= 3, `${name}: the label of a hovered filled chip reads (${ratio(s.accentInk, hovered).toFixed(2)})`);
+    assert.ok(ratio(s.accentInk, hovered) >= ratio(s.accentInk, s.accent) - 0.01, `${name}: hovering never makes it harder to read`);
+  }
+  // The drawing code uses the roles, not its own white.
+  const glassSrc = read('../../../roamies/glass.js'), inkSrc = read('../../../roamies/ink.js'), agentSrc = read('../../../roamies/agent.js');
+  assert.match(glassSrc, /o\.hover \? mix\(ACC, T\(\)\.lift, 0\.3\) : ACC/);
+  assert.match(inkSrc, /o\.hover \? mixHex\(fill, R\.theme\.now\.lift, 0\.3\) : fill/);
+  assert.match(agentSrc, /dim \? G\.rgba\(G\.THINK, 0\.9\) : G\.TEXT/);
 });
 
 if (failed.length) { console.error(`theme tests: ${failed.length} failed`); process.exit(1); }

@@ -94,7 +94,8 @@ await rule('the roles there already were come to what they came to, in every sch
   for (const [name, s] of [['light', TH.schemes.light], ['dark', TH.schemes.dark], ['note', TH.fromNote(NOTE)]]) {
     const now = JSON.parse(JSON.stringify(s));
     for (const [k, v] of Object.entries(WAS[name])) assert.deepEqual(now[k], v, `${name}.${k}`);
-    assert.deepEqual(Object.keys(now).filter((k) => !(k in WAS[name])).sort(), Object.keys(PAGE).sort(), `${name}: and only the pages' roles are new`);
+    // (think and lift came after: the thinking words and a hovered chip, see theme.test.mjs.)
+    assert.deepEqual(Object.keys(now).filter((k) => !(k in WAS[name])).sort(), [...Object.keys(PAGE), 'think', 'lift'].sort(), `${name}: and only the pages' roles and those two are new`);
   }
 });
 

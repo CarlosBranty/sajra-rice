@@ -688,7 +688,7 @@
       };
       let curFont = '';
       tctx.textBaseline = 'middle'; tctx.textAlign = 'left';
-      const ink = dim ? G.rgba(G.MID, 0.9) : G.TEXT, accent = dim ? ink : G.ACC, flash = G.FLASH;
+      const ink = dim ? G.rgba(G.THINK, 0.9) : G.TEXT, accent = dim ? ink : G.ACC, flash = G.FLASH;
       for (let li = first; li <= last; li++) {
         const line = lines[li], cy = (li - s0 + 0.5) * lh;
         // Lines scrolling past the top or bottom fade out instead of being cut in half.

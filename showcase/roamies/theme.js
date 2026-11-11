@@ -63,6 +63,9 @@
     // anything; coral: something failed; note: why; flash: a letter as it lands; scrim: what dims the screen.
     glass: 'rgba(6,22,24,0.94)', text: '#dcfff6', hot: '#e6fffa', mid: '#28c4b8', deep: '#0e5c60', faint: '#3f8f88',
     edge: 'rgba(3,39,34,0.6)', coral: '#ff8a7a', note: '#e9a196', flash: '#ffffff', scrim: '#030e10',
+    // think: the thinking tag's words (drawn at 0.9, so a little stronger than mid where mid alone would not read);
+    // lift: what a filled chip is mixed toward under the pointer (away from its label's colour).
+    think: '#28c4b8', lift: '#ffffff',
     // The pages' own (the panel, the setup guide). Fills: field (what is typed into), tip (a tooltip), bar (the
     // picture of a menu bar), track (a switch that is off), press and pressHi (a card and a button held down), picked
     // (the chosen one), key (a keycap), lit (a switch that is on, a key held down), disabled with disabledInk its
@@ -133,6 +136,7 @@
       edge: rgba(accentInk, 0.6), coral: danger, note: reads(mix(danger, ink3, 0.45), on, 3),
       // On paper a white letter wouldn't show: it lands in the accent instead.
       flash: b.light ? accent : '#ffffff', scrim: b.light ? mix(ink, '#000000', 0.3) : mix(b.bg, '#000000', 0.45),
+      think: reads(mix(accent, b.bg, 0.3), on, 3.8), lift: luminance(accentInk) > luminance(accent) ? '#000000' : '#ffffff',
       ...pages,
       led, screen: led.map(toHex),
       tones: { accent, teal: tone(classic.tones.teal), amber: tone(classic.tones.amber), coral: tone(classic.tones.coral), lilac: tone(classic.tones.lilac), sky: tone(classic.tones.sky), lime: tone(classic.tones.lime), red: tone(classic.tones.red), white: ink },

@@ -330,7 +330,7 @@
     b.save(); b.translate(0, -drop);
     if (o.down) b.translate(0, 2);
     b.fillStyle = mixHex(fill, '#000000', 0.62); b.fill(steppedPath(x, y + (o.down ? 1 : 3), w, h, P));
-    b.fillStyle = o.hover ? mixHex(fill, '#ffffff', 0.3) : fill; b.fill(steppedPath(x, y, w, h, P));
+    b.fillStyle = o.hover ? mixHex(fill, R.theme.now.lift, 0.3) : fill; b.fill(steppedPath(x, y, w, h, P));
     b.fillStyle = 'rgba(255,255,255,0.55)'; b.fillRect(x + P, y + 1, w - 2 * P, 1.5); b.fillStyle = rgba(INKDARK, 0.25); b.fillRect(x + P, y + h - 2.5, w - 2 * P, 1.5);
     typed(b, str, cx, cy, CHIP(k), INKDARK, type, { anchor: 'middle', baseline: 'middle', land: false });
     b.restore();
