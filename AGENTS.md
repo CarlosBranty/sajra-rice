@@ -18,7 +18,8 @@ is one in the top right corner (`roamies-panel`), and the setup guide is an ordi
 sessions, and Wayland without layer-shell, like GNOME) every window is an X11 window (`GDK_BACKEND=x11` on Wayland,
 through XWayland). Either way the overlay lets clicks through by region (the page reports its click areas, `host.js`
 → `set_hit_rects`) instead of following the cursor, and screenshots (the screen in use, cut out of a capture of
-every screen), copying, Open at Login and AppImage-only updates live there too. Building needs the system library
+every screen), Ask About an Area (on layer-shell compositors the user drags it with `slurp`, and it is cut out of a
+capture the same way), copying, Open at Login and AppImage-only updates live there too. Building needs the system library
 `gtk-layer-shell` (`libgtk-layer-shell-dev` on Debian and Ubuntu). Debug aids: `ROAMIES_TRACE=1` prints which way was
 picked, the overlay's click areas and what each screenshot was cut to, `ROAMIES_LAYER_SHELL=0` keeps the X11 windows
 and `ROAMIES_LAYER_SHELL=1` takes layer surfaces on any Wayland session, and in debug builds

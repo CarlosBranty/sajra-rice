@@ -84,7 +84,7 @@ clear it all in one go.
 | Read windows and point | Yes                        | Yes                         | Points from screenshots only       |
 | Cards and diagrams     | Yes                        | Yes                         | Yes                                |
 | Click and type in apps | Yes                        | Yes                         | No                                 |
-| Ask about an area      | Yes (⌃⌥A)                  | Yes (Ctrl+Shift+A)          | No                                 |
+| Ask about an area      | Yes (⌃⌥A)                  | Yes (Ctrl+Shift+A)          | With `slurp`, a key you bind\*     |
 | Show or hide           | ⌃⌥S                        | Ctrl+Shift+S                | Ctrl+Alt+S, or a key you bind\*    |
 | Talk shortcut          | Hold ⌃⌥                    | Hold Ctrl+Alt               | Hold Ctrl+Alt, or a key you bind\* |
 | Updates itself         | Yes                        | Yes                         | AppImage only                      |
@@ -140,10 +140,10 @@ far less than on macOS and Windows. Bug reports with your distro, desktop and se
 
 **What works:** the Roamie on screen, the panel, typed and spoken questions (speech runs on your computer), spoken
 replies, memory and reminders, screenshots of the screen in use and pointing at things on them, cards and diagrams,
-files and commands, Open at Login, and in-app updates for the AppImage (a `.deb` or `.rpm` copy opens the download
-page instead).
+files and commands, Ask About an Area on Wayland with `slurp`, Open at Login, and in-app updates for the AppImage (a
+`.deb` or `.rpm` copy opens the download page instead).
 
-**Not yet:** reading or working other apps, Ask About an Area, circling while talking, and the Cursor size on Wayland.
+**Not yet:** reading or working other apps, circling while talking, and the Cursor size on Wayland.
 
 **Wayland** (the default on Ubuntu, Fedora and KDE) doesn't let apps grab keys or see the pointer over other apps, so:
 
@@ -157,6 +157,7 @@ page instead).
   | `roamies --ask`    | Ask by typing                                       |
   | `roamies --list`   | Show your list                                      |
   | `roamies --panel`  | Open the panel                                      |
+  | `roamies --snap`   | Ask about an area: drag a rectangle, then ask       |
 
   - **GNOME:** Settings › Keyboard › View and Customize Shortcuts › Custom Shortcuts › **+**, then the command and your keys.
   - **KDE Plasma:** System Settings › Keyboard › Shortcuts › **Add New** › **Command or Script**.
@@ -165,6 +166,11 @@ page instead).
 - Walkthroughs can't see your clicks: on compositors with layer surfaces (below) each step waits for you to press its
   **Next** button (**Done** on the last), elsewhere they play their steps one after another.
 - Screenshots go through your desktop's screenshot portal, which may ask you to allow them.
+- **Ask About an Area** needs [slurp](https://github.com/emersion/slurp) (the `slurp` package on most distros) and a
+  compositor with layer surfaces (below); Roamies offers it (`roamies --snap`, the tray menu, the panel) once slurp is
+  there, after a restart. Drag a rectangle round what you mean, then ask by voice or typing; Esc or a click without
+  dragging cancels, and so does leaving it for three minutes. The Roamie steps out of the way while you pick, and
+  isn't in the picture. GNOME has no layer surfaces for slurp, and X11 sessions nothing to pick with yet.
 - On compositors with layer surfaces (Hyprland, Sway and others built on wlroots, KDE Plasma) the Roamie is a native
   Wayland layer above your windows and bars: it takes no tile or workspace, clicks land on whatever is under it
   everywhere except on the Roamie and what it shows, and it has the keyboard only while you type to it: a click

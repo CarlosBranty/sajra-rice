@@ -1616,6 +1616,13 @@ fn handle_sidecar(app: &AppHandle, msg: Value) {
                 linux::screenshot(app, msg.get("id").cloned().unwrap_or(Value::Null), file.to_owned());
             }
         }
+        // Linux (Wayland): Ask About an Area, the area picked with slurp and cut out of a screenshot.
+        #[cfg(target_os = "linux")]
+        Some("area") => {
+            if let Some(file) = msg.get("file").and_then(Value::as_str) {
+                linux::area(app, msg.get("id").cloned().unwrap_or(Value::Null), file.to_owned());
+            }
+        }
         #[cfg(target_os = "linux")]
         Some("clipboard") => {
             if let Some(text) = msg.get("text").and_then(Value::as_str) {
@@ -1665,12 +1672,12 @@ fn handle_sidecar(app: &AppHandle, msg: Value) {
     }
 }
 
-/// What a second launch asks the running app to do: `roamies --summon | --list | --talk | --ask | --panel`. They're
-/// for binding to keys in the desktop's keyboard settings, the one kind of global shortcut Wayland lets every app
-/// have. None: a plain launch.
+/// What a second launch asks the running app to do: `roamies --summon | --list | --talk | --ask | --panel`, and on
+/// Linux `--snap` (Ask About an Area). They're for binding to keys in the desktop's keyboard settings, the one kind
+/// of global shortcut Wayland lets every app have. None: a plain launch.
 fn cli_action(args: &[String]) -> Option<&'static str> {
-    const ACTIONS: [&str; 5] = ["summon", "list", "talk", "ask", "panel"];
-    args.iter().skip(1).find_map(|a| ACTIONS.into_iter().find(|f| a.strip_prefix("--") == Some(*f)))
+    const ACTIONS: &[&str] = if cfg!(target_os = "linux") { &["summon", "list", "talk", "ask", "panel", "snap"] } else { &["summon", "list", "talk", "ask", "panel"] };
+    args.iter().skip(1).find_map(|a| ACTIONS.iter().copied().find(|f| a.strip_prefix("--") == Some(*f)))
 }
 
 /// A second launch quit and handed its arguments over (the single-instance plugin). A plain one summons the
@@ -1791,6 +1798,8 @@ mod tests {
         assert_eq!(cli_action(&args(&["roamies", "--talks"])), None);
         assert_eq!(cli_action(&args(&["--talk"])), None, "the first argument is the program");
         assert_eq!(cli_action(&args(&[])), None);
+        // Ask About an Area: on Linux a flag too (Wayland has no other way to start it); elsewhere a plain launch, as before.
+        assert_eq!(cli_action(&args(&["roamies", "--snap"])), if cfg!(target_os = "linux") { Some("snap") } else { None });
     }
 
     #[test]

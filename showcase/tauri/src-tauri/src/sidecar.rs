@@ -57,10 +57,12 @@ pub(crate) fn spawn_sidecar(app: &AppHandle) {
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(stderr);
-    // Linux: "x11" or "wayland", and "1" when the overlay is a Wayland layer surface (a walkthrough's steps then wait
-    // on a Next button there), for what the sidecar offers and how it words things (platform.mjs).
+    // Linux: "x11" or "wayland", "1" when the overlay is a Wayland layer surface (a walkthrough's steps then wait on a
+    // Next button there) and where slurp is (Ask About an Area picks with it), for what the sidecar offers and how it
+    // words things (platform.mjs).
     #[cfg(target_os = "linux")]
-    cmd.env("ROAMIES_SESSION", crate::linux::session().name()).env("ROAMIES_LAYER", if crate::linux::layer() { "1" } else { "" }).env("ROAMIES_LAUNCH", crate::linux::launch_command());
+    cmd.env("ROAMIES_SESSION", crate::linux::session().name()).env("ROAMIES_LAYER", if crate::linux::layer() { "1" } else { "" }).env("ROAMIES_LAUNCH", crate::linux::launch_command())
+        .env("ROAMIES_SLURP", crate::linux::slurp().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default());
     if let Some(dir) = script.parent() {
         cmd.current_dir(dir);
     }

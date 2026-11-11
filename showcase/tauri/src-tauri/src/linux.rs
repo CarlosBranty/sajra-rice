@@ -13,6 +13,7 @@
 // feature below.
 
 use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
 use std::sync::{mpsc, Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -726,10 +727,16 @@ fn file_uri_path(uri: &str) -> Option<PathBuf> {
 
 /// Shrinks the picture to Claude's cap and writes it as a JPEG. Returns its final size in pixels.
 fn save_fitted(shot: &gtk::gdk_pixbuf::Pixbuf, file: &str) -> Result<(i32, i32), String> {
+    save_fitted_as(shot, file, "jpeg")
+}
+
+/// save_fitted as a "jpeg" or a "png" (an area snap, which the sidecar sends on as a PNG, as the helpers save theirs).
+fn save_fitted_as(shot: &gtk::gdk_pixbuf::Pixbuf, file: &str, kind: &str) -> Result<(i32, i32), String> {
     let (w, h) = fit(shot.width(), shot.height(), SHOT_MAX);
     let out = if (w, h) == (shot.width(), shot.height()) { Some(shot.clone()) } else { shot.scale_simple(w, h, gtk::gdk_pixbuf::InterpType::Bilinear) };
     let out = out.ok_or("the screenshot couldn't be resized")?;
-    out.savev(file, "jpeg", &[("quality", "85")]).map_err(|e| e.to_string())?;
+    let options: &[(&str, &str)] = if kind == "jpeg" { &[("quality", "85")] } else { &[] };
+    out.savev(file, kind, options).map_err(|e| e.to_string())?;
     Ok((w, h))
 }
 
@@ -870,8 +877,6 @@ fn capture(app: &AppHandle, file: String, then: impl FnOnce(&AppHandle, Result<S
             then(app, r);
         }
     };
-    // Long enough for the compositor to draw a frame without the overlays.
-    const CLEAR: Duration = Duration::from_millis(150);
     fade_overlays(app, 0.0);
     let app = app.clone();
     if session() == Session::X11 {
@@ -887,12 +892,7 @@ fn capture(app: &AppHandle, file: String, then: impl FnOnce(&AppHandle, Result<S
         let shot = portal_screenshot();
         let app2 = app.clone();
         let _ = app.run_on_main_thread(move || fade_overlays(&app2, 1.0));
-        let r = shot.and_then(|path| {
-            let loaded = gtk::gdk_pixbuf::Pixbuf::from_file(&path).map_err(|e| e.to_string());
-            // The portal keeps its picture (in Pictures, on most desktops): this one was only for the question asked.
-            remove_portal_file(&path);
-            loaded.and_then(|p| save_shot(&p, &file, desktop, screen))
-        });
+        let r = shot.and_then(|path| load_portal_file(&path)).and_then(|p| save_shot(&p, &file, desktop, screen));
         let app2 = app.clone();
         let _ = app.run_on_main_thread(move || then(&app2, r));
     });
@@ -918,6 +918,148 @@ fn remove_portal_file(path: &Path) {
     if path.is_file() {
         let _ = std::fs::remove_file(path);
     }
+}
+
+/// The portal's picture, loaded. The portal keeps its picture (in Pictures, on most desktops): this one was only for
+/// the question asked, so it goes.
+fn load_portal_file(path: &Path) -> Result<gtk::gdk_pixbuf::Pixbuf, String> {
+    let loaded = gtk::gdk_pixbuf::Pixbuf::from_file(path).map_err(|e| e.to_string());
+    remove_portal_file(path);
+    loaded
+}
+
+/// Long enough for the compositor to draw a frame without the overlays (or without slurp's layer, once it has gone).
+const CLEAR: Duration = Duration::from_millis(150);
+
+// ---------- Ask About an Area (Wayland: slurp) ----------
+// macOS and Windows drag the area with the hands helper's `select`. On Wayland only a layer surface can take the
+// pointer over the whole screen, so slurp does it (the area picker people pair with grim, on Hyprland, Sway and the
+// others built on wlroots, and KDE): it prints the rectangle in the compositor's global logical points, which are
+// desktop_bounds's. The picture is then cut out of a screenshot of the whole desktop the way the screen in use is
+// (shot_crop), so where the area is and what the picture shows agree. `roamies --snap`, the tray menu and the panel
+// start it (the sidecar's areaSnap); the sidecar offers it only with slurp there (platform.mjs canSnap).
+
+/// The format slurp is asked for: x, y, width and height, nothing else.
+const SLURP_FORMAT: &str = "%x %y %w %h";
+
+/// How long slurp waits for the user: someone who walked away gets their screen back, and nothing is asked.
+const AREA_WAIT: Duration = Duration::from_secs(180);
+
+/// slurp on PATH, looked for once. None: Ask About an Area stays off.
+pub(crate) fn slurp() -> Option<PathBuf> {
+    static SLURP: OnceLock<Option<PathBuf>> = OnceLock::new();
+    SLURP.get_or_init(|| on_path("slurp", std::env::var_os("PATH").as_deref())).clone()
+}
+
+/// The first `name` in a PATH's folders that is a file that may be run.
+fn on_path(name: &str, path: Option<&std::ffi::OsStr>) -> Option<PathBuf> {
+    use std::os::unix::fs::PermissionsExt;
+    std::env::split_paths(path?).map(|dir| dir.join(name)).find(|p| p.metadata().is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0))
+}
+
+/// What slurp said, asked for SLURP_FORMAT: the area as [x, y, w, h] in global logical points (below zero on a
+/// screen left of or above the main one), or None when nothing was picked: Esc, or a click without a drag, ends slurp
+/// with an error, "selection cancelled" and nothing printed; an area with no size is nothing to ask about either.
+/// Anything else (no layer surfaces on this desktop, an answer that isn't four numbers) is an error, worded for the user.
+fn slurp_area(ok: bool, stdout: &str, stderr: &str) -> Result<Option<[f64; 4]>, String> {
+    let (out, why) = (stdout.trim(), stderr.trim());
+    if !ok {
+        if out.is_empty() && (why.is_empty() || why.contains("cancelled")) {
+            return Ok(None);
+        }
+        return Err(format!("Couldn't pick an area: {}", why.lines().last().unwrap_or("slurp failed")));
+    }
+    let garbled = || format!("Couldn't pick an area: slurp answered {out:?}");
+    let n: Vec<f64> = out.split_whitespace().map(str::parse).collect::<Result<_, _>>().map_err(|_| garbled())?;
+    match n[..] {
+        [x, y, w, h] if n.iter().all(|v| v.is_finite()) => Ok((w > 0.0 && h > 0.0).then_some([x, y, w, h])),
+        _ => Err(garbled()),
+    }
+}
+
+/// Runs a command that waits on the user, for `wait` at most: what it printed and how it ended, or None when the time
+/// ran out (it is killed then). Not on the main thread.
+fn output_within(mut cmd: Command, wait: Duration) -> Result<Option<std::process::Output>, String> {
+    let mut child = cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().map_err(|e| e.to_string())?;
+    let until = Instant::now() + wait;
+    while child.try_wait().map_err(|e| e.to_string())?.is_none() {
+        if Instant::now() >= until {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Ok(None);
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    child.wait_with_output().map(Some).map_err(|e| e.to_string())
+}
+
+/// The pixels of a picture of the whole desktop that show `area`, and the part of the desktop they show: shot_crop,
+/// and the whole picture when the area is all of the desktop (where shot_crop has nothing to cut). None when the
+/// area is nowhere on the desktop or the picture isn't the desktop's shape (so where the area is in it can't be told).
+fn area_crop(capture: (i32, i32), desktop: [f64; 4], area: [f64; 4]) -> Option<((i32, i32, i32, i32), [f64; 4])> {
+    shot_crop(capture, desktop, area).or_else(|| {
+        let [dx, dy, dw, dh] = desktop;
+        let (cw, ch) = (capture.0 as f64, capture.1 as f64);
+        let shaped = cw > 0.0 && ch > 0.0 && dw > 0.0 && dh > 0.0 && ((cw / dw) / (ch / dh) - 1.0).abs() <= 0.02;
+        let all = area[0] <= dx && area[1] <= dy && area[0] + area[2] >= dx + dw && area[1] + area[3] >= dy + dh;
+        (shaped && all).then_some(((0, 0, capture.0, capture.1), desktop))
+    })
+}
+
+/// Saves the area's part of a picture of the whole desktop to `file`, a PNG shrunk to Claude's cap: its size in
+/// pixels and where it is (bounds, in desktop_bounds's points).
+fn save_area(capture: &gtk::gdk_pixbuf::Pixbuf, file: &str, desktop: [f64; 4], area: [f64; 4]) -> Result<Shot, String> {
+    let ((x, y, w, h), bounds) = area_crop((capture.width(), capture.height()), desktop, area).ok_or("The area picked isn't on the screenshot.")?;
+    let pixels = save_fitted_as(&capture.new_subpixbuf(x, y, w, h), file, "png")?;
+    if trace() {
+        eprintln!("area: captured {}x{}, kept {:?}, sent {}x{} for {bounds:?}", capture.width(), capture.height(), (x, y, w, h), pixels.0, pixels.1);
+    }
+    Ok(Shot { pixels, bounds, screen: false })
+}
+
+/// What the sidecar is told about an area: its picture's size in pixels and where it is, that none was picked
+/// (cancelled), or what went wrong.
+fn area_reply(id: &Value, r: Result<Option<Shot>, String>) -> Value {
+    match r {
+        Ok(Some(Shot { pixels: (w, h), bounds, .. })) => json!({ "type": "area_done", "id": id, "ok": true, "pixels": [w, h], "bounds": bounds }),
+        Ok(None) => json!({ "type": "area_done", "id": id, "ok": false, "cancelled": true }),
+        Err(e) => json!({ "type": "area_done", "id": id, "ok": false, "error": e }),
+    }
+}
+
+/// The sidecar's area snap on Wayland: the user drags a rectangle with slurp, and that part of the screen goes into
+/// `file` (save_area), answered with area_done (area_reply). The overlays go clear first and stay so until the
+/// screenshot is taken: the user picks from the screen as the picture will show it, nothing of the Roamie's is in
+/// the picture, and slurp's own layer surface, opened after the overlay's on the same layer, is above it and takes the
+/// pointer and keys. Main thread only.
+pub(crate) fn area(app: &AppHandle, id: Value, file: String) {
+    let Some(bin) = slurp().filter(|_| session() == Session::Wayland) else {
+        return crate::to_sidecar(app, &area_reply(&id, Err("Asking about an area needs slurp, on a Wayland desktop.".into())));
+    };
+    let desktop = desktop_bounds(app);
+    fade_overlays(app, 0.0);
+    let app = app.clone();
+    std::thread::spawn(move || {
+        let mut cmd = Command::new(&bin);
+        cmd.args(["-f", SLURP_FORMAT]);
+        let picked = output_within(cmd, AREA_WAIT).map_err(|e| format!("Couldn't start slurp ({e}).")).and_then(|out| match out {
+            Some(o) => slurp_area(o.status.success(), &String::from_utf8_lossy(&o.stdout), &String::from_utf8_lossy(&o.stderr)),
+            None => Ok(None),
+        });
+        let r = picked.and_then(|area| match area {
+            Some(area) => {
+                // slurp's dimmed layer off the screen before it is captured.
+                std::thread::sleep(CLEAR);
+                portal_screenshot().and_then(|path| load_portal_file(&path)).and_then(|p| save_area(&p, &file, desktop, area)).map(Some)
+            }
+            None => Ok(None),
+        });
+        let app2 = app.clone();
+        let _ = app.run_on_main_thread(move || {
+            fade_overlays(&app2, 1.0);
+            crate::to_sidecar(&app2, &area_reply(&id, r));
+        });
+    });
 }
 
 // ---------- clipboard ----------
@@ -1859,6 +2001,118 @@ mod tests {
             assert_eq!(to_screen(bounds, pixels, 100.0, 50.0), (2426.0, 61.0));
             assert_eq!(to_screen(bounds, pixels, 1568.0, 882.0), (4224.0, 1080.0), "its far corner");
         }
+    }
+
+    #[test]
+    fn the_saved_screenshot_is_still_a_jpeg() {
+        use gtk::gdk_pixbuf::{Colorspace, Pixbuf};
+        let dir = scratch("jpeg");
+        let file = dir.join("shot.jpg").to_string_lossy().into_owned();
+        let p = Pixbuf::new(Colorspace::Rgb, false, 8, 40, 30).expect("a picture");
+        p.fill(0xff0000ff);
+        assert_eq!(save_fitted(&p, &file), Ok((40, 30)));
+        assert_eq!(std::fs::read(&file).expect("saved")[..3], [0xff, 0xd8, 0xff], "a JPEG, as before");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn slurp_says_where_the_area_is_or_that_none_was_picked() {
+        // `slurp -f "%x %y %w %h"`: global logical points, below zero on a screen left of or above the main one.
+        assert_eq!(slurp_area(true, "2000 100 800 600", ""), Ok(Some([2000.0, 100.0, 800.0, 600.0])));
+        assert_eq!(slurp_area(true, "-1000 -50 500 400\n", ""), Ok(Some([-1000.0, -50.0, 500.0, 400.0])), "left of and above the main screen");
+        // Esc, or a click without a drag: an error exit, "selection cancelled" and nothing printed.
+        assert_eq!(slurp_area(false, "", "selection cancelled\n"), Ok(None));
+        assert_eq!(slurp_area(false, "", ""), Ok(None));
+        assert_eq!(slurp_area(true, "10 10 0 40", ""), Ok(None), "no area to ask about");
+        // Anything else is said.
+        assert_eq!(slurp_area(false, "", "compositor doesn't support zwlr_layer_shell_v1\n"), Err("Couldn't pick an area: compositor doesn't support zwlr_layer_shell_v1".into()));
+        for garbage in ["", "10,20 30x40", "10 20 30", "10 20 30 40 50", "a b c d", "NaN 0 10 10", "inf 0 10 10"] {
+            assert!(slurp_area(true, garbage, "").is_err(), "{garbage:?}");
+        }
+    }
+
+    #[test]
+    fn a_command_that_waits_on_the_user_is_given_up_on_in_time() {
+        let started = Instant::now();
+        let mut slow = Command::new("sleep");
+        slow.arg("5");
+        assert_eq!(output_within(slow, Duration::from_millis(200)).map(|o| o.is_none()), Ok(true), "walked away: killed, nothing back");
+        assert!(started.elapsed() < Duration::from_secs(2), "not waited out");
+        let mut quick = Command::new("sh");
+        quick.args(["-c", "printf '1 2 3 4'; echo oops >&2; exit 0"]);
+        let out = output_within(quick, Duration::from_secs(5)).expect("ran").expect("in time");
+        assert!(out.status.success());
+        assert_eq!((String::from_utf8_lossy(&out.stdout).as_ref(), String::from_utf8_lossy(&out.stderr).as_ref()), ("1 2 3 4", "oops\n"));
+        assert!(output_within(Command::new("/nonexistent/slurp"), Duration::from_secs(1)).is_err(), "not there: an error");
+    }
+
+    #[test]
+    fn slurp_is_found_on_the_path_when_it_can_run() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = scratch("path");
+        let (a, b) = (dir.join("a"), dir.join("b"));
+        std::fs::create_dir_all(&a).unwrap();
+        std::fs::create_dir_all(&b).unwrap();
+        std::fs::write(a.join("slurp"), "").unwrap();
+        std::fs::set_permissions(a.join("slurp"), std::fs::Permissions::from_mode(0o644)).unwrap();
+        std::fs::write(b.join("slurp"), "").unwrap();
+        std::fs::set_permissions(b.join("slurp"), std::fs::Permissions::from_mode(0o755)).unwrap();
+        let path = std::env::join_paths([a.clone(), b.clone()]).unwrap();
+        assert_eq!(on_path("slurp", Some(&path)), Some(b.join("slurp")), "the first one that can run");
+        assert_eq!(on_path("slurp", Some(&std::env::join_paths([a]).unwrap())), None, "not runnable");
+        assert_eq!(on_path("grim", Some(&path)), None);
+        assert_eq!(on_path("slurp", None), None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_picked_area_is_cut_out_of_a_picture_of_every_screen() {
+        // This desk (eDP-1 at scale 1.667, HDMI-A-1 to its right), captured at 7040x2400: 1.667 px a point.
+        let desk = union_bounds(&[LAPTOP, SIDE]);
+        assert_eq!(area_crop((7040, 2400), desk, [100.0, 200.0, 400.0, 300.0]), Some(((167, 333, 666, 500), [100.0, 200.0, 400.0, 300.0])), "on the laptop");
+        assert_eq!(area_crop((7040, 2400), desk, [2500.0, 100.0, 600.0, 300.0]), Some(((4167, 167, 1000, 500), [2500.0, 100.0, 600.0, 300.0])), "on the monitor");
+        assert_eq!(area_crop((7040, 2400), desk, [2000.0, 100.0, 800.0, 600.0]), Some(((3333, 167, 1334, 1000), [2000.0, 100.0, 800.0, 600.0])), "across both");
+        // A screen left of the main one: the desk starts below zero.
+        let west = union_bounds(&[[-1920.0, 0.0, 1920.0, 1080.0], [0.0, 0.0, 2560.0, 1440.0]]);
+        assert_eq!(area_crop((4480, 1440), west, [-1000.0, 100.0, 500.0, 400.0]), Some(((920, 100, 500, 400), [-1000.0, 100.0, 500.0, 400.0])));
+        // The whole desk picked: the whole picture.
+        assert_eq!(area_crop((7040, 2400), desk, desk), Some(((0, 0, 7040, 2400), desk)));
+        // Nowhere on the picture, or a picture that can't say where things are: none.
+        assert_eq!(area_crop((7040, 2400), desk, [5000.0, 0.0, 100.0, 100.0]), None);
+        assert_eq!(area_crop((1920, 1080), desk, [100.0, 100.0, 100.0, 100.0]), None);
+        assert_eq!(area_crop((1920, 1080), desk, desk), None);
+    }
+
+    #[test]
+    fn the_area_is_saved_shrunk_to_the_cap_with_where_it_is() {
+        use gtk::gdk_pixbuf::{Colorspace, Pixbuf};
+        let dir = scratch("area");
+        let file = dir.join("area.png").to_string_lossy().into_owned();
+        let desk = union_bounds(&[LAPTOP, SIDE]);
+        // The laptop's part red, the monitor's blue: an area across both is red on its left and blue on its right.
+        let capture = Pixbuf::new(Colorspace::Rgb, false, 8, 7040, 2400).expect("a picture");
+        capture.fill(0x000000ff);
+        capture.new_subpixbuf(0, 0, 3840, 2400).fill(0xff0000ff);
+        capture.new_subpixbuf(3840, 0, 3200, 1800).fill(0x0000ffff);
+        let across = [2000.0, 100.0, 800.0, 600.0];
+        assert_eq!(save_area(&capture, &file, desk, across), Ok(Shot { pixels: (1334, 1000), bounds: across, screen: false }));
+        assert_eq!(std::fs::read(&file).expect("saved")[..4], [0x89, b'P', b'N', b'G'], "a PNG, as the snap says");
+        let p = Pixbuf::from_file(&file).expect("a PNG");
+        assert_eq!((p.width(), p.height()), (1334, 1000));
+        assert_eq!(pixel(&p, 4, 500), (255, 0, 0), "the laptop's side");
+        assert_eq!(pixel(&p, 1330, 500), (0, 0, 255), "the monitor's side");
+        // A big one is shrunk to Claude's cap, and still says where it is.
+        assert_eq!(save_area(&capture, &file, desk, desk), Ok(Shot { pixels: (1568, 535), bounds: desk, screen: false }));
+        assert!(save_area(&capture, &file, desk, [9000.0, 0.0, 10.0, 10.0]).is_err(), "off the desk");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_sidecar_is_told_the_areas_picture_and_place_or_that_none_was_picked() {
+        let id = json!(3);
+        assert_eq!(area_reply(&id, Ok(Some(Shot { pixels: (1334, 1000), bounds: [2000.0, 100.0, 800.0, 600.0], screen: false }))), json!({ "type": "area_done", "id": 3, "ok": true, "pixels": [1334, 1000], "bounds": [2000.0, 100.0, 800.0, 600.0] }));
+        assert_eq!(area_reply(&id, Ok(None)), json!({ "type": "area_done", "id": 3, "ok": false, "cancelled": true }));
+        assert_eq!(area_reply(&id, Err("no portal".into())), json!({ "type": "area_done", "id": 3, "ok": false, "error": "no portal" }));
     }
 
     #[test]

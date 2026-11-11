@@ -57,9 +57,16 @@ export const hasHands = (platform, hands) => platform === 'darwin' || !!hands;
  *  the window or workspace changes. Not hasHands: nothing finds things by their words or works other apps there. */
 export const onHyprland = (platform, env = process.env) => platform === 'linux' && !!env.HYPRLAND_INSTANCE_SIGNATURE;
 
-/** Ask About an Area (the snap shortcut and menu item): the helper's area selection, on macOS and Windows.
- *  Linux has no hands helper yet, so none of the three below. */
-export const canSnap = (platform, hands) => platform === 'darwin' || (platform === 'win32' && !!hands);
+/** Ask About an Area (the snap shortcut and menu item): the helper's area selection, on macOS and Windows. On Linux
+ *  the app picks the area with slurp (linux.rs `area`), a Wayland tool that needs the compositor's layer surfaces:
+ *  a Wayland session (session) whose overlay is a layer surface (layer, ROAMIES_LAYER) with slurp there (slurp, its
+ *  path: ROAMIES_SLURP). X11 has nothing to pick with (slurp is Wayland only), so it stays off there. */
+export const canSnap = (platform, hands, { session = '', layer = '', slurp = '' } = {}) => platform === 'darwin' || (platform === 'win32' && !!hands)
+  || (platform === 'linux' && session === 'wayland' && layer === '1' && !!slurp);
+
+/** Wayland: the commands the user binds to keys in the desktop's settings (`<launch> --talk` and the rest), by what
+ *  each does. snap: Ask About an Area is on here (canSnap), so `--snap` is one of them. */
+export const bindCommands = (launch, { snap = false } = {}) => Object.fromEntries(['summon', 'talk', 'ask', 'list', 'panel', ...(snap ? ['snap'] : [])].map((k) => [k, `${launch} --${k}`]));
 
 /** Circling something while holding the talk keys: the voice helper draws it, on macOS and Windows. */
 export const canCircle = (platform) => platform === 'darwin' || platform === 'win32';

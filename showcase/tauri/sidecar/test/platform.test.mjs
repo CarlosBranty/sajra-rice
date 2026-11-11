@@ -1,7 +1,7 @@
 // What the model is told about each system, and which features each one gets. Run: npm test
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { canCircle, canSnap, hasHands, hasHotkeys, hasVoice, linuxSession, micTrouble, needsVoiceModel, platformLine, seesPointer } from '../platform.mjs';
+import { bindCommands, canCircle, canSnap, hasHands, hasHotkeys, hasVoice, linuxSession, micTrouble, needsVoiceModel, platformLine, seesPointer } from '../platform.mjs';
 
 const win = platformLine('win32', { arch: 'x64', release: '10.0.22631' });
 assert.match(win, /^Platform: Windows 11 on x64\./);
@@ -48,6 +48,17 @@ assert.ok(canSnap('darwin', '') && canSnap('win32', 'C:\\Roamies\\roamies-hands.
 assert.ok(!canSnap('win32', '') && !canSnap('linux', '/x/roamies-hands'));
 assert.ok(hasHands('darwin', '') && hasHands('win32', 'x') && !hasHands('win32', ''));
 assert.ok(canCircle('darwin') && canCircle('win32') && !canCircle('linux'));
+// Linux: slurp picks the area, a Wayland layer-shell tool, so a Wayland session whose compositor has layer surfaces
+// (the app says so with ROAMIES_LAYER=1) and slurp there (ROAMIES_SLURP, its path).
+const wlArea = { session: 'wayland', layer: '1', slurp: '/usr/bin/slurp' };
+assert.ok(canSnap('linux', '', wlArea), 'Wayland, layer surfaces and slurp: on');
+assert.ok(!canSnap('linux', '', { ...wlArea, slurp: '' }), 'no slurp: off, as before');
+assert.ok(!canSnap('linux', '', { ...wlArea, session: 'x11' }), 'X11: slurp needs Wayland');
+assert.ok(!canSnap('linux', '', { ...wlArea, layer: '' }), 'no layer surfaces (GNOME): slurp can\'t run there');
+assert.ok(canSnap('darwin', '', { slurp: '' }) && canSnap('win32', 'x', { slurp: '' }) && !canSnap('win32', '', wlArea), 'macOS and Windows: as before, slurp or not');
+// The commands to bind on Wayland: as before, and --snap with them where the area can be picked.
+assert.deepEqual(bindCommands('roamies'), { summon: 'roamies --summon', talk: 'roamies --talk', ask: 'roamies --ask', list: 'roamies --list', panel: 'roamies --panel' }, 'as before');
+assert.deepEqual(bindCommands("'/a b/Roamies.AppImage'", { snap: true }), { summon: "'/a b/Roamies.AppImage' --summon", talk: "'/a b/Roamies.AppImage' --talk", ask: "'/a b/Roamies.AppImage' --ask", list: "'/a b/Roamies.AppImage' --list", panel: "'/a b/Roamies.AppImage' --panel", snap: "'/a b/Roamies.AppImage' --snap" });
 
 // With the helper there, its tools are offered on any system (Windows has one now).
 const tools = new URL('../tools.mjs', import.meta.url).href;

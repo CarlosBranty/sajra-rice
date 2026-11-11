@@ -35,7 +35,7 @@ import { createSpeaker } from './speaker.mjs';
 import { DEFAULT_VOICE, FISH_CHOICES } from './fish.mjs';
 import { createSecrets, retryLoad } from './secrets.mjs';
 import { createActivity } from './activity.mjs';
-import { canCircle, canSnap, hasHands, hasHotkeys, hasVoice, linuxSession, micTrouble, needsVoiceModel, platformLine, promptWords, seesPointer, stepWaits } from './platform.mjs';
+import { bindCommands, canCircle, canSnap, hasHands, hasHotkeys, hasVoice, linuxSession, micTrouble, needsVoiceModel, platformLine, promptWords, seesPointer, stepWaits } from './platform.mjs';
 import { keyCards, keyKinds, signInCards } from './providers.mjs';
 import { activityLogs, buildReport, reportDir, reportName, reveal, run, scrubConfig, tail } from './diagnostics.mjs';
 
@@ -184,7 +184,7 @@ const distro = (() => { if (!LINUX) return ''; try { return (/^PRETTY_NAME="?([^
 const PLATFORM = platformLine(process.platform, { macVersion, arch: os.arch(), release: os.release(), session: SESSION, next: WAITS === 'chip', desktop: process.env.XDG_CURRENT_DESKTOP ?? '', distro });
 // Reading and working other apps, Ask About an Area, and circling while talking (see platform.mjs).
 const HANDS_OK = hasHands(process.platform, process.env.ROAMIES_HANDS);
-const SNAP_OK = canSnap(process.platform, process.env.ROAMIES_HANDS);
+const SNAP_OK = canSnap(process.platform, process.env.ROAMIES_HANDS, { session: SESSION, layer: process.env.ROAMIES_LAYER || '', slurp: process.env.ROAMIES_SLURP || '' });
 // The prompt's lines about pointing and walkthroughs, worded for what this computer can do (platform.mjs).
 const SHOW = promptWords({ hands: HANDS_OK, waits: WAITS, example: process.platform === 'darwin' ? '"how do I add a layer mask"' : 'a how-to' });
 const CIRCLE_OK = canCircle(process.platform);
@@ -198,7 +198,7 @@ const PANEL = LINUX ? 'the panel (Open Panel… in my tray icon\'s menu, or open
 // What the shortcuts are on Wayland: whatever keys they bound to these commands in their desktop's settings.
 // ROAMIES_LAUNCH: how this copy is started (the app says: plain roamies for a package, the AppImage's path for one).
 const LAUNCH = process.env.ROAMIES_LAUNCH || 'roamies';
-const BIND = Object.fromEntries(['summon', 'talk', 'ask', 'list', 'panel'].map((k) => [k, `${LAUNCH} --${k}`]));
+const BIND = bindCommands(LAUNCH, { snap: SNAP_OK && !HOTKEYS_OK });
 
 const auth = new AuthStorage();
 const signedIn = new Map();
@@ -377,7 +377,7 @@ const livePrompt = (context = '') => {
   const turn = `Live state (current as of this moment):
 ${frontNow ? `${frontNow}\n` : ''}- Editing files, running commands and controlling other apps: ${config.allowActions ? 'ALLOWED' : `switched OFF (tell the user to turn on "Allow File Edits & Commands" on the Behavior page in ${PANEL} if they want it)`}.
 ${VOICE_OK ? `- Voice: ${!config.voice ? 'off' : voiceReady() ? `on; ${HOTKEYS_OK ? `${userName} holds ${talkWords()} to talk` : `${userName} presses the key they bound to ${BIND.talk} to start talking and again to send (a pause sends too)`}${config.autoListen ? '. Auto-listen is on: when your reply to a spoken question ends with a question, the mic opens by itself for their answer' : ''}` : `on, but the speech model isn't downloaded yet (${voiceModel.status === 'downloading' ? 'downloading now' : `the Voice page in ${PANEL}`})`}.` : ''}
-- Shortcuts: ${HOTKEYS_OK ? `show or hide you ${keyWords(keys().summon)}` : `on this Wayland desktop no app can have global shortcuts, so ${userName} binds keys to these commands in their desktop's keyboard settings: ${BIND.summon} (show or hide you), ${BIND.ask} (ask you), ${BIND.list} (the list), ${BIND.talk} (talk) and ${BIND.panel} (the panel)`}${SNAP_OK ? `; ask about an area ${keyWords(keys().snap)}` : ''}${CIRCLE_OK ? "; while holding the talk keys, moving the cursor round something circles it (no clicking; it snaps shut with a click when the circle closes, and loose lines don't count) and you'll see what they circled" : ''}${HOTKEYS_OK ? `; show the list ${keyWords(keys().list)}` : ''}.${HANDS_OK ? '' : ' Asking about an area, reading app windows, finding things on screen by their words and working other apps need the Roamies app, which isn\'t running here; draw there with x, y from a screenshot.'}`;
+- Shortcuts: ${HOTKEYS_OK ? `show or hide you ${keyWords(keys().summon)}` : `on this Wayland desktop no app can have global shortcuts, so ${userName} binds keys to these commands in their desktop's keyboard settings: ${BIND.summon} (show or hide you), ${BIND.ask} (ask you), ${BIND.list} (the list), ${BIND.talk} (talk)${BIND.snap ? `, ${BIND.snap} (ask about an area)` : ''} and ${BIND.panel} (the panel)`}${SNAP_OK && HOTKEYS_OK ? `; ask about an area ${keyWords(keys().snap)}` : ''}${CIRCLE_OK ? "; while holding the talk keys, moving the cursor round something circles it (no clicking; it snaps shut with a click when the circle closes, and loose lines don't count) and you'll see what they circled" : ''}${HOTKEYS_OK ? `; show the list ${keyWords(keys().list)}` : ''}.${HANDS_OK ? '' : ` ${SNAP_OK ? 'Reading' : 'Asking about an area, reading'} app windows, finding things on screen by their words and working other apps need the Roamies app, which isn't running here; draw there with x, y from a screenshot.`}`;
   const memory = `${open ? `Open commitments:\n${open}` : 'No open commitments.'}${done ? `\nDone today (ticked off on the list or by you; still shown struck through until midnight):\n${done}` : ''}
 ${facts.length ? `What you know about ${userName}${total > facts.length ? ` (${facts.length} most relevant of ${total})` : ''}:\n${facts.map((f) => `- ${f.id}: ${f.text}`).join('\n')}` : `You don't know anything lasting about ${userName} yet.`}`;
   return { turn, memory };
@@ -1229,7 +1229,7 @@ function menu() {
     { id: 'panel', label: 'Open Panel…' },
     { id: 'show', label: `Show ${lookName()}`, ...(HOTKEYS_OK ? { accel: keys().summon } : {}) },
     { id: 'ask', label: `Ask ${lookName()}…`, enabled: !busy },
-    ...(SNAP_OK ? [{ id: 'snap', label: 'Ask About an Area…', accel: keys().snap }] : []),
+    ...(SNAP_OK ? [{ id: 'snap', label: 'Ask About an Area…', ...(HOTKEYS_OK ? { accel: keys().snap } : {}) }] : []),
     { id: 'stop', label: 'Stop', enabled: busy },
     { id: 'diagnostics', label: 'Save Diagnostics…', enabled: !diagnosing },
     ...(update.available ? [{ sep: true }, { id: 'install_update', label: update.page ? `Get Roamies ${update.available}…` : update.installing ? `Installing ${update.available}…` : `Install Update ${update.available} and Restart`, enabled: !update.installing }] : []),
@@ -1378,11 +1378,12 @@ function onVoice(m) {
 
 const overlays = () => send({ type: 'overlays', ids: ['sidekick'] });
 
-// What a second launch asked for (roamies --list | --talk | --ask).
+// What a second launch asked for (roamies --list | --talk | --ask | --snap).
 async function onCli(action) {
   logLine('cli', { action });
   if (action === 'list') return showList({ seconds: 20, toggle: true });
   if (action === 'ask') return onMenu('ask');
+  if (action === 'snap') return areaSnap();
   if (action !== 'talk' || !VOICE_OK) return;
   if (!config.voice) return say(`Voice is off. Switch it on on the Voice page in ${PANEL}.`, 'happy');
   if (!voiceReady()) return startVoiceDownload();
@@ -1482,9 +1483,13 @@ async function areaSnap() {
   snapping = true;
   try {
     const file = path.join(os.tmpdir(), `sidekick-area-${Date.now()}.png`);
-    const res = await hands('select', file);
+    // Linux: the app has the area picked (slurp) and cuts it out of a screenshot, shrunk to Claude's cap already
+    // (linux.rs area), or says it wasn't picked: Esc, a click without a drag, or no pick in three minutes.
+    const res = LINUX ? await shellCall({ type: 'area', file }, AREA_WAIT) : await hands('select', file);
     if (res.cancelled) return;
-    await fitImage(file);
+    if (LINUX && !res.ok) throw new Error(res.error || 'That did not work.');
+    if (LINUX) logLine('area', { pixels: res.pixels, bounds: res.bounds });
+    else await fitImage(file);
     snap = { image: await imageBlock(file, 'image/png'), at: Date.now() };
     if (VOICE_OK && config.voice) {
       // Snap, then just talk: start listening straight away (hands-free, ends when you pause).
@@ -1506,6 +1511,8 @@ async function areaSnap() {
   } finally { snapping = false; }
 }
 let snapping = false;
+// Linux: the app gives the user three minutes to pick, then a screenshot may take up to one more (the portal).
+const AREA_WAIT = 250_000;
 // Words said while ⌃⌥ was held, maybe with an area marked by drawing on the screen at the same time.
 async function onSpoken(text, area) {
   if (!area?.file) return enqueue(text, { interrupt: true, image: takeSnap(), byVoice: true });
@@ -1729,7 +1736,7 @@ createInterface({ input: process.stdin }).on('line', (line) => {
   // Wayland: the guide or panel copies one of the commands to bind (only those, never other text).
   else if (m.type === 'copy_bind' && Object.hasOwn(BIND, String(m.which))) shellCall({ type: 'clipboard', text: BIND[m.which] }).then((r) => send({ type: onboarding ? 'onboard' : 'panel', msg: { kind: 'copied', which: String(m.which), ok: !!r?.ok } }));
   // The shell's answers to what tools asked of it (Linux screenshots and copying).
-  else if (m.type === 'screenshot_done' || m.type === 'clipboard_done') shellAnswer(m);
+  else if (m.type === 'screenshot_done' || m.type === 'clipboard_done' || m.type === 'area_done') shellAnswer(m);
   // A second launch with a flag (roamies --talk and friends, bound to keys on Wayland); --summon and --panel the shell does itself.
   else if (m.type === 'cli') onCli(String(m.action ?? '')).catch((e) => console.error('cli', e));
   else if (m.type === 'login_item_status') onLoginStatus(m);
