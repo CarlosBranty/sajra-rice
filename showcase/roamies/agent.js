@@ -132,8 +132,9 @@
     // Linux, with a desktop bar that keeps a slot for it (host.js): the bar draws it resting there, and here it comes
     // out of the slot and goes back into it. The slot's centre, in overlay px.
     let dock = null;
-    // Where the body is wholly behind the bar at the slot (the bar is drawn over this overlay).
-    const dockPt = () => (dock ? [dock.x, Math.max(SAFE.top, dock.y * 2) - k.R * 1.3] : null);
+    // Where the body is wholly behind the bar at the slot (the bar is drawn over this overlay). As a layer surface on
+    // Wayland (the shell sets ROAMIE_LAYER) the overlay is drawn over the bar instead: the slot itself.
+    const dockPt = () => (!dock ? null : window.ROAMIE_LAYER ? [dock.x, dock.y] : [dock.x, Math.max(SAFE.top, dock.y * 2) - k.R * 1.3]);
     // The visible screen: overlay minus menu bar / Dock / taskbar.
     const bounds = () => ({ l: SAFE.left, t: SAFE.top, r: W - SAFE.right, b: H - SAFE.bottom });
 

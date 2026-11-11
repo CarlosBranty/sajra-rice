@@ -122,6 +122,33 @@ const travel = (c, to, secs, why) => {
   }
 }
 
+// A layer surface on Wayland (the shell sets ROAMIE_LAYER): the overlay is drawn above the bar, so there is nothing to
+// hide behind. It comes out of the slot itself and goes back into it, and still settles below the bar.
+{
+  const c = make((kit) => R.agentPlugin(kit)), a = c.agent, slot = { x: 1000, y: BAR / 2 };
+  c.update(DT, env);
+  window.ROAMIE_LAYER = true;
+  a.setDock(slot);
+  a.show();
+  assert.deepEqual(at(c), [slot.x, slot.y], 'starts in the slot');
+  assert.equal(a.out, true);
+  for (let i = 0; i < 50; i++) c.update(DT, env);
+  assert.ok(c.mover.y > BAR + 40, 'comes out below the bar');
+  assert.ok(Math.abs(c.mover.x - slot.x) < W / 3 && c.mover.y < H / 2, `its first spot is near the slot (${at(c)})`);
+  a.hide();
+  assert.equal(a.out, true, 'still out while it flies back');
+  for (let i = 0; i < 50; i++) c.update(DT, env);
+  assert.equal(c.gone, true);
+  assert.equal(a.out, false);
+  assert.ok(dist(c, [slot.x, slot.y]) < 1, `ended in the slot (${at(c)})`);
+
+  // Without the flag (X11): behind the bar again, as above.
+  delete window.ROAMIE_LAYER;
+  a.show();
+  assert.ok(c.mover.x === slot.x && c.mover.y < BAR - 40, `starts wholly behind the bar (${at(c)})`);
+  a.hide({ instant: true });
+}
+
 // Regression: hiding the Roamie with its shortcut while a typed question was open left the overlay holding the
 // keyboard with nothing on screen (on a tiling desktop nothing else could be typed in until a click).
 {

@@ -79,13 +79,14 @@ jobs:
       - name: Install the Tauri CLI
         run: cargo install tauri-cli --version "^2" --locked
 
-      # Tauri's Linux build dependencies, ALSA for the voice helper, and patchelf with the GStreamer plugins the
+      # Tauri's Linux build dependencies, ALSA for the voice helper, gtk-layer-shell for the overlay on Wayland
+      # compositors that have layer surfaces (the build links it), and patchelf with the GStreamer plugins the
       # AppImage bundles (bundleMediaFramework: spoken replies play through WebKit's GStreamer).
       - name: Install Linux build dependencies
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential file libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev libasound2-dev patchelf libfuse2t64 gstreamer1.0-plugins-base gstreamer1.0-plugins-good
+          sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential file libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev libasound2-dev libgtk-layer-shell-dev patchelf libfuse2t64 gstreamer1.0-plugins-base gstreamer1.0-plugins-good
 
       # Developer ID certificate into a throwaway keychain (removed at the end of the job).
       - name: Import Apple signing certificate

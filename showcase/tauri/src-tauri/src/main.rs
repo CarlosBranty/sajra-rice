@@ -308,6 +308,13 @@ fn set_typing(app: AppHandle, window: WebviewWindow, on: bool) {
     #[cfg(target_os = "linux")]
     linux::dock_keys(on);
     let _ = window.set_focusable(on);
+    // A layer surface (linux.rs) asks its compositor for the keyboard and gives it up the same way: no window is
+    // focused from here, so nothing throws the pointer about and no bar has to hand the keyboard back.
+    #[cfg(target_os = "linux")]
+    if linux::layer() {
+        linux::layer_keys(&window, on);
+        return;
+    }
     if on {
         // A bar that hosts the Roamie gives the overlay the keyboard itself (it just read keys in state.json): asked for
         // from here, a tiling compositor also throws the pointer to the middle of the screen. Should the bar not do it,
@@ -746,6 +753,11 @@ fn show_panel(app: &AppHandle, rect: Option<tauri::Rect>, toggle: bool) {
                     let app2 = app.clone();
                     w.on_window_event(move |e| {
                         if let tauri::WindowEvent::Focused(false) = e {
+                            // Linux, as a layer surface: not before the pointer has been in it (linux.rs).
+                            #[cfg(target_os = "linux")]
+                            if linux::layer() && !linux::layer_panel_left() {
+                                return;
+                            }
                             *PANEL_BLURRED.lock().unwrap() = Some(Instant::now());
                             hide_panel(&app2, "blur");
                         }
@@ -773,6 +785,14 @@ fn show_panel(app: &AppHandle, rect: Option<tauri::Rect>, toggle: bool) {
 /// Right under the icon in the menu bar (macOS, or a taskbar at the top), right above it in a taskbar at the
 /// bottom (Windows), kept inside the screen's usable area. True when it's above the icon.
 fn place_panel(app: &AppHandle, w: &WebviewWindow, rect: Option<tauri::Rect>) -> bool {
+    // Linux with layer surfaces (linux.rs): the compositor puts it in the top right corner of the screen in use,
+    // clear of bars. Only its size is said, in logical px: the usual one, less on a screen too short for it.
+    #[cfg(target_os = "linux")]
+    if linux::layer() {
+        let short = app.available_monitors().unwrap_or_default().iter().map(|m| m.size().height as f64 / m.scale_factor()).fold(f64::INFINITY, f64::min);
+        linux::layer_panel(w, PANEL_W as i32, PANEL_H.min(short - 80.0).max(200.0) as i32);
+        return false;
+    }
     let icon = rect.map(|r| {
         let p = r.position.to_physical::<f64>(1.0);
         let z = r.size.to_physical::<f64>(1.0);
@@ -969,6 +989,15 @@ fn shows_answer(msg: &Value) -> bool {
 
 /// The cursor in global points (macOS) or physical pixels (Windows): the units monitor_from_point takes.
 fn cursor_global(app: &AppHandle) -> Option<(f64, f64)> {
+    // Linux with layer surfaces: the pointer is known only while it is over an overlay (linux.rs), in that screen's
+    // own px; anywhere else there is nothing to follow.
+    #[cfg(target_os = "linux")]
+    if linux::layer() {
+        let (label, x, y) = linux::layer_pointer(app)?;
+        let mon = app.get_webview_window(&label)?.current_monitor().ok()??;
+        let o = mon.position().to_logical::<f64>(mon.scale_factor());
+        return Some((o.x + x, o.y + y));
+    }
     let cur = app.cursor_position().ok()?;
     let s = app.primary_monitor().ok().flatten().map_or(1.0, |m| m.scale_factor());
     Some(cursor_from_raw(cur.x, cur.y, s))
@@ -1016,6 +1045,15 @@ fn move_sidekick_to(app: &AppHandle, x: f64, y: f64) {
             return;
         }
     }
+    // Linux, as a layer surface (linux.rs): it is handed to the other monitor, where the compositor places and
+    // sizes it.
+    #[cfg(target_os = "linux")]
+    if linux::layer() {
+        linux::layer_move(&w, &mon);
+        let _ = w.eval(safe_js(app, &mon));
+        let _ = w.eval("window.__roamieMoved&&__roamieMoved()");
+        return;
+    }
     // Logical on macOS (one points space across screens); physical on Windows, where a logical size
     // would be converted with the old screen's scale.
     #[cfg(target_os = "macos")]
@@ -1031,7 +1069,7 @@ fn move_sidekick_to(app: &AppHandle, x: f64, y: f64) {
         let short = if cfg!(target_os = "linux") { 1 } else { 0 };
         let _ = w.set_size(tauri::PhysicalSize::new(mon.size().width, mon.size().height.saturating_sub(short)));
     }
-    let _ = w.eval(safe_js(&mon));
+    let _ = w.eval(safe_js(app, &mon));
     let _ = w.eval("window.__roamieMoved&&__roamieMoved()");
 }
 
@@ -1059,6 +1097,15 @@ fn build_overlays(app: &AppHandle) -> tauri::Result<()> {
         // then hides its top bar).
         #[cfg(target_os = "linux")]
         let (init, size) = (format!("{init}window.ROAMIE_LINUX={:?};", linux::session().name()), tauri::LogicalSize::new(size.width, size.height - 1.0));
+        // Wayland with layer-shell (linux.rs): the overlay is a layer surface, drawn above a bar and not below it. The
+        // compositor places and sizes it, so what the builder is told about either below counts for nothing, and it
+        // is built hidden for linux::layer_overlay to finish and show.
+        #[cfg(target_os = "linux")]
+        let layer = linux::layer();
+        #[cfg(not(target_os = "linux"))]
+        let layer = false;
+        #[cfg(target_os = "linux")]
+        let init = if layer { format!("{init}window.ROAMIE_LAYER=true;") } else { init };
         let label = format!("overlay-{gen}-{i}");
         if mine.iter().any(|id| id == "\"sidekick\"") {
             *SIDEKICK_OVERLAY.lock().unwrap() = Some(label.clone());
@@ -1076,9 +1123,16 @@ fn build_overlays(app: &AppHandle) -> tauri::Result<()> {
             .focusable(false)
             .position(pos.x, pos.y)
             .inner_size(size.width, size.height)
+            .visible(!layer)
             .initialization_script(init)
             .build()?;
-        w.set_ignore_cursor_events(true)?;
+        #[cfg(target_os = "linux")]
+        if layer {
+            linux::layer_overlay(&w, mon);
+        }
+        if !layer {
+            w.set_ignore_cursor_events(true)?;
+        }
         // A window manager can ask any window to close (a "close window" key while a bubble has the keyboard, common on
         // tiling desktops): the Roamie would be gone for good with Roamies still running. The overlay only goes when
         // Roamies takes it down itself (destroy, above).
@@ -1132,16 +1186,30 @@ fn full_frame_rate(w: &WebviewWindow) {
 }
 
 /// Edges of a monitor covered by the menu bar, Dock or taskbar, in CSS px, as a JS call.
-fn safe_js(mon: &tauri::Monitor) -> String {
-    let s = mon.scale_factor();
+fn safe_js(app: &AppHandle, mon: &tauri::Monitor) -> String {
     let (p, z, wa) = (mon.position(), mon.size(), mon.work_area());
-    let top = (wa.position.y - p.y).max(0) as f64 / s;
-    let left = (wa.position.x - p.x).max(0) as f64 / s;
-    let bottom = ((p.y + z.height as i32) - (wa.position.y + wa.size.height as i32)).max(0) as f64 / s;
-    let right = ((p.x + z.width as i32) - (wa.position.x + wa.size.width as i32)).max(0) as f64 / s;
+    // Linux with layer surfaces: Wayland reports no usable area (the whole monitor comes back), so what is known
+    // of a bar comes from the slot it keeps for the Roamie.
+    #[cfg(target_os = "linux")]
+    let bar = if linux::layer() { linux::layer_insets(app, mon) } else { (0.0, 0.0) };
+    #[cfg(not(target_os = "linux"))]
+    let bar = {
+        let _ = app;
+        (0.0, 0.0)
+    };
+    safe_call((p.x, p.y, z.width as i32, z.height as i32), (wa.position.x, wa.position.y, wa.size.width as i32, wa.size.height as i32), mon.scale_factor(), bar)
+}
+
+/// safe_js for a monitor and its usable area, both (x, y, w, h) in physical px at this scale. bar: more known to be
+/// taken at the top and the bottom, in CSS px.
+fn safe_call(mon: (i32, i32, i32, i32), work: (i32, i32, i32, i32), s: f64, bar: (f64, f64)) -> String {
+    let top = ((work.1 - mon.1).max(0) as f64 / s).max(bar.0);
+    let left = (work.0 - mon.0).max(0) as f64 / s;
+    let bottom = (((mon.1 + mon.3) - (work.1 + work.3)).max(0) as f64 / s).max(bar.1);
+    let right = ((mon.0 + mon.2) - (work.0 + work.2)).max(0) as f64 / s;
     // origin: this screen's top-left in global points, so the page can place things given in screen
     // coordinates (like the window being captured).
-    let (ox, oy) = (p.x as f64 / s, p.y as f64 / s);
+    let (ox, oy) = (mon.0 as f64 / s, mon.1 as f64 / s);
     format!("window.__roamieSafe&&__roamieSafe({{top:{top:.0},left:{left:.0},bottom:{bottom:.0},right:{right:.0},ox:{ox:.0},oy:{oy:.0}}})")
 }
 
@@ -1198,6 +1266,27 @@ fn pump_cursor(app: AppHandle) {
         if BUDDY_ON.load(Ordering::Relaxed) && n % 4 != 1 {
             continue;
         }
+        // Linux with layer surfaces: the overlay under the pointer gets it, already in its own px (linux.rs); over
+        // anything else the pointer can't be seen, and the page keeps the last place it had.
+        #[cfg(target_os = "linux")]
+        if linux::layer() {
+            if n % 240 == 1 {
+                for (label, w) in app.webview_windows() {
+                    if let (true, Ok(Some(mon))) = (is_overlay(&label), w.current_monitor()) {
+                        let _ = w.eval(safe_js(&app, &mon));
+                    }
+                }
+            }
+            if let Some((label, x, y)) = linux::layer_pointer(&app) {
+                if sent.insert(label.clone(), (x, y)) != Some((x, y)) {
+                    let t = start.elapsed().as_secs_f64() * 1000.0;
+                    if let Some(w) = app.get_webview_window(&label) {
+                        let _ = w.eval(format!("window.__roamiePtr&&__roamiePtr({x:.1},{y:.1},{t:.1})"));
+                    }
+                }
+            }
+            continue;
+        }
         // Each monitor query is a round trip to the main thread, so the main screen's scale is looked up rarely.
         if n % 240 == 1 {
             primary_scale = app.primary_monitor().ok().flatten().map_or(1.0, |m| m.scale_factor());
@@ -1215,7 +1304,7 @@ fn pump_cursor(app: AppHandle) {
             }
             if n % 240 == 1 {
                 if let Ok(Some(mon)) = w.current_monitor() {
-                    let _ = w.eval(safe_js(&mon));
+                    let _ = w.eval(safe_js(&app, &mon));
                 }
             }
             let (Ok(pos), Ok(scale)) = (w.inner_position(), w.scale_factor()) else { continue };
@@ -1639,6 +1728,19 @@ mod tests {
         assert_eq!(cli_action(&args(&["roamies", "--talks"])), None);
         assert_eq!(cli_action(&args(&["--talk"])), None, "the first argument is the program");
         assert_eq!(cli_action(&args(&[])), None);
+    }
+
+    #[test]
+    fn the_safe_area_is_what_the_desktop_reserves_and_what_a_bar_is_known_to_take() {
+        let call = |top: u32, left: u32, bottom: u32, right: u32, ox: i32, oy: i32| format!("window.__roamieSafe&&__roamieSafe({{top:{top},left:{left},bottom:{bottom},right:{right},ox:{ox},oy:{oy}}})");
+        // As before: the monitor less its usable area, in CSS px, and where the monitor is.
+        assert_eq!(safe_call((0, 0, 3840, 2160), (0, 64, 3840, 2000), 2.0, (0.0, 0.0)), call(32, 0, 48, 0, 0, 0));
+        assert_eq!(safe_call((1920, 0, 1920, 1080), (1990, 0, 1800, 1080), 1.0, (0.0, 0.0)), call(0, 70, 0, 50, 1920, 0));
+        assert_eq!(safe_call((0, 0, 1920, 1080), (0, 0, 1920, 1080), 1.0, (0.0, 0.0)), call(0, 0, 0, 0, 0, 0));
+        // Layer surfaces: no usable area is reported, so a bar's slot says what the bar takes.
+        assert_eq!(safe_call((0, 0, 4608, 2880), (0, 0, 4608, 2880), 2.0, (46.0, 0.0)), call(46, 0, 0, 0, 0, 0));
+        assert_eq!(safe_call((0, 0, 4608, 2880), (0, 0, 4608, 2880), 2.0, (0.0, 40.0)), call(0, 0, 40, 0, 0, 0));
+        assert_eq!(safe_call((0, 0, 3840, 2160), (0, 64, 3840, 2000), 2.0, (20.0, 60.0)), call(32, 0, 60, 0, 0, 0), "the larger of the two");
     }
 
     #[test]

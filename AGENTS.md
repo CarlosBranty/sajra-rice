@@ -10,11 +10,18 @@ commands and JSON, over Win32, UI Automation and Windows OCR). Only hands-win's 
 From a Mac, `cargo xwin check --target x86_64-pc-windows-msvc` type-checks the Windows code with the real SDK.
 
 Linux (beta) uses the same voice helper (`voice-win` builds for Linux too: ALSA mic, talk keys over X11, and a
-`toggle` command for `roamies --talk` on Wayland) and no hands helper. Its shell code is `src-tauri/src/linux.rs`:
-every window is an X11 window (`GDK_BACKEND=x11` on Wayland, through XWayland), the overlay lets clicks through by
-region (the page reports its click areas, `host.js` → `set_hit_rects`) instead of following the cursor, and
-screenshots, copying, Open at Login and AppImage-only updates live there. Debug aids: `ROAMIES_TRACE=1` prints the
-overlay's click areas, and in debug builds `ROAMIES_TEST_AUDIO=<wav>` stands in for the microphone.
+`toggle` command for `roamies --talk` on Wayland) and no hands helper. Its shell code is `src-tauri/src/linux.rs`,
+which picks one of two ways to make windows before GTK starts. On a Wayland compositor with layer-shell (Hyprland,
+Sway, KDE; it is asked over its socket) GTK runs on Wayland itself: each overlay is a layer surface over its monitor
+(namespace `roamies`, on the overlay layer, the keyboard only while something is typed to the Roamie), the panel
+is one in the top right corner (`roamies-panel`), and the setup guide is an ordinary window. Everywhere else (X11
+sessions, and Wayland without layer-shell, like GNOME) every window is an X11 window (`GDK_BACKEND=x11` on Wayland,
+through XWayland). Either way the overlay lets clicks through by region (the page reports its click areas, `host.js`
+→ `set_hit_rects`) instead of following the cursor, and screenshots, copying, Open at Login and AppImage-only
+updates live there too. Building needs the system library `gtk-layer-shell` (`libgtk-layer-shell-dev` on Debian and
+Ubuntu). Debug aids: `ROAMIES_TRACE=1` prints which way was picked and the overlay's click areas,
+`ROAMIES_LAYER_SHELL=0` keeps the X11 windows and `ROAMIES_LAYER_SHELL=1` takes layer surfaces on any Wayland
+session, and in debug builds `ROAMIES_TEST_AUDIO=<wav>` stands in for the microphone.
 
 ## Commands
 

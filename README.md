@@ -163,6 +163,17 @@ commands, Open at Login, and in-app updates for the AppImage (a `.deb` or `.rpm`
   - **Hyprland:** `bind = CTRL ALT, SPACE, exec, roamies --talk` in `~/.config/hypr/hyprland.conf`.
 - Walkthroughs play their steps one after another instead of waiting for your clicks.
 - Screenshots go through your desktop's screenshot portal, which may ask you to allow them.
+- On compositors with layer surfaces (Hyprland, Sway and others built on wlroots, KDE Plasma) the Roamie is a native
+  Wayland layer above your windows and bars: it takes no tile or workspace, clicks land on whatever is under it
+  everywhere except on the Roamie and what it shows, and it has the keyboard only while you type to it. The panel
+  opens in the top right corner. Window rules written for the old `Roamies` window no longer match: the layers are
+  named `roamies` and `roamies-panel`. Elsewhere (GNOME) its windows still go through XWayland, as on X11.
+  `ROAMIES_LAYER_SHELL=0 roamies` keeps the XWayland windows if the layer misbehaves on your compositor, and
+  `ROAMIES_LAYER_SHELL=1` asks for the layer where Roamies didn't pick it.
+
+Roamies needs the `gtk-layer-shell` library to start, on every desktop: install it beside the `.deb` or `.rpm`
+(`libgtk-layer-shell0` on Debian and Ubuntu, `gtk-layer-shell` on Fedora, openSUSE and Arch). Building from source
+needs its development files (`libgtk-layer-shell-dev`, `gtk-layer-shell-devel`).
 
 On X11 sessions the shortcuts work as on Windows (hold Ctrl+Alt to talk, Ctrl+Alt+S to show or hide).
 

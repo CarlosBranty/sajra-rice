@@ -1,9 +1,16 @@
-// Linux: which kind of session this is, and the parts of the shell that are GTK, X11 or D-Bus underneath.
+// Linux: which kind of session this is, and the parts of the shell that are GTK, X11, Wayland or D-Bus underneath.
 //
-// Every window is an X11 window, also on Wayland (through XWayland): a Wayland app can't place a window, keep it
-// on top or see the cursor over other apps, and the overlay needs all three. So on a Wayland session GTK is told to
-// use X11 before it starts, and the code that places windows is the same everywhere. What Wayland still takes away
-// (the cursor over other apps, global shortcuts, grabbing the screen) is handled per feature below.
+// A Wayland app can't place a window, keep it on top or see the cursor over other apps, and the overlay needs all
+// three. There are two ways round that, chosen once in init(), before GTK starts (layer() says which):
+//   - Wayland compositors with the layer-shell protocol (Hyprland, Sway and the others built on wlroots, KDE): GTK
+//     runs on Wayland itself. Each overlay is a layer surface on the overlay layer, covering its monitor, and the
+//     page's click areas are its input region; the panel is a layer surface too, and the setup guide an ordinary
+//     window. The compositor places them, so nothing here moves or sizes them.
+//   - everywhere else (X11 sessions, and Wayland without layer-shell, like GNOME, through XWayland): every window is
+//     an X11 window. GTK is told to use X11 before it starts, and the code that places windows is the same as on the
+//     other systems.
+// What Wayland still takes away (the cursor over other apps, global shortcuts, grabbing the screen) is handled per
+// feature below.
 
 use std::path::{Path, PathBuf};
 use std::sync::{mpsc, Mutex, OnceLock};
@@ -40,12 +47,112 @@ pub(crate) fn session() -> Session {
     *SESSION.get().unwrap_or(&Session::X11)
 }
 
+/// Whether the windows are layer surfaces on Wayland itself: only on a Wayland session whose compositor offers
+/// layer-shell (asked only when it matters). ROAMIES_LAYER_SHELL overrides the asking: 0 keeps the X11 windows,
+/// 1 takes layer surfaces on any Wayland session; anything else decides nothing.
+fn layer_from(session: Session, wanted: Option<&str>, offered: impl FnOnce() -> Option<bool>) -> bool {
+    if session != Session::Wayland {
+        return false;
+    }
+    match wanted.map(str::trim) {
+        Some("0") => false,
+        Some("1") => true,
+        _ => offered() == Some(true),
+    }
+}
+
+/// The compositor's socket: WAYLAND_DISPLAY when it is a whole path, else that name ("wayland-0" when there is
+/// none) in XDG_RUNTIME_DIR.
+fn wayland_socket(runtime_dir: Option<&str>, display: Option<&str>) -> Option<PathBuf> {
+    let name = display.filter(|d| !d.is_empty()).unwrap_or("wayland-0");
+    if name.starts_with('/') {
+        return Some(PathBuf::from(name));
+    }
+    runtime_dir.filter(|d| !d.is_empty()).map(|d| Path::new(d).join(name))
+}
+
+/// What a compositor has sent back so far to "list what you offer" (compositor_offers): Some(true) as soon as the
+/// interface is in the list, Some(false) once the list is over without it, None while more is to come. Err when
+/// the compositor reports an error or the bytes aren't Wayland messages.
+fn registry_reply(buf: &[u8], interface: &str) -> Result<Option<bool>, ()> {
+    let word = |at: usize| buf.get(at..at + 4).map(|b| u32::from_ne_bytes([b[0], b[1], b[2], b[3]]));
+    let mut at = 0;
+    // Each message: the object it is from, then its size (the high half) and what it says (the low half).
+    while let (Some(object), Some(head)) = (word(at), word(at + 4)) {
+        let (size, opcode) = ((head >> 16) as usize, head & 0xffff);
+        if size < 8 || size % 4 != 0 {
+            return Err(());
+        }
+        let Some(msg) = buf.get(at..at + size) else { break };
+        match (object, opcode) {
+            // wl_display.error.
+            (1, 0) => return Err(()),
+            // wl_registry.global: a number, the interface's name (its length counts a closing zero), a version.
+            (2, 0) => {
+                let len = word(at + 12).ok_or(())? as usize;
+                let name = msg.get(16..16 + len).and_then(|n| n.strip_suffix(&[0])).ok_or(())?;
+                if name == interface.as_bytes() {
+                    return Ok(Some(true));
+                }
+            }
+            // wl_callback.done: everything asked before the sync has been answered.
+            (3, 0) => return Ok(Some(false)),
+            _ => {}
+        }
+        at += size;
+    }
+    Ok(None)
+}
+
+/// Asks the compositor behind this socket whether it offers an interface, without GTK (which isn't up yet, and
+/// whose backend depends on the answer): the registry is asked for as object 2, then a sync as object 3 marks the
+/// end of its list. None when it can't be asked or doesn't answer in time.
+fn compositor_offers(socket: &Path, interface: &str) -> Option<bool> {
+    use std::io::{Read, Write};
+    let mut stream = std::os::unix::net::UnixStream::connect(socket).ok()?;
+    let wait = Some(Duration::from_millis(500));
+    stream.set_read_timeout(wait).ok()?;
+    stream.set_write_timeout(wait).ok()?;
+    // wl_display (object 1): get_registry (1) and sync (0), each with the new object's id.
+    let words: [u32; 6] = [1, 12 << 16 | 1, 2, 1, 12 << 16, 3];
+    stream.write_all(&words.iter().flat_map(|w| w.to_ne_bytes()).collect::<Vec<u8>>()).ok()?;
+    let (mut buf, mut chunk) = (Vec::new(), [0u8; 4096]);
+    let until = Instant::now() + Duration::from_secs(2);
+    // A compositor's list is a few kilobytes: one that goes on and on isn't one.
+    while buf.len() < 256 * 1024 && Instant::now() < until {
+        match stream.read(&mut chunk) {
+            Ok(n) if n > 0 => buf.extend_from_slice(&chunk[..n]),
+            _ => return None,
+        }
+        if let Some(answer) = registry_reply(&buf, interface).ok()? {
+            return Some(answer);
+        }
+    }
+    None
+}
+
+static LAYER: OnceLock<bool> = OnceLock::new();
+
+/// The windows are layer surfaces on Wayland itself (see the top of this file); false: X11 windows.
+pub(crate) fn layer() -> bool {
+    *LAYER.get().unwrap_or(&false)
+}
+
 /// First thing in main, before GTK starts and before any other thread exists.
 pub(crate) fn init() {
     let env = |k: &str| std::env::var(k).ok();
     let s = session_from(env("XDG_SESSION_TYPE").as_deref(), env("WAYLAND_DISPLAY").as_deref());
     let _ = SESSION.set(s);
-    if s == Session::Wayland {
+    let offered = || compositor_offers(&wayland_socket(env("XDG_RUNTIME_DIR").as_deref(), env("WAYLAND_DISPLAY").as_deref())?, "zwlr_layer_shell_v1");
+    let layer = layer_from(s, env("ROAMIES_LAYER_SHELL").as_deref(), offered);
+    let _ = LAYER.set(layer);
+    if trace() {
+        eprintln!("windows: {}", if layer { "layer surfaces on Wayland" } else { "X11" });
+    }
+    if layer {
+        // Whatever the environment asks GTK for: the layer surfaces need Wayland itself.
+        std::env::set_var("GDK_BACKEND", "wayland");
+    } else if s == Session::Wayland {
         if env("DISPLAY").is_some_and(|d| !d.is_empty()) {
             std::env::set_var("GDK_BACKEND", "x11");
         } else {
@@ -102,15 +209,47 @@ fn dock_on(dock: &Value, screen: Option<(f64, f64, f64, f64)>, screens: usize) -
     near("mx", x) && near("my", y) && near("sw", w) && near("sh", h)
 }
 
+/// A screen as (x, y, w, h) in logical px, the units a bar measures in.
+fn logical(m: &tauri::Monitor) -> (f64, f64, f64, f64) {
+    let (s, p, z) = (m.scale_factor(), m.position(), m.size());
+    (p.x as f64 / s, p.y as f64 / s, z.width as f64 / s, z.height as f64 / s)
+}
+
+/// The slot in the bar's dock.json, when there is one and it is on this screen.
+fn dock_read(screen: Option<(f64, f64, f64, f64)>, screens: usize) -> Option<Value> {
+    let dock = dock_from(&std::fs::read_to_string(dock_dir()?.join("dock.json")).ok()?)?;
+    dock_on(&dock, screen, screens).then_some(dock)
+}
+
 /// The bar's slot for the Roamie, when it is on this overlay's screen.
 pub(crate) fn dock_get(window: &tauri::WebviewWindow) -> Option<Value> {
-    let dock = dock_from(&std::fs::read_to_string(dock_dir()?.join("dock.json")).ok()?)?;
     let screens = window.available_monitors().map(|m| m.len()).unwrap_or(1);
-    let screen = window.current_monitor().ok().flatten().map(|m| {
-        let (s, p, z) = (m.scale_factor(), m.position(), m.size());
-        (p.x as f64 / s, p.y as f64 / s, z.width as f64 / s, z.height as f64 / s)
-    });
-    dock_on(&dock, screen, screens).then_some(dock)
+    dock_read(window.current_monitor().ok().flatten().as_ref().map(logical), screens)
+}
+
+/// How much of a screen's top and bottom the bar that keeps this slot takes, in px of an overlay `width` wide. The
+/// slot is taken to sit in the middle of the bar's thickness, so the bar is twice as thick as the slot's centre is
+/// far from the edge it runs along. A slot further in than that (a bar down a side) says nothing.
+fn slot_insets(dock: &Value, width: f64) -> (f64, f64) {
+    let n = |k: &str| dock[k].as_f64().unwrap_or(0.0);
+    let (y, sw, sh) = (n("y"), n("sw"), n("sh"));
+    if sw < 1.0 {
+        return (0.0, 0.0);
+    }
+    let (top, thick) = (y < sh / 2.0, 2.0 * y.min(sh - y));
+    match thick <= sh / 4.0 {
+        true if top => (thick * width / sw, 0.0),
+        true => (0.0, thick * width / sw),
+        false => (0.0, 0.0),
+    }
+}
+
+/// Layer surfaces: what a bar takes of this screen's top and bottom, in the overlay's px. Wayland doesn't tell an
+/// app which part of a screen is free, so only a bar that left its slot (dock.json) is known about.
+pub(crate) fn layer_insets(app: &AppHandle, mon: &tauri::Monitor) -> (f64, f64) {
+    let screens = app.available_monitors().map(|m| m.len()).unwrap_or(1);
+    let screen = logical(mon);
+    dock_read(Some(screen), screens).map_or((0.0, 0.0), |d| slot_insets(&d, screen.2))
 }
 
 /// The desktop's colours in a theme.json, or None when it isn't one: `light` has to be true or false. Of the colours
@@ -206,10 +345,20 @@ pub(crate) fn set_hit_rects(window: &tauri::WebviewWindow, flat: &[f64]) {
     }
     let w = window.clone();
     let _ = window.run_on_main_thread(move || {
-        let Some(win) = w.gtk_window().ok().and_then(|g| g.window()) else { return };
+        let Ok(top) = w.gtk_window() else { return };
         // GDK works in the same logical pixels as the page.
         let list: Vec<RectangleInt> = rects.iter().map(|&(x, y, w, h)| RectangleInt::new(x, y, w, h)).collect();
         let region = Region::create_rectangles(&list);
+        if layer() {
+            // Through GTK, which keeps the region and puts it back whenever it works out the window's own shape again
+            // (given to GDK alone it is lost then, and the whole surface takes clicks). GDK sends it to the compositor
+            // with the window's next frame, so one is asked for (a pixel of it): after a Roamie has left nothing
+            // draws any more, and its last click areas would stay.
+            top.input_shape_combine_region(Some(&region));
+            top.queue_draw_area(0, 0, 1, 1);
+            return;
+        }
+        let Some(win) = top.window() else { return };
         win.input_shape_combine_region(&region, 0, 0);
         // No compositor (a bare X11 window manager): the transparent parts would draw black over the whole screen,
         // so the window is cut down to the same rectangles.
@@ -217,6 +366,135 @@ pub(crate) fn set_hit_rects(window: &tauri::WebviewWindow, flat: &[f64]) {
             win.shape_combine_region(Some(&region), 0, 0);
         }
     });
+}
+
+// ---------- layer surfaces (Wayland compositors with layer-shell) ----------
+
+/// Which of the screens ((x, y, w, h) in logical px) is the one at this place, give or take rounding.
+fn monitor_at(all: &[(i32, i32, i32, i32)], want: (f64, f64, f64, f64)) -> Option<usize> {
+    let near = |a: i32, b: f64| (a as f64 - b).abs() <= 2.0;
+    all.iter().position(|&(x, y, w, h)| near(x, want.0) && near(y, want.1) && near(w, want.2) && near(h, want.3))
+}
+
+/// GDK's monitor for one of Tauri's: the same screen, found by where it is. Main thread only.
+fn gdk_monitor(mon: &tauri::Monitor) -> Option<gtk::gdk::Monitor> {
+    use gtk::prelude::*;
+    let display = gtk::gdk::Display::default()?;
+    let all: Vec<gtk::gdk::Monitor> = (0..display.n_monitors()).filter_map(|i| display.monitor(i)).collect();
+    let places: Vec<(i32, i32, i32, i32)> = all.iter().map(|m| m.geometry()).map(|g| (g.x(), g.y(), g.width(), g.height())).collect();
+    monitor_at(&places, logical(mon)).map(|i| all[i].clone())
+}
+
+/// Makes an overlay the layer surface over its monitor and shows it. The window comes hidden from Tauri's builder,
+/// so not yet realized: gtk-layer-shell has to get it before that. It goes on the overlay layer (above bars and
+/// fullscreen windows; no tile, no workspace), anchored to all four edges and over the whole monitor whatever bars
+/// have reserved (exclusive zone -1): the page's coordinates are the monitor's. It never has the keyboard by itself
+/// (layer_keys) and lets every click through until the page says where its click areas are (set_hit_rects).
+/// Main thread only.
+pub(crate) fn layer_overlay(window: &tauri::WebviewWindow, mon: &tauri::Monitor) {
+    use gtk::prelude::*;
+    use gtk_layer_shell::{Edge, KeyboardMode, Layer, LayerShell};
+    let Ok(win) = window.gtk_window() else { return };
+    win.init_layer_shell();
+    win.set_layer(Layer::Overlay);
+    win.set_namespace("roamies");
+    for edge in [Edge::Top, Edge::Bottom, Edge::Left, Edge::Right] {
+        win.set_anchor(edge, true);
+    }
+    win.set_exclusive_zone(-1);
+    win.set_keyboard_mode(KeyboardMode::None);
+    if let Some(m) = gdk_monitor(mon) {
+        win.set_monitor(&m);
+    }
+    win.input_shape_combine_region(Some(&gtk::cairo::Region::create()));
+    win.show_all();
+}
+
+/// Moves an overlay's layer surface to another monitor. Main thread only.
+pub(crate) fn layer_move(window: &tauri::WebviewWindow, mon: &tauri::Monitor) {
+    use gtk_layer_shell::LayerShell;
+    if let (Ok(win), Some(m)) = (window.gtk_window(), gdk_monitor(mon)) {
+        win.set_monitor(&m);
+    }
+}
+
+/// An overlay asks for the keyboard while something is being typed to the Roamie and gives it up after. The
+/// compositor hands it over and, after, back to the window that had it; nothing is focused from here, so the
+/// pointer stays where it is. Exclusive, not on demand: a surface that asks on demand gets the keyboard only when
+/// it is clicked (measured on Hyprland 0.57), and a question opened from a key or by the Roamie itself would sit
+/// there unable to be typed into.
+pub(crate) fn layer_keys(window: &tauri::WebviewWindow, on: bool) {
+    use gtk_layer_shell::{KeyboardMode, LayerShell};
+    let w = window.clone();
+    let _ = window.run_on_main_thread(move || {
+        if let Ok(win) = w.gtk_window() {
+            win.set_keyboard_mode(if on { KeyboardMode::Exclusive } else { KeyboardMode::None });
+        }
+    });
+}
+
+/// The pointer has been over the panel since it was last opened (layer surfaces only).
+static PANEL_ENTERED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Makes the panel a layer surface (the first time, while it is still hidden) of this size in logical px, in the top
+/// right corner of the screen in use, and readies it for opening. The compositor keeps it clear of bars, so the gaps
+/// are from the free area's edges, where place_panel puts it on X11. It asks for the keyboard on demand: it has it
+/// when it opens and when it is clicked, and loses it to a click elsewhere, which is what closes it. Main thread only.
+pub(crate) fn layer_panel(window: &tauri::WebviewWindow, width: i32, height: i32) {
+    use gtk::prelude::*;
+    use gtk_layer_shell::{Edge, KeyboardMode, Layer, LayerShell};
+    let Ok(win) = window.gtk_window() else { return };
+    if !win.is_layer_window() {
+        win.init_layer_shell();
+        win.set_layer(Layer::Overlay);
+        win.set_namespace("roamies-panel");
+        win.set_anchor(Edge::Top, true);
+        win.set_anchor(Edge::Right, true);
+        win.set_layer_shell_margin(Edge::Top, 6);
+        win.set_layer_shell_margin(Edge::Right, 8);
+        win.set_keyboard_mode(KeyboardMode::OnDemand);
+        // The page fills the window, so the pointer's coming is its widget's to see.
+        let page = win.child().and_then(|c| c.downcast::<gtk::Container>().ok()).and_then(|c| c.children().into_iter().next());
+        if let Some(page) = page {
+            page.connect_enter_notify_event(|_, _| {
+                PANEL_ENTERED.store(true, std::sync::atomic::Ordering::Relaxed);
+                gtk::glib::Propagation::Proceed
+            });
+        }
+    }
+    PANEL_ENTERED.store(false, std::sync::atomic::Ordering::Relaxed);
+    win.set_size_request(width, height);
+}
+
+/// Whether the panel losing the keyboard closes it. Where the keyboard follows the pointer (Hyprland and Sway as
+/// they come), a panel opened from a key or the tray loses it as soon as the pointer moves over the window it
+/// happens to be on, before it ever gets to the panel: that doesn't count. Once the pointer has been in the panel,
+/// losing the keyboard means the user went elsewhere.
+pub(crate) fn layer_panel_left() -> bool {
+    PANEL_ENTERED.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// The pointer while it is over an overlay: that overlay's label and the place in it, in its px. Wayland tells an
+/// app where the pointer is only over its own surfaces, so None everywhere else (and over the panel). Main thread
+/// only.
+fn pointer_now(app: &AppHandle) -> Option<(String, f64, f64)> {
+    use gtk::prelude::*;
+    let pointer = gtk::gdk::Display::default()?.default_seat()?.pointer()?;
+    let under = pointer.window_at_position().0?.toplevel();
+    let (label, _) = app.webview_windows().into_iter().find(|(l, w)| crate::is_overlay(l) && w.gtk_window().ok().and_then(|g| g.window()).as_ref() == Some(&under))?;
+    let (_, x, y, _) = under.device_position_double(&pointer);
+    Some((label, x, y))
+}
+
+/// pointer_now, from any thread.
+pub(crate) fn layer_pointer(app: &AppHandle) -> Option<(String, f64, f64)> {
+    let (tx, rx) = mpsc::channel();
+    let app2 = app.clone();
+    app.run_on_main_thread(move || {
+        let _ = tx.send(pointer_now(&app2));
+    })
+    .ok()?;
+    rx.recv_timeout(Duration::from_millis(250)).ok().flatten()
 }
 
 // ---------- the pointer (X11 sessions) ----------
@@ -436,7 +714,8 @@ fn remove_portal_file(path: &Path) {
 
 // ---------- clipboard ----------
 
-/// Copies text through GTK (no xclip or wl-copy needed; XWayland hands it on to Wayland apps). Main thread only.
+/// Copies text through GTK (no xclip or wl-copy needed; from X11 windows XWayland hands it on to Wayland apps, and
+/// with layer surfaces GTK sets the Wayland selection itself). Main thread only.
 pub(crate) fn set_clipboard(text: &str) {
     let clipboard = gtk::Clipboard::get(&gtk::gdk::SELECTION_CLIPBOARD);
     clipboard.set_text(text);
@@ -1275,6 +1554,146 @@ mod tests {
         assert_eq!(hit_rects(&[1.0, 2.0, 0.0, 4.0, f64::NAN, 0.0, 5.0, 5.0, 0.0, 0.0, f64::INFINITY, 5.0, 0.0, 0.0, 1e9, 5.0]), vec![]);
         assert_eq!(hit_rects(&[-8.0, -8.0, 40.0, 40.0]), vec![(-8, -8, 40, 40)], "a pad can reach past the edge");
         assert_eq!(hit_rects(&[1.0; 4 * 1000]).len(), 600);
+    }
+
+    #[test]
+    fn layer_surfaces_only_on_wayland_where_the_compositor_has_them() {
+        let (yes, no, failed) = (|| Some(true), || Some(false), || None);
+        assert!(layer_from(Session::Wayland, None, yes), "Wayland with layer-shell");
+        assert!(!layer_from(Session::Wayland, None, no), "Wayland without it (GNOME): XWayland, as before");
+        assert!(!layer_from(Session::Wayland, None, failed), "the compositor couldn't be asked: as before");
+        assert!(!layer_from(Session::X11, None, yes), "an X11 session never");
+        assert!(layer_from(Session::Wayland, Some(""), yes) && layer_from(Session::Wayland, Some("yes"), yes), "anything but 0 or 1 decides nothing");
+        assert!(!layer_from(Session::Wayland, Some("maybe"), no));
+    }
+
+    #[test]
+    fn the_override_wins_both_ways_without_asking_the_compositor() {
+        let asked = std::cell::Cell::new(0);
+        let ask = |answer: Option<bool>| { let asked = &asked; move || { asked.set(asked.get() + 1); answer } };
+        assert!(!layer_from(Session::Wayland, Some("0"), ask(Some(true))), "0: never");
+        assert!(layer_from(Session::Wayland, Some("1"), ask(Some(false))), "1: always on Wayland");
+        assert!(layer_from(Session::Wayland, Some("1"), ask(None)));
+        assert!(layer_from(Session::Wayland, Some(" 1 "), ask(None)), "spaces round it don't matter");
+        assert!(!layer_from(Session::X11, Some("1"), ask(Some(true))), "1 can't make an X11 session Wayland");
+        assert_eq!(asked.get(), 0, "the compositor is asked only when nothing was forced");
+    }
+
+    #[test]
+    fn the_compositors_socket_is_a_name_in_the_runtime_dir_or_a_path() {
+        assert_eq!(wayland_socket(Some("/run/user/1000"), Some("wayland-1")), Some(PathBuf::from("/run/user/1000/wayland-1")));
+        assert_eq!(wayland_socket(Some("/run/user/1000"), None), Some(PathBuf::from("/run/user/1000/wayland-0")), "the default name");
+        assert_eq!(wayland_socket(Some("/run/user/1000"), Some("")), Some(PathBuf::from("/run/user/1000/wayland-0")));
+        assert_eq!(wayland_socket(None, Some("/tmp/sock/wl")), Some(PathBuf::from("/tmp/sock/wl")), "a whole path needs no runtime dir");
+        assert_eq!(wayland_socket(Some("/run/user/1000"), Some("/tmp/sock/wl")), Some(PathBuf::from("/tmp/sock/wl")));
+        assert_eq!(wayland_socket(None, Some("wayland-1")), None);
+        assert_eq!(wayland_socket(Some(""), Some("wayland-1")), None);
+    }
+
+    /// One Wayland message: who it is from, what it says, and its arguments already as bytes.
+    fn wl_msg(object: u32, opcode: u16, args: &[u8]) -> Vec<u8> {
+        let mut m = object.to_ne_bytes().to_vec();
+        m.extend((((8 + args.len()) as u32) << 16 | opcode as u32).to_ne_bytes());
+        m.extend(args);
+        m
+    }
+
+    /// wl_registry.global: a number, the interface's name (counted with its closing zero, padded to four bytes)
+    /// and its version.
+    fn wl_global(name: u32, interface: &str, version: u32) -> Vec<u8> {
+        let mut args = name.to_ne_bytes().to_vec();
+        args.extend((interface.len() as u32 + 1).to_ne_bytes());
+        args.extend(interface.as_bytes());
+        args.extend(std::iter::repeat(0u8).take(4 - interface.len() % 4));
+        args.extend(version.to_ne_bytes());
+        wl_msg(2, 0, &args)
+    }
+
+    fn wl_done() -> Vec<u8> {
+        wl_msg(3, 0, &7u32.to_ne_bytes())
+    }
+
+    #[test]
+    fn the_compositors_list_is_read_until_it_ends() {
+        const LAYER: &str = "zwlr_layer_shell_v1";
+        let some: Vec<u8> = [wl_global(1, "wl_compositor", 6), wl_global(2, "wl_shm", 1), wl_global(3, "xdg_wm_base", 7)].concat();
+        assert_eq!(registry_reply(&[], LAYER), Ok(None), "nothing yet");
+        assert_eq!(registry_reply(&some, LAYER), Ok(None), "the list isn't over");
+        assert_eq!(registry_reply(&[some.clone(), wl_done()].concat(), LAYER), Ok(Some(false)), "over, and it wasn't there");
+        let with: Vec<u8> = [some.clone(), wl_global(35, LAYER, 5)].concat();
+        assert_eq!(registry_reply(&with, LAYER), Ok(Some(true)), "there: no need to wait for the end");
+        assert_eq!(registry_reply(&[with.clone(), wl_done()].concat(), LAYER), Ok(Some(true)));
+        assert_eq!(registry_reply(&with[..with.len() - 6], LAYER), Ok(None), "half a message: more is coming");
+        assert_eq!(registry_reply(&[wl_global(1, "zwlr_layer_shell_v1_not", 1), wl_global(2, "zwlr_layer_shell", 1), wl_done()].concat(), LAYER), Ok(Some(false)), "the whole name or nothing");
+        // Things said in between (an id being freed) are skipped; an error ends it.
+        assert_eq!(registry_reply(&[wl_msg(1, 1, &9u32.to_ne_bytes()), with.clone()].concat(), LAYER), Ok(Some(true)));
+        assert_eq!(registry_reply(&[wl_msg(1, 0, &[0; 12]), with.clone()].concat(), LAYER), Err(()), "wl_display.error");
+        // Nonsense: a message shorter than its own header, a name longer than its message.
+        assert_eq!(registry_reply(&[2u32.to_ne_bytes(), (4u32 << 16).to_ne_bytes()].concat(), LAYER), Err(()));
+        let mut bad = wl_global(1, "wl_shm", 1);
+        bad[12..16].copy_from_slice(&400u32.to_ne_bytes());
+        assert_eq!(registry_reply(&[bad, wl_done()].concat(), LAYER), Err(()));
+    }
+
+    /// A compositor made of a socket: it waits for the two requests, says what it was told to and hangs up.
+    fn fake_compositor(name: &str, reply: Vec<u8>) -> (PathBuf, std::thread::JoinHandle<Vec<u8>>) {
+        use std::io::{Read, Write};
+        let path = scratch(name).join("wayland-test");
+        let listener = std::os::unix::net::UnixListener::bind(&path).unwrap();
+        let served = std::thread::spawn(move || {
+            let (mut client, _) = listener.accept().unwrap();
+            let mut asked = [0u8; 24];
+            client.read_exact(&mut asked).unwrap();
+            client.write_all(&reply).unwrap();
+            asked.to_vec()
+        });
+        (path, served)
+    }
+
+    #[test]
+    fn a_compositor_is_asked_for_layer_shell_over_its_socket() {
+        const LAYER: &str = "zwlr_layer_shell_v1";
+        let (path, served) = fake_compositor("wl-offers", [wl_global(1, "wl_compositor", 6), wl_global(35, LAYER, 5), wl_done()].concat());
+        assert_eq!(compositor_offers(&path, LAYER), Some(true));
+        // What was asked: wl_display.get_registry as object 2, then wl_display.sync as object 3.
+        let asked = served.join().unwrap();
+        let word = |i: usize| u32::from_ne_bytes(asked[i * 4..i * 4 + 4].try_into().unwrap());
+        assert_eq!([word(0), word(1), word(2), word(3), word(4), word(5)], [1, 12 << 16 | 1, 2, 1, 12 << 16, 3]);
+
+        let (path, served) = fake_compositor("wl-lacks", [wl_global(1, "wl_compositor", 6), wl_global(2, "xdg_wm_base", 7), wl_done()].concat());
+        assert_eq!(compositor_offers(&path, LAYER), Some(false), "GNOME");
+        served.join().unwrap();
+
+        let (path, served) = fake_compositor("wl-hangs-up", wl_global(1, "wl_compositor", 6));
+        assert_eq!(compositor_offers(&path, LAYER), None, "hung up before the list was over");
+        served.join().unwrap();
+
+        let (path, served) = fake_compositor("wl-nonsense", vec![0xff; 64]);
+        assert_eq!(compositor_offers(&path, LAYER), None);
+        served.join().unwrap();
+
+        assert_eq!(compositor_offers(&scratch("wl-none").join("wayland-9"), LAYER), None, "no socket there");
+    }
+
+    #[test]
+    fn a_screen_is_found_again_by_where_it_is() {
+        let all = [(0, 0, 2304, 1440), (2304, 0, 1920, 1080), (0, 1440, 1280, 720)];
+        assert_eq!(monitor_at(&all, (0.0, 0.0, 2304.0, 1440.0)), Some(0));
+        assert_eq!(monitor_at(&all, (2304.0, 0.0, 1920.0, 1080.0)), Some(1));
+        assert_eq!(monitor_at(&all, (2303.6, 0.4, 1920.2, 1079.5)), Some(1), "give or take rounding at a fractional scale");
+        assert_eq!(monitor_at(&all, (0.0, 1440.0, 1280.0, 720.0)), Some(2));
+        assert_eq!(monitor_at(&all, (5000.0, 0.0, 1920.0, 1080.0)), None, "unplugged meanwhile");
+        assert_eq!(monitor_at(&[], (0.0, 0.0, 1920.0, 1080.0)), None);
+    }
+
+    #[test]
+    fn a_bars_slot_says_how_much_of_the_screen_the_bar_takes() {
+        let slot = |x: f64, y: f64| dock_from(&json!({ "x": x, "y": y, "sw": 2304, "sh": 1440 }).to_string()).unwrap();
+        assert_eq!(slot_insets(&slot(1803.0, 23.0), 2304.0), (46.0, 0.0), "a bar along the top: twice the way down to the slot's centre");
+        assert_eq!(slot_insets(&slot(400.0, 1420.0), 2304.0), (0.0, 40.0), "a bar along the bottom");
+        assert_eq!(slot_insets(&slot(1803.0, 23.0), 1152.0), (23.0, 0.0), "in the overlay's px when the bar measured in others");
+        assert_eq!(slot_insets(&slot(100.0, 0.0), 2304.0), (0.0, 0.0));
+        assert_eq!(slot_insets(&slot(20.0, 700.0), 2304.0), (0.0, 0.0), "a bar down a side says nothing about the top or bottom");
     }
 
     #[test]

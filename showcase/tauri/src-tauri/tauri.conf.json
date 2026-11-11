@@ -30,6 +30,14 @@
     "macOS": {
       "minimumSystemVersion": "13.5"
     },
+    "linux": {
+      "deb": {
+        "depends": ["libgtk-layer-shell0"]
+      },
+      "rpm": {
+        "depends": ["gtk-layer-shell"]
+      }
+    },
     "createUpdaterArtifacts": true,
     "externalBin": [
       "binaries/node"

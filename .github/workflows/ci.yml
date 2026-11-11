@@ -49,12 +49,13 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: node .github/scripts/check-inline-node.mjs
 
-      # Tauri's Linux build dependencies (v2.tauri.app/start/prerequisites, Debian list).
+      # Tauri's Linux build dependencies (v2.tauri.app/start/prerequisites, Debian list), and gtk-layer-shell for the
+      # overlay on Wayland compositors that have layer surfaces (linux.rs; the build links it, so it fails without).
       - name: Install Tauri system dependencies
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential file libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev libasound2-dev xvfb dbus-x11 xdotool
+          sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential file libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev libasound2-dev libgtk-layer-shell-dev xvfb dbus-x11 xdotool
 
       - uses: dtolnay/rust-toolchain@stable
 

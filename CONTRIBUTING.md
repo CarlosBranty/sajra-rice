@@ -5,7 +5,9 @@ Thanks for helping out. Bug reports, ideas and pull requests are all welcome.
 ## Setup
 
 With Rust, Node.js 22+, the [Tauri prerequisites](https://v2.tauri.app/start/prerequisites/) and, on macOS,
-the Xcode Command Line Tools installed:
+the Xcode Command Line Tools installed (on Linux, also ALSA's and gtk-layer-shell's development files:
+`libasound2-dev libgtk-layer-shell-dev` on Debian and Ubuntu, `alsa-lib gtk-layer-shell` on Arch,
+`alsa-lib-devel gtk-layer-shell-devel` on Fedora):
 
 ```bash
 git clone https://github.com/KenKaiii/Roamies.git

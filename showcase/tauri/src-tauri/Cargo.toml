@@ -23,10 +23,13 @@ objc2-service-management = { version = "=0.3.2", default-features = false, featu
 
 # Linux: the overlay's input shape, clipboard and screenshots (GTK, the version Tauri uses), the pointer on X11,
 # and the desktop portal on Wayland. All three are already in Cargo.lock through Tauri and its plugins.
+# gtk-layer-shell (the release made for gtk 0.18) turns the overlay and the panel into layer surfaces on Wayland
+# compositors that have them; it links the system library libgtk-layer-shell (0.6 or later, for the keyboard modes).
 [target.'cfg(target_os = "linux")'.dependencies]
 gtk = "=0.18.2"
 x11rb = "=0.13.2"
 zbus = "=5.19.0"
+gtk-layer-shell = { version = "=0.8.2", features = ["v0_6"] }
 
 [profile.release]
 lto = true
