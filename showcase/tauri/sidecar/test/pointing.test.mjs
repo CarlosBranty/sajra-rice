@@ -79,3 +79,74 @@ console.log('screenshot shape tests: passed');
   assert.equal(snapRect([1460, 100, 8, 8], [theme]), null, 'a tiny spot inside a big control: not grown');
   console.log('snap tests: passed');
 }
+
+// ---------- Linux: the app's own screenshot (the screen in use, cut out of a capture of every screen) ----------
+{
+  const { shellShot, createTools } = await import('../tools.mjs');
+  const { shotProblem } = await import('../pointing.mjs');
+  const fsp = await import('node:fs/promises');
+  // A desk with two screens: a laptop's (2304×1440 at 0,0) and a monitor to its right (1920×1080 at 2304,0). What
+  // the app answers for each is worked out and checked in src-tauri/src/linux.rs
+  // (a_pixel_of_the_screens_picture_is_its_place_on_the_desk); from there to a place on the desk is checked here.
+  const LAPTOP = { ok: true, pixels: [1568, 980], bounds: [0, 0, 2304, 1440], of: 'screen' };
+  const SIDE = { ok: true, pixels: [1568, 882], bounds: [2304, 0, 1920, 1080], of: 'screen' };
+  const laptop = shellShot(LAPTOP, { turn: 3 });
+  assert.deepEqual(toScreen(laptop.shot, 1361, 885), [2000, 1300], 'a button low on the laptop\'s screen');
+  assert.deepEqual(toScreen(laptop.shot, 0, 0), [0, 0]);
+  const side = shellShot(SIDE, { turn: 3 });
+  assert.deepEqual(toScreen(side.shot, 784, 441), [3264, 540], 'the middle of the monitor, past the laptop\'s width');
+  assert.deepEqual(toScreen(side.shot, 100, 50), [2426, 61]);
+  assert.deepEqual(toScreen(side.shot, 1568, 882), [4224, 1080], 'its far corner');
+  assert.deepEqual([side.shot.bounds, side.shot.size, side.shot.win, side.shot.turn], [[2304, 0, 1920, 1080], [1568, 882], null, 3]);
+  assert.equal(shotProblem(side.shot, 3), null, 'good to point by');
+  assert.equal(side.text, "Screenshot of the screen in use (1568×882 px; for draw give x, y in this image's pixels).", 'one screen of several is called that');
+  assert.equal(shellShot(SIDE, { turn: 3, target: 'Firefox' }).text, "Screenshot of the screen in use (one app's window can't be captured alone on Linux, so this is the screen in use) (1568×882 px; for draw give x, y in this image's pixels).");
+
+  // As it was: the whole desktop (one screen, or the screen in use isn't known), in the same words.
+  const ONE = { ok: true, pixels: [1568, 882], bounds: [0, 0, 1920, 1080] };
+  const one = shellShot(ONE, { turn: 1 });
+  assert.deepEqual(toScreen(one.shot, 784, 441), [960, 540]);
+  assert.equal(one.text, "Screenshot of the whole desktop (1568×882 px; for draw give x, y in this image's pixels).");
+  assert.equal(shellShot(ONE, { turn: 1, target: 'front' }).text, "Screenshot of the whole desktop (one app's window can't be captured alone on Linux, so this is the whole desktop) (1568×882 px; for draw give x, y in this image's pixels).");
+  assert.equal(shellShot({ ok: true, pixels: [1568, 882] }, { turn: 1 }).shot, null, 'no bounds: nothing to point by');
+  assert.equal(shellShot({ ok: true }, { turn: 1 }).text, 'Screenshot of the whole desktop.');
+
+  // Regression: both screens came as one 1568×535 picture; a picture that is one screen's while its bounds are the
+  // whole desk's (or any other mismatch) was mapped all the same, and the marks landed somewhere else. It is
+  // refused now, as on macOS and Windows.
+  const WRONG = { ok: true, pixels: [1568, 882], bounds: [0, 0, 4224, 1440] };
+  const wrong = shellShot(WRONG, { turn: 5 });
+  assert.deepEqual(wrong.shot, { unmapped: true, turn: 5, words: false }, 'not mapped');
+  assert.equal(wrong.text, "Screenshot of the whole desktop (it doesn't line up with the screen, so don't point by its pixels).");
+  // Why not, for the model: no "use its words" here, since nothing finds things by their words without the helper.
+  assert.equal(shotProblem(wrong.shot, 5), "That screenshot doesn't line up with the screen, so its pixels can't be used to point. Say where the thing is in words instead.");
+  assert.match(shotProblem({ unmapped: true, turn: 5 }, 5), /Point with the thing's visible words \(text\) instead\.$/, 'with the helper: as it was');
+  assert.deepEqual(shellShot(WRONG, { turn: 5, words: true }).shot, { unmapped: true, turn: 5 }, 'a helper that finds words: the helpers\' own refusal');
+  assert.equal(shellShot({ ok: true, pixels: [1568, 535], bounds: [0, 0, 4224, 1440] }, { turn: 5 }).shot.unmapped, undefined, 'the whole desk in its own shape still maps');
+
+  // The tool itself on Linux (without the helper): the app's answer is asked for, and a picture that doesn't fit
+  // can't be drawn by.
+  if (process.platform === 'linux' && !process.env.ROAMIES_HANDS) {
+    const noop = async () => {};
+    let answer = SIDE;
+    const askShell = async (m) => { assert.equal(m.type, 'screenshot'); await fsp.writeFile(m.file, 'jpeg'); return answer; };
+    const { tools } = createTools({ allowActions: () => false, ui: () => {}, ask: noop, openUrl: noop, onCommitments: noop, showList: noop, fmtWhen: String, commitmentsText: () => '', userName: 'T', askShell });
+    const tool = (n) => tools.find((x) => x.name === n);
+    const ring = { beats: [{ say: 'Here.', marks: [{ kind: 'ring', at: { x: 784, y: 441, w: 40, h: 20 } }] }] };
+    answer = WRONG;
+    const bad = await tool('take_screenshot').execute({ target: 'screen' }, {});
+    assert.match(bad.content[0].text, /doesn't line up with the screen/);
+    assert.equal(bad.content[1].type, 'image', 'the picture is still there to look at');
+    await assert.rejects(tool('draw').execute(ring, { toolCallId: 'd1' }), /doesn't line up with the screen, so its pixels can't be used to point/, 'no mark from a picture that doesn\'t fit');
+    answer = SIDE;
+    const good = await tool('take_screenshot').execute({ target: 'screen' }, {});
+    assert.match(good.content[0].text, /^Screenshot of the screen in use \(1568×882 px/);
+    // A picture that fits gets as far as the overlay (which isn't there in this test), not a refusal.
+    const ac = new AbortController();
+    const drawn = tool('draw').execute(ring, { toolCallId: 'd2', signal: ac.signal });
+    await new Promise((r) => setTimeout(r, 50));
+    ac.abort();
+    assert.equal(await drawn, 'Stopped.', 'a picture that fits is drawn by');
+  }
+  console.log('linux screenshot tests: passed');
+}

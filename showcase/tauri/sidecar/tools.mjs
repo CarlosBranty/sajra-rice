@@ -11,7 +11,7 @@ import { ASK, BLOCK, checkDrawAction, checkOpen, checkRead, checkUrl, checkWrite
 import dns from 'node:dns/promises';
 import { CARDS, DrawArgs, checkDraw, createParts, faviconFor, photoFor, pickTextMatch, resolveTargets } from './draw.mjs';
 import { plain } from './intro.mjs';
-import { linuxSession, seesPointer } from './platform.mjs';
+import { drawWords, hasHands, linuxSession, stepWaits } from './platform.mjs';
 import { addCommitment, forgetFact, parseDue, updateCommitment } from './store.mjs';
 
 const HOME = os.homedir();
@@ -35,8 +35,9 @@ const WIN_OPEN = "try { if ($env:ROAMIES_OPEN_APP) { Start-Process -FilePath $en
 export const winOpen = (target, app = '') => run('powershell', ['-NoProfile', '-NonInteractive', '-Command', WIN_OPEN], { env: { ...process.env, ROAMIES_OPEN: target, ROAMIES_OPEN_APP: app } });
 const THIS_COMPUTER = process.platform === 'darwin' ? 'this Mac' : 'this computer';
 const LINUX = process.platform === 'linux';
-// A Wayland session hides the pointer and clicks in other apps, so a drawing can't wait for them (platform.mjs).
-const POINTER_OK = seesPointer(process.platform, LINUX ? linuxSession() : '');
+// How a drawing's beat waits for the user (platform.mjs stepWaits): a Wayland session hides the pointer and clicks in
+// other apps, so there it can't watch for them.
+const WAITS = stepWaits(process.platform, LINUX ? linuxSession() : '', process.env.ROAMIES_LAYER || '');
 
 // ---------- Linux: apps by name ----------
 // Apps are listed by their .desktop files (the menus and app grids read the same ones). Opening "Files" or
@@ -123,6 +124,23 @@ const actionsOff = `File edits and commands are switched off. Tell the user to t
 // "hands": the bundled helper that captures one window or area and reads/controls other apps (hands/main.swift on
 // macOS, hands-win on Windows; same commands and JSON). A .mjs one (a test's fake) runs on this Node.
 const HANDS = process.env.ROAMIES_HANDS || '';
+/** Where a beat that waits shows a button to press (waits 'chip'): which beat's button reads Done, the last of several
+ *  that wait. -1 when one or none does: its button reads Next, since more steps may follow in another call. */
+export const doneBeat = (beats) => { const w = beats.flatMap((b, i) => (b.wait ? [i] : [])); return w.length > 1 ? w.at(-1) : -1; };
+
+/** The draw tool's description. Where things are, how a walkthrough goes and its closing note depend on what this
+ *  computer can do (platform.mjs drawWords: hands, waits); the rest is the same everywhere. */
+export function drawDescription(can) {
+  const words = drawWords(can);
+  return `Draw on the user's screen while you talk. Your Roamie turns into its cursor and draws with its tip, each beat's marks paced to its spoken line (also shown as a caption). One call holds a whole explanation or walkthrough.
+beats: [{say, marks, wait?}]. say: one short line, under 20 words, spoken while that beat's marks draw (don't repeat it in your reply). Keep 1 to 4 marks per beat, in the order you mention them.
+${words.places}
+Which mark: one control they should click: target (with wait 'click' in a walkthrough); one thing to notice: ring (follows its shape; r sets the corner radius); a small spot or icon: point; a region or panel: frame; key words: underline (outdated ones: strike); right or wrong: check, cross; order of steps: num; a name beside something: label (text) or label on any mark; how two things relate: connect (at → to); an odd-shaped group: trace (points); scroll here: scroll (dir); one thing above all else: spotlight (sparingly); something to hover: hover with wait 'hover'; big words: write (text, size).
+${words.walkthroughs}
+Explanations that a picture makes clearer go on cards beside the window (tie connects a card to what it explains): card (title, heading, text, items, sources), note (text, tone), list (title, items), clip (title, text), sources ([{name, url}]), photo (query: a thing with a Wikipedia page, or url; text = caption), graph (x_range, y_range, plots [{points, tone, label}], dots [{x, y, label}]) for numbers, timeline (events [{when, text}]) for dates, legend (keys [{tone, text}]), molecule (smiles, label) for chemistry, model (parts [{shape: box|sphere|cylinder|cone|torus, at [x,y,z], size [x,y,z], rot [deg x,y,z], tone, label}] within about -1 to 1, title) for objects and machines. Things saved with remember_commitment or update_commitment already show on their reminders list by themselves: never draw a list or note of them; list and note are for things that aren't being saved.
+Actions: type (text into the field at; needs actions allowed), copy (text to the clipboard), open (url), handoff (task), button (text + action {do: ask|open|copy, value}: a likely next step they can click), emote (name: hype, wave, upset, remind, motivate), sfx (name). tone: accent, teal, amber, coral, lilac, sky, lime, red, white.
+A drawing stays until the user clears it or the window changes; your next drawing replaces it. Every drawn piece gets an id (p1, p2 …) in the result. To change what's drawn ("make that red", "move it left", "never mind"): edit [{do: recolor|move|erase|clear, part, tone, dx, dy}] with no beats. Up to 12 beats, 40 marks each.${words.note}`;
+}
 const runHands = (args, opts) => (HANDS.endsWith('.mjs') ? run(process.execPath, [HANDS, ...args], opts) : run(HANDS, args, opts));
 const STALE_ID = 'The page changed since read_window, so that id is out of date. Call read_window again and use the new ids.';
 // An app named in read_window or act_in_app that isn't open: open it (with the open tool's safety check) and wait
@@ -166,6 +184,22 @@ export const imageBlock = async (file, mediaType) => {
   return { type: 'image', mediaType, data };
 };
 
+/** Linux: what the app's screenshot answer ({ pixels: [w, h], bounds: [x, y, w, h], of? }) means: how its pixels map
+ *  to the screen (shot, kept as the latest screenshot; null when it can't be told) and the line the model reads with
+ *  the picture. The app cuts the screen in use out of a capture of every screen (of: 'screen'; linux.rs). A picture
+ *  that isn't the shape of the area it's said to show would point in the wrong place, so it is refused for pointing,
+ *  as the helper's is (handsShot). target: what was asked for ('screen', 'front', an app's name). words: something
+ *  here finds things by their words (the hands helper), which is what to point by then. */
+export function shellShot(res, { turn, target = 'screen', words = false } = {}) {
+  const [iw, ih] = Array.isArray(res.pixels) ? res.pixels : [];
+  const b = Array.isArray(res.bounds) && res.bounds.length === 4 ? res.bounds : null;
+  const shot = !(iw && ih && b) ? null : shotFits(b, iw, ih) ? { ...shotMap(b, iw, ih), bounds: b, win: null, turn } : { unmapped: true, turn, ...(words ? {} : { words: false }) };
+  const what = res.of === 'screen' ? 'the screen in use' : 'the whole desktop';
+  const whole = target === 'screen' ? '' : ` (one app's window can't be captured alone on Linux, so this is ${what})`;
+  const dims = shot?.unmapped ? ` (it doesn't line up with the screen, so don't point by its pixels${words ? '; use visible words' : ''})` : iw ? ` (${iw}×${ih} px; for draw give x, y in this image's pixels)` : '';
+  return { shot, text: `Screenshot of ${what}${whole}${dims}.` };
+}
+
 // deps: what the tools need from the app (settings, overlay, input bubble, menu). State lives per instance.
 const BROWSERS = /^(browser|safari|google chrome|chrome|arc|firefox|microsoft edge|edge|brave browser|brave|opera|vivaldi)$/i;
 const ADDRESS = /^(?:https?:\/\/)?(?:[a-z0-9-]+\.)+[a-z]{2,}(?::\d+)?(?:[/?#]\S*)?$/i;
@@ -203,7 +237,8 @@ const GIT_SAFE = {
 };
 
 // askShell: Linux asks the app itself for screenshots and copying ({type:'screenshot'|'clipboard', …} → its answer).
-export function createTools({ allowActions, ui, ask, openUrl, onCommitments, showList, fmtWhen, commitmentsText, userName, onPlan = () => {}, speak = () => false, onHandoff = () => {}, watchClicks = () => {}, onInkGone = () => {}, askShell = async () => ({ ok: false, error: 'Roamies isn\'t running.' }) }) {
+// waits: how a drawing's beat waits here (this computer's way unless a test says otherwise).
+export function createTools({ allowActions, ui, ask, openUrl, onCommitments, showList, fmtWhen, commitmentsText, userName, onPlan = () => {}, speak = () => false, onHandoff = () => {}, watchClicks = () => {}, onInkGone = () => {}, askShell = async () => ({ ok: false, error: 'Roamies isn\'t running.' }), waits = WAITS }) {
   let axNudged = 0;
   let lastShot = null; // how the latest screenshot's pixels map to screen points (see pointing.mjs)
   let lastRead = null; // { win, controls } from the latest read_window, to catch ids that went stale
@@ -333,15 +368,13 @@ export function createTools({ allowActions, ui, ask, openUrl, onCommitments, sho
       return { content: [{ type: 'text', text: `Screenshot of the main display${iw ? ` (${iw}×${ih} px; for draw give x, y in this image's pixels)` : ''}.` }, { type: 'image', mediaType: 'image/jpeg', data }] };
     }
     if (!LINUX) throw new Error(`Screenshots aren't available on ${process.platform}.`);
-    // Linux: the app takes it (the X screen, or the desktop's screenshot portal on Wayland), shrunk to Claude's cap,
-    // and says what part of the desktop it covers, so draw can turn its pixels into places on screen.
+    // Linux: the app takes it (the X screen, or the desktop's screenshot portal on Wayland): the screen in use,
+    // shrunk to Claude's cap. It says what part of the desktop that is, so draw can turn its pixels into places on screen.
     const res = await askShell({ type: 'screenshot', file });
     if (!res?.ok) { fs.unlink(file).catch(() => {}); throw new Error(res?.error || 'Screen capture failed.'); }
-    const [iw, ih] = Array.isArray(res.pixels) ? res.pixels : [];
-    const b = Array.isArray(res.bounds) && res.bounds.length === 4 ? res.bounds : null;
-    lastShot = iw && ih && b ? { ...shotMap(b, iw, ih), bounds: b, win: null, turn } : null;
-    const whole = t === 'screen' ? '' : ' (one app\'s window can\'t be captured alone on Linux, so this is the whole desktop)';
-    return { content: [{ type: 'text', text: `Screenshot of the whole desktop${whole}${iw ? ` (${iw}×${ih} px; for draw give x, y in this image's pixels)` : ''}.` }, await imageBlock(file, 'image/jpeg')] };
+    const seen = shellShot(res, { turn, target: t, words: !!HANDS });
+    lastShot = seen.shot;
+    return { content: [{ type: 'text', text: seen.text }, await imageBlock(file, 'image/jpeg')] };
   }
 
   // ---------- drawing on screen (the draw tool) ----------
@@ -562,8 +595,9 @@ export function createTools({ allowActions, ui, ask, openUrl, onCommitments, sho
     if (problems.length) throw new Error(problems.join('\n'));
     const t = String(args.target || 'front'), spec = t === 'front' ? 'front' : t === 'screen' ? 'screen' : `app:${t}`;
     const id = ctx.toolCallId, edits = args.edit ?? [], notes = [], said = [];
-    // Clicks and hovers in other apps can't be seen here (Wayland): the beats play one after another instead.
-    const beats = (args.beats ?? []).map((b) => (POINTER_OK || !b.wait ? b : { ...b, wait: undefined }));
+    // Clicks and hovers in other apps can't be seen here (Wayland): the beats play one after another instead. Unless
+    // the overlay is a layer surface: a beat that waits then shows a Next button to press (ink.js waitFor).
+    const beats = (args.beats ?? []).map((b) => (waits !== 'none' || !b.wait ? b : { ...b, wait: undefined }));
     if (beats.some((b, i) => b !== (args.beats ?? [])[i])) notes.push("This desktop doesn't let Roamies see clicks in other apps, so the beats played one after another instead of waiting for clicks.");
     for (const e of edits) if (e.do !== 'clear' && !parts.has(e.part)) throw new Error(`There's no ${e.part} on screen now${parts.ids.length ? ` (there is: ${parts.describe()})` : ' (nothing is drawn)'}. Draw it again instead.`);
     // A new drawing in a later request replaces the old one (cards too), unless it's editing what's there.
@@ -573,6 +607,7 @@ export function createTools({ allowActions, ui, ask, openUrl, onCommitments, sho
     // One segment per beat: each is sent as soon as its places are found, so the first marks draw while the rest
     // are still being looked up (each lookup is a helper round trip). after: it comes after a click or hover.
     const segs = beats.map((b, i) => ({ from: i, to: i + 1, after: i > 0 && !!beats[i - 1].wait }));
+    const done = waits === 'chip' ? doneBeat(beats) : -1;
     if (!segs.length) segs.push({ from: 0, to: 0 });
     const drawn = [];
     // Cut off (they spoke over it): the overlay stops too, or it keeps the caption up waiting for a click.
@@ -605,7 +640,7 @@ export function createTools({ allowActions, ui, ask, openUrl, onCommitments, sho
         drawn.push(...ids);
         if (opts.fade) for (const p of ids) loose.add(p);
         for (const b of seg) for (const m of b.marks) if (m.action && m.part) buttons.set(m.part, m.action);
-        const out = seg.map((b, j) => ({ ...b, n: sg.from + j + 1, caption: plain(b.say), voiced: !!speak(b.say) }));
+        const out = seg.map((b, j) => ({ ...b, n: sg.from + j + 1, caption: plain(b.say), voiced: !!speak(b.say), ...(sg.from + j === done ? { final: true } : {}) }));
         said.push(...out.map((b) => b.caption));
         ui({ kind: 'agent', e: { type: 'draw', id, seg: k, beats: out, edits: k ? [] : edits, last: k === segs.length - 1, win, busy: k ? [] : busy, ...(opts.fade ? { fade: opts.fade } : {}) } });
         // The first beat must show; later ones queue behind it on the overlay without holding this up.
@@ -618,7 +653,10 @@ export function createTools({ allowActions, ui, ask, openUrl, onCommitments, sho
         if (!w) continue;
         const n = out.at(-1).n, r = await inkWait(`${id}:wait:${n}`, w === 'click' ? 120_000 : 60_000, ctx?.signal);
         if (r === 'stopped') return stopped();
-        notes.push(`Beat ${n}: ${r === 'timeout' ? `no ${w} within ${w === 'click' ? 2 : 1} minute${w === 'click' ? 's' : ''}, so I stopped there` : `${userName} ${r}`}.`);
+        const mins = `${w === 'click' ? 2 : 1} minute${w === 'click' ? 's' : ''}`, press = n - 1 === done ? 'Done' : 'Next';
+        if (waits === 'chip') notes.push(`Beat ${n}: ${r === 'next' ? `${userName} pressed ${press}` : `nobody pressed ${press}${r === 'timeout' ? ` within ${mins}` : ''}, so I stopped there`}.`);
+        else notes.push(`Beat ${n}: ${r === 'timeout' ? `no ${w} within ${mins}, so I stopped there` : `${userName} ${r}`}.`);
+        if (waits === 'chip' && r !== 'next') break;
         if (r === 'timeout') break;
         // They clicked: the screen has changed under the old screenshot.
         if (lastShot) lastShot.used = true;
@@ -636,7 +674,7 @@ export function createTools({ allowActions, ui, ask, openUrl, onCommitments, sho
   // From the overlay: a segment started drawing, a wait ended, a card was closed, a button was clicked.
   const inkEvents = {
     started: (id, seg) => ink.waits.get(`${id}:start:${seg}`)?.('started'),
-    waitDone: (id, beat, result) => ink.waits.get(`${id}:wait:${beat}`)?.(['clicked', 'hovered', 'skipped'].includes(result) ? result : 'skipped'),
+    waitDone: (id, beat, result) => ink.waits.get(`${id}:wait:${beat}`)?.(['clicked', 'hovered', 'skipped', 'next', 'timeout'].includes(result) ? result : 'skipped'),
     closed: (part) => { parts.remove(String(part)); buttons.delete(String(part)); loose.delete(String(part)); },
     button: (part) => buttons.get(String(part)) ?? null,
     // A request ended: if it drew nothing, the marks from before it are done with.
@@ -785,14 +823,7 @@ export function createTools({ allowActions, ui, ask, openUrl, onCommitments, sho
     ] : []),
     {
       name: 'draw',
-      description: `Draw on the user's screen while you talk. Your Roamie turns into its cursor and draws with its tip, each beat's marks paced to its spoken line (also shown as a caption). One call holds a whole explanation or walkthrough.
-beats: [{say, marks, wait?}]. say: one short line, under 20 words, spoken while that beat's marks draw (don't repeat it in your reply). Keep 1 to 4 marks per beat, in the order you mention them.
-Places (at, to, tie), best first: {text: the exact words shown on screen} (exact bounds, scrolls to it; target 'screen' searches every app; also words inside paragraphs, text in images or canvases, and a single character, which matches case); add every: true to mark every place that text appears (each letter s, each mention of a word), one mark per place, and within: {x, y, w, h} (screenshot pixels, x, y the centre) to keep to one part of the screen (every s in one sentence); {id} from read_window, for controls without words; {x, y, w, h} pixels in your latest screenshot, for icons, shapes and areas without words: x, y is the thing's centre, and w, h its whole width and height; the box is then fitted to what's really drawn there, so a close guess is enough.
-Which mark: one control they should click: target (with wait 'click' in a walkthrough); one thing to notice: ring (follows its shape; r sets the corner radius); a small spot or icon: point; a region or panel: frame; key words: underline (outdated ones: strike); right or wrong: check, cross; order of steps: num; a name beside something: label (text) or label on any mark; how two things relate: connect (at → to); an odd-shaped group: trace (points); scroll here: scroll (dir); one thing above all else: spotlight (sparingly); something to hover: hover with wait 'hover'; big words: write (text, size).
-Walkthroughs ("how do I…"): one beat per step, each a target on that step's control with label and wait 'click'; the next step is found after they click, on the screen as it is then.
-Explanations that a picture makes clearer go on cards beside the window (tie connects a card to what it explains): card (title, heading, text, items, sources), note (text, tone), list (title, items), clip (title, text), sources ([{name, url}]), photo (query: a thing with a Wikipedia page, or url; text = caption), graph (x_range, y_range, plots [{points, tone, label}], dots [{x, y, label}]) for numbers, timeline (events [{when, text}]) for dates, legend (keys [{tone, text}]), molecule (smiles, label) for chemistry, model (parts [{shape: box|sphere|cylinder|cone|torus, at [x,y,z], size [x,y,z], rot [deg x,y,z], tone, label}] within about -1 to 1, title) for objects and machines. Things saved with remember_commitment or update_commitment already show on their reminders list by themselves: never draw a list or note of them; list and note are for things that aren't being saved.
-Actions: type (text into the field at; needs actions allowed), copy (text to the clipboard), open (url), handoff (task), button (text + action {do: ask|open|copy, value}: a likely next step they can click), emote (name: hype, wave, upset, remind, motivate), sfx (name). tone: accent, teal, amber, coral, lilac, sky, lime, red, white.
-A drawing stays until the user clears it or the window changes; your next drawing replaces it. Every drawn piece gets an id (p1, p2 …) in the result. To change what's drawn ("make that red", "move it left", "never mind"): edit [{do: recolor|move|erase|clear, part, tone, dx, dy}] with no beats. Up to 12 beats, 40 marks each.${POINTER_OK ? '' : " On this desktop (Wayland) clicks and hovers in other apps can't be seen: never use wait; beats play one after another, so say each step's line in an order that reads well without pausing."}`,
+      description: drawDescription({ hands: hasHands(process.platform, HANDS), waits }),
       parameters: DrawArgs, executionMode: 'sequential', timeoutMs: 30 * 60_000,
       execute: draw,
     },

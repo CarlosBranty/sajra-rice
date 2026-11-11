@@ -1676,6 +1676,11 @@ fn cli_action(args: &[String]) -> Option<&'static str> {
 /// A second launch quit and handed its arguments over (the single-instance plugin). A plain one summons the
 /// Roamie; on Linux it opens the panel instead, since many desktops there show no tray icon to click.
 fn second_launch(app: &AppHandle, args: &[String]) {
+    // Debug builds on Linux: `roamies --shot` keeps the screenshot the agent would get now (linux.rs shot_probe).
+    #[cfg(all(debug_assertions, target_os = "linux"))]
+    if args.iter().skip(1).any(|a| a == "--shot") {
+        return linux::shot_probe(app);
+    }
     match cli_action(args) {
         Some("summon") => to_overlays(app, &json!({ "kind": "summon" })),
         Some("panel") => show_panel(app, None, false),

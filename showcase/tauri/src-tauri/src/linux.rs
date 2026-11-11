@@ -649,6 +649,48 @@ fn desktop_bounds(app: &AppHandle) -> [f64; 4] {
     union_bounds(&screens)
 }
 
+/// The screen the sidekick's overlay is on, [x, y, w, h] in desktop_bounds's points: the one in use, since the
+/// overlay follows it (the cursor, or the bar's note for a layer surface). None when it can't be told. Main thread
+/// only.
+fn sidekick_screen(app: &AppHandle) -> Option<[f64; 4]> {
+    let label = crate::SIDEKICK_OVERLAY.lock().unwrap().clone()?;
+    let window = app.get_webview_window(&label)?;
+    // A layer surface: the screen it was handed to (the source dock_get goes by).
+    let handed = if layer() { layer_screens(&window).and_then(|(here, screens)| Some(screens[here?])) } else { None };
+    let (x, y, w, h) = handed.or_else(|| window.current_monitor().ok().flatten().as_ref().map(logical))?;
+    Some([x, y, w, h])
+}
+
+/// A capture of the whole desktop, cut down to one screen: the pixels to keep as (x, y, w, h), and the part of the
+/// desktop they show (that screen, or as much of it as is on the desktop). `capture` is the picture's size in
+/// pixels, `desktop` what it shows and `screen` the screen wanted, both [x, y, w, h] in the same points. One scale
+/// for the whole picture: its width in pixels over the desktop's in points; edges go to the nearest pixel. None when
+/// there is nothing to cut (the screen is the whole desktop) or no telling where the screen is in the picture (it
+/// isn't the desktop's shape, the screen is nowhere on it, a size makes no sense): the picture then stays whole.
+fn shot_crop(capture: (i32, i32), desktop: [f64; 4], screen: [f64; 4]) -> Option<((i32, i32, i32, i32), [f64; 4])> {
+    let [dx, dy, dw, dh] = desktop;
+    let sizes = [capture.0 as f64, capture.1 as f64, dw, dh, screen[2], screen[3]];
+    if !sizes.iter().all(|v| v.is_finite() && *v > 0.0) || ![dx, dy, screen[0], screen[1]].iter().all(|v| v.is_finite()) {
+        return None;
+    }
+    let k = capture.0 as f64 / dw;
+    // The same tolerance as the sidecar's shotFits, which refuses to point by a picture of another shape.
+    if (k / (capture.1 as f64 / dh) - 1.0).abs() > 0.02 {
+        return None;
+    }
+    let (x0, y0) = (screen[0].max(dx), screen[1].max(dy));
+    let (x1, y1) = ((screen[0] + screen[2]).min(dx + dw), (screen[1] + screen[3]).min(dy + dh));
+    if x1 <= x0 || y1 <= y0 {
+        return None;
+    }
+    let px = |v: f64, max: i32| ((v * k).round() as i32).clamp(0, max);
+    let (left, top, right, bottom) = (px(x0 - dx, capture.0), px(y0 - dy, capture.1), px(x1 - dx, capture.0), px(y1 - dy, capture.1));
+    if right <= left || bottom <= top || (left, top, right, bottom) == (0, 0, capture.0, capture.1) {
+        return None;
+    }
+    Some(((left, top, right - left, bottom - top), [x0, y0, x1 - x0, y1 - y0]))
+}
+
 /// Where the desktop portal will answer a request made with this token: the caller's bus name (":1.42") without
 /// its colon and with dots as underscores, then the token.
 fn portal_request_path(unique_name: &str, token: &str) -> String {
@@ -689,6 +731,68 @@ fn save_fitted(shot: &gtk::gdk_pixbuf::Pixbuf, file: &str) -> Result<(i32, i32),
     let out = out.ok_or("the screenshot couldn't be resized")?;
     out.savev(file, "jpeg", &[("quality", "85")]).map_err(|e| e.to_string())?;
     Ok((w, h))
+}
+
+/// A screenshot as the sidecar gets it: its size in pixels, the part of the desktop it shows (in desktop_bounds's
+/// points), and whether that is one screen of several rather than the whole desktop.
+#[derive(Debug, PartialEq)]
+struct Shot {
+    pixels: (i32, i32),
+    bounds: [f64; 4],
+    screen: bool,
+}
+
+/// Saves a capture of the whole desktop for the sidecar: cut down to `screen` when that is one screen of several
+/// (shot_crop), then shrunk to Claude's cap (save_fitted), so the screen in use gets all the pixels there are to
+/// give instead of sharing them with the others. Both ways of capturing end here.
+fn save_shot(capture: &gtk::gdk_pixbuf::Pixbuf, file: &str, desktop: [f64; 4], screen: Option<[f64; 4]>) -> Result<Shot, String> {
+    let crop = screen.and_then(|s| shot_crop((capture.width(), capture.height()), desktop, s));
+    let (pixels, bounds) = match crop {
+        Some(((x, y, w, h), bounds)) => (save_fitted(&capture.new_subpixbuf(x, y, w, h), file)?, bounds),
+        None => (save_fitted(capture, file)?, desktop),
+    };
+    if trace() {
+        eprintln!("screenshot: captured {}x{}, kept {crop:?}, sent {}x{} for {bounds:?}", capture.width(), capture.height(), pixels.0, pixels.1);
+    }
+    Ok(Shot { pixels, bounds, screen: crop.is_some() })
+}
+
+/// Debug builds: ROAMIES_SHOT_DIR=<dir> keeps a copy of every screenshot handed to the sidecar there, with a .json
+/// beside it saying what the sidecar was told (pixels, bounds, of), to look at what the agent sees. `roamies --shot`
+/// (shot_probe) takes one without asking the agent anything. They show the user's screen: nothing is kept unless
+/// the variable names a folder, and release builds have none of this.
+#[cfg(debug_assertions)]
+fn shot_dir() -> Option<PathBuf> {
+    std::env::var_os("ROAMIES_SHOT_DIR").filter(|d| !d.is_empty()).map(PathBuf::from)
+}
+
+#[cfg(debug_assertions)]
+fn shot_keep(dir: &Path, file: &str, shot: &Shot) {
+    static N: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    let stem = format!("shot-{}-{}", std::process::id(), N.fetch_add(1, std::sync::atomic::Ordering::Relaxed));
+    let note = json!({ "pixels": [shot.pixels.0, shot.pixels.1], "bounds": shot.bounds, "of": if shot.screen { "screen" } else { "desktop" } });
+    let kept = std::fs::create_dir_all(dir).and_then(|_| std::fs::copy(file, dir.join(format!("{stem}.jpg")))).and_then(|_| std::fs::write(dir.join(format!("{stem}.json")), note.to_string()));
+    match kept {
+        Ok(()) => eprintln!("screenshot kept: {} {note}", dir.join(format!("{stem}.jpg")).display()),
+        Err(e) => eprintln!("screenshot not kept in {}: {e}", dir.display()),
+    }
+}
+
+/// Debug builds, `roamies --shot` to the running app: the screenshot the agent would get right now, into
+/// ROAMIES_SHOT_DIR and nowhere else (the sidecar hears nothing). Main thread only.
+#[cfg(debug_assertions)]
+pub(crate) fn shot_probe(app: &AppHandle) {
+    let Some(dir) = shot_dir() else { return eprintln!("--shot: start Roamies with ROAMIES_SHOT_DIR=<dir> first") };
+    let file = dir.join(format!(".probe-{}.jpg", std::process::id()));
+    let _ = std::fs::create_dir_all(&dir);
+    let made = file.clone();
+    capture(app, file.to_string_lossy().into_owned(), move |_, r| {
+        // capture kept its copy already; this one was only somewhere to save to.
+        let _ = std::fs::remove_file(&made);
+        if let Err(e) = r {
+            eprintln!("--shot: {e}");
+        }
+    });
 }
 
 /// X11: the root window holds the whole screen as the user sees it. Main thread only.
@@ -750,16 +854,21 @@ fn fade_overlays(app: &AppHandle, opacity: f64) {
     }
 }
 
-/// The sidecar's take_screenshot: the whole desktop into `file` (a JPEG, shrunk to Claude's cap). Replies
-/// screenshot_done with the picture's size in pixels and the part of the desktop it covers (in the overlay's
-/// points), or with what went wrong. Main thread only.
-pub(crate) fn screenshot(app: &AppHandle, id: Value, file: String) {
-    let done = |app: &AppHandle, id: &Value, r: Result<(i32, i32), String>| {
-        let msg = match r {
-            Ok((w, h)) => json!({ "type": "screenshot_done", "id": id, "ok": true, "pixels": [w, h], "bounds": desktop_bounds(app) }),
-            Err(e) => json!({ "type": "screenshot_done", "id": id, "ok": false, "error": e }),
-        };
-        crate::to_sidecar(app, &msg);
+/// Takes a screenshot into `file` (a JPEG, shrunk to Claude's cap): the screen the sidekick's overlay is on, or the
+/// whole desktop when that is the only screen or can't be told. `then` hears how it went, on the main thread. Main
+/// thread only.
+fn capture(app: &AppHandle, file: String, then: impl FnOnce(&AppHandle, Result<Shot, String>) + Send + 'static) {
+    // Asked now, while this is the main thread: the Wayland capture below runs on another.
+    let (desktop, screen) = (desktop_bounds(app), sidekick_screen(app));
+    #[cfg(debug_assertions)]
+    let then = {
+        let file = file.clone();
+        move |app: &AppHandle, r: Result<Shot, String>| {
+            if let (Some(dir), Ok(shot)) = (shot_dir(), &r) {
+                shot_keep(&dir, &file, shot);
+            }
+            then(app, r);
+        }
     };
     // Long enough for the compositor to draw a frame without the overlays.
     const CLEAR: Duration = Duration::from_millis(150);
@@ -769,7 +878,7 @@ pub(crate) fn screenshot(app: &AppHandle, id: Value, file: String) {
         gtk::glib::timeout_add_local_once(CLEAR, move || {
             let shot = grab_root();
             fade_overlays(&app, 1.0);
-            done(&app, &id, shot.and_then(|p| save_fitted(&p, &file)));
+            then(&app, shot.and_then(|p| save_shot(&p, &file, desktop, screen)));
         });
         return;
     }
@@ -782,11 +891,27 @@ pub(crate) fn screenshot(app: &AppHandle, id: Value, file: String) {
             let loaded = gtk::gdk_pixbuf::Pixbuf::from_file(&path).map_err(|e| e.to_string());
             // The portal keeps its picture (in Pictures, on most desktops): this one was only for the question asked.
             remove_portal_file(&path);
-            loaded.and_then(|p| save_fitted(&p, &file))
+            loaded.and_then(|p| save_shot(&p, &file, desktop, screen))
         });
         let app2 = app.clone();
-        let _ = app.run_on_main_thread(move || done(&app2, &id, r));
+        let _ = app.run_on_main_thread(move || then(&app2, r));
     });
+}
+
+/// What the sidecar is told about a screenshot: its size in pixels and the part of the desktop it covers (in the
+/// overlay's points), `of: "screen"` when that is one screen of several, or what went wrong.
+fn shot_reply(id: &Value, r: Result<Shot, String>) -> Value {
+    match r {
+        Ok(Shot { pixels: (w, h), bounds, screen: true }) => json!({ "type": "screenshot_done", "id": id, "ok": true, "pixels": [w, h], "bounds": bounds, "of": "screen" }),
+        Ok(Shot { pixels: (w, h), bounds, screen: false }) => json!({ "type": "screenshot_done", "id": id, "ok": true, "pixels": [w, h], "bounds": bounds }),
+        Err(e) => json!({ "type": "screenshot_done", "id": id, "ok": false, "error": e }),
+    }
+}
+
+/// The sidecar's take_screenshot: the screen in use into `file` (capture), answered with screenshot_done
+/// (shot_reply). Main thread only.
+pub(crate) fn screenshot(app: &AppHandle, id: Value, file: String) {
+    capture(app, file, move |app, r| crate::to_sidecar(app, &shot_reply(&id, r)));
 }
 
 fn remove_portal_file(path: &Path) {
@@ -1609,6 +1734,131 @@ mod tests {
         assert_eq!(union_bounds(&[[0.0, 0.0, 1920.0, 1080.0], [1920.0, 0.0, 2560.0, 1440.0]]), [0.0, 0.0, 4480.0, 1440.0]);
         assert_eq!(union_bounds(&[[0.0, 0.0, 1920.0, 1080.0], [-1280.0, 56.0, 1280.0, 1024.0]]), [-1280.0, 0.0, 3200.0, 1080.0], "a screen to the left");
         assert_eq!(union_bounds(&[]), [0.0; 4]);
+    }
+
+    // A desk with two screens: a laptop's (scale 1.667) and a monitor to its right (scale 1), in logical px.
+    const LAPTOP: [f64; 4] = [0.0, 0.0, 2304.0, 1440.0];
+    const SIDE: [f64; 4] = [2304.0, 0.0, 1920.0, 1080.0];
+
+    #[test]
+    fn a_picture_of_every_screen_is_cut_down_to_the_one_in_use() {
+        let desk = union_bounds(&[LAPTOP, SIDE]);
+        // The compositor's picture of both, at the larger scale (1.667 px a point) and at 2.
+        assert_eq!(shot_crop((7040, 2400), desk, LAPTOP), Some(((0, 0, 3840, 2400), LAPTOP)));
+        assert_eq!(shot_crop((7040, 2400), desk, SIDE), Some(((3840, 0, 3200, 1800), SIDE)));
+        assert_eq!(shot_crop((8448, 2880), desk, LAPTOP), Some(((0, 0, 4608, 2880), LAPTOP)));
+        assert_eq!(shot_crop((8448, 2880), desk, SIDE), Some(((4608, 0, 3840, 2160), SIDE)));
+        // Sizes that don't divide evenly: edges go to the nearest pixel, and two screens side by side share theirs.
+        let (small, wide) = ([0.0, 0.0, 1366.0, 768.0], [1366.0, 0.0, 1920.0, 1080.0]);
+        let odd = union_bounds(&[small, wide]);
+        assert_eq!(shot_crop((5477, 1800), odd, small), Some(((0, 0, 2277, 1280), small)));
+        assert_eq!(shot_crop((5477, 1800), odd, wide), Some(((2277, 0, 3200, 1800), wide)), "never past the picture's edge");
+        // A screen to the left of the main one, or above it: the desk starts below zero.
+        let (left, main) = ([-1920.0, 0.0, 1920.0, 1080.0], [0.0, 0.0, 2560.0, 1440.0]);
+        let west = union_bounds(&[left, main]);
+        assert_eq!(shot_crop((4480, 1440), west, left), Some(((0, 0, 1920, 1080), left)));
+        assert_eq!(shot_crop((4480, 1440), west, main), Some(((1920, 0, 2560, 1440), main)));
+        let (above, below) = ([0.0, -1080.0, 1920.0, 1080.0], [0.0, 0.0, 1920.0, 1080.0]);
+        let north = union_bounds(&[above, below]);
+        assert_eq!(shot_crop((3840, 4320), north, below), Some(((0, 2160, 3840, 2160), below)));
+        // Partly off the desk (a screen just unplugged or moved): the part that is on it, and bounds to match.
+        assert_eq!(shot_crop((4224, 1440), desk, [4000.0, 0.0, 1920.0, 1080.0]), Some(((4000, 0, 224, 1080), [4000.0, 0.0, 224.0, 1080.0])));
+        assert_eq!(shot_crop((4224, 1440), desk, [-100.0, -50.0, 1100.0, 650.0]), Some(((0, 0, 1000, 600), [0.0, 0.0, 1000.0, 600.0])));
+        assert_eq!(shot_crop((4224, 1440), desk, [5000.0, 0.0, 1920.0, 1080.0]), None, "wholly off it: the picture stays whole");
+        // One screen: there is nothing to cut.
+        assert_eq!(shot_crop((3840, 2400), LAPTOP, LAPTOP), None);
+        // A picture that isn't the desk's shape (one screen's only, say) says nothing about where a screen is in it.
+        assert_eq!(shot_crop((1920, 1080), desk, SIDE), None);
+        assert_eq!(shot_crop((3840, 2400), desk, LAPTOP), None);
+        // Nothing sensible to go by.
+        for (capture, d, s) in [((0, 0), desk, LAPTOP), ((7040, 2400), [0.0; 4], LAPTOP), ((7040, 2400), desk, [0.0; 4]), ((7040, 2400), desk, [f64::NAN, 0.0, 100.0, 100.0]), ((-7040, 2400), desk, SIDE)] {
+            assert_eq!(shot_crop(capture, d, s), None, "{capture:?} {d:?} {s:?}");
+        }
+    }
+
+    /// A pixel of a picture as (r, g, b).
+    fn pixel(p: &gtk::gdk_pixbuf::Pixbuf, x: i32, y: i32) -> (u8, u8, u8) {
+        let (bytes, at) = (p.read_pixel_bytes(), (y * p.rowstride() + x * p.n_channels()) as usize);
+        (bytes[at], bytes[at + 1], bytes[at + 2])
+    }
+
+    #[test]
+    fn the_saved_picture_is_the_screen_in_use_and_says_what_it_covers() {
+        use gtk::gdk_pixbuf::{Colorspace, Pixbuf};
+        let dir = scratch("shot");
+        let file = dir.join("shot.jpg").to_string_lossy().into_owned();
+        let desk = union_bounds(&[LAPTOP, SIDE]);
+        // The compositor's picture of both screens at a tenth of its size: the laptop's part red, the monitor's
+        // blue, and the strip under the monitor (no screen there) black.
+        let capture = Pixbuf::new(Colorspace::Rgb, false, 8, 704, 240).expect("a picture");
+        capture.fill(0x000000ff);
+        capture.new_subpixbuf(0, 0, 384, 240).fill(0xff0000ff);
+        capture.new_subpixbuf(384, 0, 320, 180).fill(0x0000ffff);
+        let saved = |screen: Option<[f64; 4]>| {
+            let shot = save_shot(&capture, &file, desk, screen).expect("saved");
+            let p = Pixbuf::from_file(&file).expect("a JPEG");
+            assert_eq!((p.width(), p.height()), shot.pixels, "the size it says is the file's");
+            (shot, p)
+        };
+        let red = |c: (u8, u8, u8)| c.0 > 200 && c.1 < 60 && c.2 < 60;
+        let blue = |c: (u8, u8, u8)| c.0 < 60 && c.1 < 60 && c.2 > 200;
+        let (shot, p) = saved(Some(LAPTOP));
+        assert_eq!(shot, Shot { pixels: (384, 240), bounds: LAPTOP, screen: true });
+        assert!(red(pixel(&p, 4, 4)) && red(pixel(&p, 379, 235)), "all of it is the laptop's screen");
+        let (shot, p) = saved(Some(SIDE));
+        assert_eq!(shot, Shot { pixels: (320, 180), bounds: SIDE, screen: true });
+        assert!(blue(pixel(&p, 4, 4)) && blue(pixel(&p, 315, 175)), "all of it is the monitor");
+        // As it was: the screen isn't known, so the whole desktop and its bounds.
+        let (shot, p) = saved(None);
+        assert_eq!(shot, Shot { pixels: (704, 240), bounds: desk, screen: false });
+        assert!(red(pixel(&p, 4, 4)) && blue(pixel(&p, 700, 4)));
+        // One screen: the picture as it came.
+        let one = Pixbuf::new(Colorspace::Rgb, false, 8, 384, 240).expect("a picture");
+        one.fill(0xff0000ff);
+        assert_eq!(save_shot(&one, &file, LAPTOP, Some(LAPTOP)), Ok(Shot { pixels: (384, 240), bounds: LAPTOP, screen: false }));
+        // A big one is cut first and shrunk after: the screen fills Claude's cap, not a third of it.
+        let big = Pixbuf::new(Colorspace::Rgb, false, 8, 7040, 2400).expect("a picture");
+        assert_eq!(save_shot(&big, &file, desk, Some(LAPTOP)), Ok(Shot { pixels: (1568, 980), bounds: LAPTOP, screen: true }));
+        assert_eq!(save_shot(&big, &file, desk, Some(SIDE)), Ok(Shot { pixels: (1568, 882), bounds: SIDE, screen: true }));
+        assert_eq!(save_shot(&big, &file, desk, None), Ok(Shot { pixels: (1568, 535), bounds: desk, screen: false }));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_sidecar_is_told_the_pictures_size_and_what_it_covers() {
+        let id = json!(7);
+        // As it was: the whole desktop.
+        assert_eq!(shot_reply(&id, Ok(Shot { pixels: (1568, 882), bounds: [0.0, 0.0, 1920.0, 1080.0], screen: false })), json!({ "type": "screenshot_done", "id": 7, "ok": true, "pixels": [1568, 882], "bounds": [0.0, 0.0, 1920.0, 1080.0] }));
+        assert_eq!(shot_reply(&id, Err("no portal".into())), json!({ "type": "screenshot_done", "id": 7, "ok": false, "error": "no portal" }));
+        // One screen of several says so.
+        assert_eq!(shot_reply(&id, Ok(Shot { pixels: (1568, 882), bounds: SIDE, screen: true })), json!({ "type": "screenshot_done", "id": 7, "ok": true, "pixels": [1568, 882], "bounds": [2304.0, 0.0, 1920.0, 1080.0], "of": "screen" }));
+    }
+
+    /// The sidecar's shotMap and toScreen (pointing.mjs): a pixel of the picture as a place on the desk.
+    fn to_screen(bounds: [f64; 4], pixels: (i32, i32), x: f64, y: f64) -> (f64, f64) {
+        ((bounds[0] + x * bounds[2] / pixels.0 as f64).round(), (bounds[1] + y * bounds[3] / pixels.1 as f64).round())
+    }
+
+    #[test]
+    fn a_pixel_of_the_screens_picture_is_its_place_on_the_desk() {
+        // The whole way: the capture, the screen's part of it, shrunk to Claude's cap, what the sidecar is told
+        // (pixels and bounds) and from a pixel the model names back to the desk. test/pointing.test.mjs goes on
+        // from the same numbers with the real shotMap and toScreen.
+        let desk = union_bounds(&[LAPTOP, SIDE]);
+        for capture in [(7040, 2400), (8448, 2880)] {
+            assert_eq!(fit(capture.0, capture.1, SHOT_MAX), (1568, 535), "both screens in one picture, as it was: too small to read");
+            let ((_, _, w, h), bounds) = shot_crop(capture, desk, LAPTOP).expect("the laptop's part");
+            let pixels = fit(w, h, SHOT_MAX);
+            assert_eq!((pixels, bounds), ((1568, 980), LAPTOP));
+            assert_eq!(to_screen(bounds, pixels, 1361.0, 885.0), (2000.0, 1300.0), "a button low on the laptop's screen");
+            assert_eq!(to_screen(bounds, pixels, 0.0, 0.0), (0.0, 0.0));
+            let ((_, _, w, h), bounds) = shot_crop(capture, desk, SIDE).expect("the monitor's part");
+            let pixels = fit(w, h, SHOT_MAX);
+            assert_eq!((pixels, bounds), ((1568, 882), SIDE));
+            assert_eq!(to_screen(bounds, pixels, 784.0, 441.0), (3264.0, 540.0), "the middle of the monitor, past the laptop's width");
+            assert_eq!(to_screen(bounds, pixels, 100.0, 50.0), (2426.0, 61.0));
+            assert_eq!(to_screen(bounds, pixels, 1568.0, 882.0), (4224.0, 1080.0), "its far corner");
+        }
     }
 
     #[test]

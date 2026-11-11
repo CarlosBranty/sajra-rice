@@ -139,8 +139,9 @@ Roamies on Linux is a beta: it runs on GNOME, KDE Plasma and other desktops, on 
 far less than on macOS and Windows. Bug reports with your distro, desktop and session (`echo $XDG_SESSION_TYPE`) help.
 
 **What works:** the Roamie on screen, the panel, typed and spoken questions (speech runs on your computer), spoken
-replies, memory and reminders, whole-screen screenshots and pointing at things on them, cards and diagrams, files and
-commands, Open at Login, and in-app updates for the AppImage (a `.deb` or `.rpm` copy opens the download page instead).
+replies, memory and reminders, screenshots of the screen in use and pointing at things on them, cards and diagrams,
+files and commands, Open at Login, and in-app updates for the AppImage (a `.deb` or `.rpm` copy opens the download
+page instead).
 
 **Not yet:** reading or working other apps, Ask About an Area, circling while talking, and the Cursor size on Wayland.
 
@@ -161,7 +162,8 @@ commands, Open at Login, and in-app updates for the AppImage (a `.deb` or `.rpm`
   - **KDE Plasma:** System Settings › Keyboard › Shortcuts › **Add New** › **Command or Script**.
   - **Sway:** `bindsym Ctrl+Alt+space exec roamies --talk` in `~/.config/sway/config`.
   - **Hyprland:** `bind = CTRL ALT, SPACE, exec, roamies --talk` in `~/.config/hypr/hyprland.conf`.
-- Walkthroughs play their steps one after another instead of waiting for your clicks.
+- Walkthroughs can't see your clicks: on compositors with layer surfaces (below) each step waits for you to press its
+  **Next** button (**Done** on the last), elsewhere they play their steps one after another.
 - Screenshots go through your desktop's screenshot portal, which may ask you to allow them.
 - On compositors with layer surfaces (Hyprland, Sway and others built on wlroots, KDE Plasma) the Roamie is a native
   Wayland layer above your windows and bars: it takes no tile or workspace, clicks land on whatever is under it
@@ -231,7 +233,7 @@ slot):
   (`libsecret-tools` on Debian and Ubuntu, `libsecret` on Fedora and Arch) and make sure a keyring (GNOME Keyring,
   KWallet or KeePassXC) is running.
 - **It can't hear you:** check the input device picked in your sound settings; Roamies uses the default microphone.
-- **With fractional scaling** the Roamie may look a little soft, and pointing a little off.
+- **With fractional scaling** the Roamie may look a little soft.
 
 ## Privacy
 

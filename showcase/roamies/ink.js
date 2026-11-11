@@ -1135,23 +1135,52 @@
     if (gen !== G.gen) return;
     R.ink.send?.({ type: 'draw_wait_done', id: e.id, beat: b.n, result });
     // That step is done: its screen marks go (the screen has changed under them), and the sidecar forgets them.
-    if (result === 'clicked' || result === 'hovered') {
+    if (result === 'clicked' || result === 'hovered' || result === 'next') {
       sfx('done');
       const gone = marks.filter((m) => m.alive && m.screen && b.marks.some((q) => q.part && q.part === m.part));
       for (const id of new Set(gone.map((m) => m.part))) R.ink.send?.({ type: 'ink_closed', part: id });
       fadeOut(gone, 0.3);
     }
   }
-  // Waits for a click on (or hover over) the marked thing; the shell reports presses while armed (ink_wait).
+  // A layer surface on Wayland (the shell sets ROAMIE_LAYER): a click or hover in another app can't be seen, but a
+  // click on this overlay's own click areas can. A step that waits shows a Next chip instead (Done on the last of
+  // several, b.final) and goes on when it is pressed ('next').
+  const LAYER = !!window.ROAMIE_LAYER;
+  // Where the chip goes: above the caption, else beside it, else by the Roamie (parked at the step), else beside the
+  // step's mark; never on that mark (`avoid`), another name or the Clear all chip, and on screen.
+  function nextSpot(w, h, avoid) {
+    const S = scr(), y = H - (R.safe?.bottom ?? 0) - 18 - 34 - 12 - h, [tx, ty] = tipNow(), g = 24;
+    const taken = [...pillsNow(), ...(clearAll?.alive ? [clearAll.box()] : [])];
+    const spots = [[W / 2 - w / 2, y], [W / 2 + 70, y], [W / 2 - 70 - w, y], [tx + g, ty + g], [tx - w - g, ty + g], [tx + g, ty - h - g], [tx - w - g, ty - h - g]]
+      .map(([x, yy]) => [Math.round(x), Math.round(yy), w, h]);
+    if (avoid) spots.push(nameSpot(grow(avoid, 4), '', [w, h]));
+    const free = (r) => r[0] >= S[0] && r[1] >= S[1] && r[0] + w <= S[2] && r[1] + h <= S[3] && !(avoid && overlap(r, avoid) > 0) && !taken.some((q) => overlap(r, q) > 0);
+    return spots.find(free) ?? spots.at(-1);
+  }
+  function nextChip(b, avoid, press) {
+    const str = b.final ? 'Done' : 'Next', w = Math.round(textW(str, CHIP()) + 34), h = 26, r = nextSpot(w, h, avoid);
+    sfx('pop');
+    return add({ z: 7, kind: 'next', box: grow(r, 4), hover: false, down: 0, press,
+      draw(bb, l, t) { chip(bb, r[0], r[1], w, h, str, t - this.born, { color: this.hover ? HOT : ACC, hover: this.hover, down: now() - this.down < 0.15 }); },
+      hits() { return [{ rect: r, kind: 'next' }]; } });
+  }
+  // Waits for a click on (or hover over) the marked thing; the shell reports presses while armed (ink_wait). On a
+  // layer surface: for a press of the Next chip.
   function waitFor(b, made, gen) {
     const m = b.marks.find((q) => (q.kind === 'target' || q.kind === 'hover') && q.at) ?? b.marks.find((q) => q.at);
     const rect = grow(rectOf(m), 10), mark = made.find((q) => q?.parkAt);
     if (mark) { mark.waiting = true; park(mark.parkAt[2], mark.parkAt[0], mark.parkAt[1]); touch(); }
     return new Promise((resolve) => {
-      let hoverAt = 0;
-      const done = (r) => { clearTimeout(timer); clearInterval(tick); G.wait = null; if (b.wait === 'click') R.ink.invoke?.('ink_wait', { on: false }); if (mark) mark.waiting = false; park(null); resolve(r); };
+      let hoverAt = 0, next = null;
+      const done = (r) => { clearTimeout(timer); clearInterval(tick); G.wait = null; if (next) { next.alive = false; touch(); } else if (b.wait === 'click') R.ink.invoke?.('ink_wait', { on: false }); if (mark) mark.waiting = false; park(null); resolve(r); };
       const timer = setTimeout(() => done('timeout'), (b.wait === 'click' ? 125 : 65) * 1000);
       const tick = setInterval(() => { if (gen !== G.gen) done('skipped'); }, 200);
+      if (LAYER) {
+        next = nextChip(b, rect, () => done('next'));
+        // Ended by Esc, Clear all, a new drawing or Stop (stop()): the chip goes at once, not at the next tick.
+        G.wait = { click: () => {}, ptr: () => {}, end: () => { next.alive = false; touch(); } };
+        return;
+      }
       G.wait = {
         click: (x, y) => { if (b.wait === 'click' && inside(rect, x, y)) done('clicked'); },
         ptr: (x, y) => { if (b.wait !== 'hover') return; if (inside(rect, x, y)) { hoverAt ||= now(); if (now() - hoverAt > 0.5) done('hovered'); } else hoverAt = 0; },
@@ -1208,7 +1237,7 @@
   }
   function stop() {
     G.gen++; G.q.length = 0; caption.hide();
-    G.wait = null; R.ink.invoke?.('ink_wait', { on: false });
+    G.wait?.end?.(); G.wait = null; R.ink.invoke?.('ink_wait', { on: false });
     if (G.held) { G.held = false; penApi()?.release(); }
     for (const f of G.idle.splice(0)) f();
   }
@@ -1367,10 +1396,10 @@
   const setHover = (h) => {
     const m = h?.m ?? null;
     if (hovered && hovered !== m) { hovered.hover = false; hovered.hoverClose = false; hovered.hoverId = null; hovered.setHover?.(false); }
-    if (m) { m.hover = h.kind === 'button' || h.kind === 'link' || h.kind === 'clearall'; m.hoverClose = h.kind === 'close'; m.hoverId = h.kind === 'tick' ? h.id : null; m.setHover?.(h.kind === 'button'); }
+    if (m) { m.hover = h.kind === 'button' || h.kind === 'link' || h.kind === 'clearall' || h.kind === 'next'; m.hoverClose = h.kind === 'close'; m.hoverId = h.kind === 'tick' ? h.id : null; m.setHover?.(h.kind === 'button'); }
     if (hovered !== m || m) touch(0.2);
     hovered = m;
-    document.documentElement.style.cursor = h && (h.kind === 'button' || h.kind === 'close' || h.kind === 'link' || h.kind === 'clearall' || h.kind === 'tick') ? 'pointer' : h?.kind === 'drag' ? 'grab' : 'default';
+    document.documentElement.style.cursor = h && (h.kind === 'button' || h.kind === 'close' || h.kind === 'link' || h.kind === 'clearall' || h.kind === 'next' || h.kind === 'tick') ? 'pointer' : h?.kind === 'drag' ? 'grab' : 'default';
   };
   const ours = (e) => !!hitAt(e.clientX, e.clientY) || !!drag;
   addEventListener('pointerdown', (e) => {
@@ -1382,6 +1411,7 @@
     else if (h.kind === 'button') { h.m.down = now(); h.m.press?.(); sfx('pip'); touch(0.3); R.ink.send?.({ type: 'ink_action', part: h.part }); }
     else if (h.kind === 'link') { sfx('pip'); R.ink.send?.({ type: 'open_link', url: h.url }); }
     else if (h.kind === 'clearall') clearEverything();
+    else if (h.kind === 'next') { h.m.down = now(); sfx('pip'); h.m.press(); }
     else if (h.kind === 'drag' || h.kind === 'card') { drag = { part: h.part, x: e.clientX, y: e.clientY, ms: partMarks(h.part), start: partMarks(h.part).map((m) => [m.dx, m.dy]) }; sfx('grab'); touch(); }
   }, true);
   addEventListener('pointermove', (e) => {

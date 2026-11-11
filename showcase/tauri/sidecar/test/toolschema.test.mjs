@@ -97,3 +97,29 @@ if (process.platform === 'darwin') {
   assert.equal((await launch('/no/such/launcher', [])).err.code, 'ENOENT');
   console.log('launch tests: passed');
 }
+
+// The draw tool's description. With the hands helper it is, to the letter, what it was before the words about
+// places depended on the helper (its length and SHA-256, taken from that text), with and without the Wayland note.
+{
+  const { createHash } = await import('node:crypto');
+  const { drawDescription } = await import('../tools.mjs');
+  const { hasHands, linuxSession, stepWaits } = await import('../platform.mjs');
+  const pin = (d) => [d.length, createHash('sha256').update(d).digest('hex')];
+  assert.deepEqual(pin(drawDescription({ hands: true, waits: 'pointer' })), [3516, '6e983847d82b2d40679d4f1ca9d1d41ad804016694dde55ab7bb535ed4d86b72'], 'with the helper: unchanged');
+  assert.deepEqual(pin(drawDescription({ hands: true, waits: 'none' })), [3704, '0b1b643bf3fb784ef434c532138c7e60b14cb7ab029a7f464c1a4c674993c601'], 'with the helper on Wayland: unchanged');
+  // Without it: places by position, and nothing that sends the agent to words or ids.
+  for (const waits of ['pointer', 'none']) {
+    const d = drawDescription({ hands: false, waits });
+    assert.match(d, /\nPlaces \(at, to, tie\): \{x, y, w, h\} in the pixels of your latest screenshot/, `places by position (${waits})`);
+    assert.match(d, /Look first: take a screenshot/);
+    assert.ok(!/best first|\{text: the exact words|\{id\} from read_window|the next step is found after they click/.test(d), `no words-first advice (${waits})`);
+    // Everything else is the same text.
+    const rest = (s) => s.split('\n').filter((l) => !/^(Places|Walkthroughs) \(/.test(l)).join('\n');
+    assert.equal(rest(d), rest(drawDescription({ hands: true, waits })), `the other lines are untouched (${waits})`);
+  }
+  // The tool on this computer carries the description for what it can do.
+  const session = process.platform === 'linux' ? linuxSession() : '';
+  const here = { hands: hasHands(process.platform, process.env.ROAMIES_HANDS), waits: stepWaits(process.platform, session, process.env.ROAMIES_LAYER || '') };
+  assert.equal(tools.find((t) => t.name === 'draw').description, drawDescription(here), 'the draw tool says what this computer can do');
+  console.log('draw description ok');
+}

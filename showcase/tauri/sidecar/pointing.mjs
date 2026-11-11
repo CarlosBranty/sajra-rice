@@ -57,6 +57,8 @@ const OLD_LOOK = "That's from before the user's latest message, and the screen m
 /** Why a screenshot can't be used to point any more, or null if it still can. */
 export function shotProblem(shot, turn) {
   if (!shot) return 'Take a screenshot first, then give x, y in its pixels.';
+  // words: false: nothing here finds things by their words (Linux without the hands helper; tools.mjs shellShot).
+  if (shot.unmapped && shot.words === false) return "That screenshot doesn't line up with the screen, so its pixels can't be used to point. Say where the thing is in words instead.";
   if (shot.unmapped) return "That screenshot doesn't line up with the window on screen, so its pixels can't be used to point or click. Point with the thing's visible words (text) instead.";
   if (shot.turn !== turn) return `The screenshot: ${OLD_LOOK}`;
   if (shot.used) return 'Something was clicked or opened since that screenshot, so it may be out of date. Take a new screenshot.';
