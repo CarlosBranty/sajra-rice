@@ -176,15 +176,16 @@ const WAKE_AFTER_SPEECH: f64 = 1.0;
 const WAKE_RETRY: f64 = 15.0;
 // A read that never came back (the engine dropped it for a newer one) is given up on after this.
 const WAKE_READ_TIMEOUT: f64 = 15.0;
-// The model's end time for a word lands a little early (the tail of "center" came through as "Enter"), so a take
-// starts this long after the phrase, or less when another word comes right behind it.
-const WAKE_CUT_MARGIN: f64 = 0.2;
+// The model's end time for a word lands well before the word stops sounding (a take cut there began with the tail of
+// the phrase: "center" came through as "Enter", or whole), so a take starts this long after the phrase, or most of
+// the way to the end of the word that comes right behind it.
+const WAKE_CUT_MARGIN: f64 = 0.4;
 
 /// Where in a snippet (seconds) the take begins: just after the phrase's last word ended (end), keeping most of the
 /// word that follows (next_end: when that one ends).
 fn wake_cut(end: f64, next_end: Option<f64>) -> f64 {
     let end = end.max(0.0);
-    end + next_end.map_or(WAKE_CUT_MARGIN, |n| ((n - end) * 0.4).clamp(0.0, WAKE_CUT_MARGIN))
+    end + next_end.map_or(WAKE_CUT_MARGIN, |n| ((n - end) * 0.7).clamp(0.0, WAKE_CUT_MARGIN))
 }
 
 /// Text as plain words, for comparing what was heard with the phrase: lower case, no accents, no punctuation
@@ -1357,11 +1358,14 @@ mod tests {
 
     #[test]
     fn the_take_starts_a_moment_after_the_phrase_but_not_far_into_the_next_word() {
-        assert_eq!(wake_cut(1.0, None), 1.2, "nothing follows: the whole margin");
-        assert_eq!(wake_cut(1.0, Some(3.0)), 1.2, "the next word is far off");
-        assert!((wake_cut(1.0, Some(1.3)) - 1.12).abs() < 1e-9, "a word right behind it keeps most of itself");
+        assert_eq!(wake_cut(1.0, None), 1.4, "nothing follows: the whole margin");
+        assert_eq!(wake_cut(1.0, Some(3.0)), 1.4, "the next word is far off");
+        assert!((wake_cut(1.0, Some(1.3)) - 1.21).abs() < 1e-9, "a word right behind it: most of the way to its end");
+        // Measured with the real model: "center" was given 2.96 s and "rear" 3.44 s, and "center" was still sounding
+        // at 3.15 s (a cut there read "Center, rear, left." one time in three).
+        assert!(wake_cut(2.96, Some(3.44)) >= 3.29, "past the tail of the phrase");
         assert_eq!(wake_cut(1.0, Some(1.0)), 1.0, "two words out of one timed word: no room");
-        assert_eq!(wake_cut(-0.5, None), 0.2, "a time before the snippet counts as its start");
+        assert_eq!(wake_cut(-0.5, None), 0.4, "a time before the snippet counts as its start");
     }
 
     #[test]
@@ -1383,7 +1387,7 @@ mod tests {
         // The phrase ends at 1.0 s and the next word at 1.3 s: the take starts a little after the phrase (the model's end
         // time lands early: the tail of "center" came through as "Enter"), without eating far into "what".
         let first = v.buf.lock().unwrap()[0] - job.audio[0];
-        assert!((first - 1.12 * RATE as f32).abs() <= 1.0, "the take starts just after the phrase ended ({first})");
+        assert!((first - 1.21 * RATE as f32).abs() <= 1.0, "the take starts just after the phrase ended ({first})");
         assert!(v.spoke, "words are already in it, so it is read even if nothing more is said");
         v.cancel();
 
