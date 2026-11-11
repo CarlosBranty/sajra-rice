@@ -119,6 +119,9 @@
     const choices = Array.isArray(m.choices) && m.choices.length ? m.choices.map(String) : null;
     const h = a.prompt({ placeholder: question, mask: m.mask, onPress: focusField, choices, onChoose: (i) => finishAsk(i === 0 ? 'yes' : null) });
     ask = { id: m.id, h, choices, sel: -1, label: null };
+    // Whatever takes its bubble away (an answer arriving over it, the Roamie leaving), the question goes with it: left
+    // open it kept the keyboard with nothing on screen, and on a Wayland layer surface that is every key there is.
+    Promise.resolve(h.closed).then(() => { if (ask?.h === h) finishAsk(null); });
     if (choices) { ask.label = field.getAttribute('aria-label'); field.setAttribute('aria-label', `${question} Press Y to allow or N to decline.`); }
     focusField();
   };
@@ -472,6 +475,8 @@
   }
   let escUp = null;
   setInterval(() => {
+    // Belt and braces for the same thing: no Roamie on screen, no question.
+    if (ask && getAgent() && !getAgent().out) finishAsk(null);
     const on = up();
     if (on !== escUp) { escUp = on; invoke('esc_watch', { on }).catch(() => { escUp = null; }); }
   }, 150);
