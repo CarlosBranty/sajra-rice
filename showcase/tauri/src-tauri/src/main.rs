@@ -1028,6 +1028,14 @@ fn build_overlays(app: &AppHandle) -> tauri::Result<()> {
             .initialization_script(init)
             .build()?;
         w.set_ignore_cursor_events(true)?;
+        // A window manager can ask any window to close (a "close window" key while a bubble has the keyboard, common on
+        // tiling desktops): the Roamie would be gone for good with Roamies still running. The overlay only goes when
+        // Roamies takes it down itself (destroy, above).
+        w.on_window_event(|e| {
+            if let tauri::WindowEvent::CloseRequested { api, .. } = e {
+                api.prevent_close();
+            }
+        });
         #[cfg(target_os = "macos")]
         full_frame_rate(&w);
         #[cfg(target_os = "windows")]
