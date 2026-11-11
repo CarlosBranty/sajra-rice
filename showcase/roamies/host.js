@@ -441,7 +441,7 @@
     else if (m.kind === 'ask') openAsk(m);
     else if (m.kind === 'cancel_ask') { if (ask?.id === m.id) { ask.id = null; finishAsk(null); } }
     else if (m.kind === 'agent') onAgent(m.e);
-    else if (m.kind === 'voice') onVoice(m);
+    else if (m.kind === 'voice') { onVoice(m); talkSync(); }
     else if (m.kind === 'list') Roamie.ink?.reminders(m);
   };
 
@@ -471,6 +471,19 @@
     const on = up();
     if (on !== escUp) { escUp = on; invoke('esc_watch', { on }).catch(() => { escUp = null; }); }
   }, 150);
+
+  // Linux: other apps' sound goes down while a take is open (the mic then hears the user, not the music) and while
+  // a reply is playing, if the Voice page says so. The shell does the lowering, and the short wait before the volumes
+  // come back (linux.rs); this overlay only says when either starts or stops.
+  let toldTalk = null;
+  const talkSync = () => {
+    if (!LINUX) return;
+    const speaking = !!Roamie.voiceOut?.playing(), key = `${hearing},${speaking}`;
+    if (key === toldTalk) return;
+    toldTalk = key;
+    invoke('talk_state', { hearing, speaking }).catch(() => { toldTalk = null; });
+  };
+  if (LINUX) setInterval(talkSync, 100);
 
   // Start hidden in auto mode and tell the brain we're listening. It replies with the sound setting,
   // and a greeting wave unless the setup guide is about to open.

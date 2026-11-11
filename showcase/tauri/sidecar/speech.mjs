@@ -185,3 +185,12 @@ export function languageLine(v, who = 'the user') {
   if (!name) return '';
   return `\nLanguage: always reply in ${name}, spoken and written (every reply, the short beat before a tool, and the lines, labels and cards you draw), whatever language ${who} writes or speaks in and whatever language the screen, web pages, files, apps or tool results are in. It's their pick (Language on the Voice page of the panel). Only words they ask for in another language (a translation, a message to someone) are in that one, and the tags in square brackets stay exactly as written above.`;
 }
+
+// Other apps' sound while Roamies listens and while it speaks (Linux, the panel's Voice page): with the switch on
+// it is lowered to one of these percentages of what each app has, and given back after (src-tauri/src/linux.rs).
+export const DUCK_LEVELS = [10, 20, 30, 50];
+/** The saved settings as what's used: on only when it was switched on (nobody else's sound changes unasked), at a
+ *  level that is one of the choices (anything else, missing or out of range, is 30). */
+export const duckOf = (c) => ({ on: c?.duckOthers === true, level: DUCK_LEVELS.includes(c?.duckLevel) ? c.duckLevel : 30 });
+/** What the shell is told: the percentage to lower to, or 0 when it's off (every volume is then left alone). */
+export const duckLevel = (c) => (duckOf(c).on ? duckOf(c).level : 0);

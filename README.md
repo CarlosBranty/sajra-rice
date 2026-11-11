@@ -166,6 +166,12 @@ commands, Open at Login, and in-app updates for the AppImage (a `.deb` or `.rpm`
 
 On X11 sessions the shortcuts work as on Windows (hold Ctrl+Alt to talk, Ctrl+Alt+S to show or hide).
 
+**Quiet while you talk:** with **Lower other sounds** on (the panel's **Voice** page, off by default), every other
+app's sound goes down while Roamies listens and while it speaks a reply, to 10, 20, 30 or 50 % of what each app had,
+and comes back when it stops. It needs `pactl` (PipeWire's pulse server or PulseAudio). A sound that starts meanwhile
+is left alone, and so is Roamies' own voice. If Roamies is killed while the volumes are down, they go back up the
+next time it starts.
+
 **A home in your bar** (Quickshell, Waybar, eww and the like): a bar can keep a slot for the Roamie. The Roamie then
 comes out of that slot when it has something to do and goes back into it after, and the bar draws it resting there
 meanwhile. The two leave each other notes in `$XDG_RUNTIME_DIR/roamies/`:

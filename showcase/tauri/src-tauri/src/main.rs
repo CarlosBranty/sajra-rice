@@ -220,6 +220,16 @@ fn dock_state(out: bool) {
     let _ = out;
 }
 
+/// Linux: a voice take is open in this overlay (hearing: the microphone is on) or a spoken reply is playing in it
+/// (speaking), or no longer (host.js). Other apps' sound is lowered meanwhile when the Voice page says so (linux.rs).
+#[tauri::command]
+fn talk_state(app: AppHandle, window: WebviewWindow, hearing: bool, speaking: bool) {
+    #[cfg(target_os = "linux")]
+    linux::talk_state(&app, window.label(), hearing, speaking);
+    #[cfg(not(target_os = "linux"))]
+    let _ = (app, window, hearing, speaking);
+}
+
 /// macOS: hand the cursor-form sidekick to the voice helper to draw while it just follows the cursor (on: true, with
 /// its picture, motion and follow rules in this overlay's CSS px), or take it back (on: false). False when there's no
 /// helper to draw it, so the page keeps drawing it itself.
@@ -1433,6 +1443,9 @@ fn handle_sidecar(app: &AppHandle, msg: Value) {
             if let Some(dir) = msg.get("model").and_then(Value::as_str) {
                 *app.state::<VoiceModel>().0.lock().unwrap() = Some(dir.to_owned());
             }
+            // Linux: the percentage other apps' sound is lowered to while listening and speaking; 0 or nothing: never.
+            #[cfg(target_os = "linux")]
+            linux::duck_level(msg.get("duck").and_then(Value::as_u64).filter(|l| *l < 100).unwrap_or(0) as u32);
             if msg.get("enabled").and_then(Value::as_bool) == Some(true) {
                 app.state::<Voice>().1.store(0, Ordering::Relaxed);
                 start_voice(app);
@@ -1498,7 +1511,7 @@ fn main() {
         .manage(TalkChord(Mutex::new(vec!["control".into(), "option".into()])))
         .manage(VoiceModel(Mutex::new(None)))
         .manage(PermGuide(Mutex::new(None)))
-        .invoke_handler(tauri::generate_handler![buddy, ink_wait, set_hot, set_hit_rects, dock_get, dock_state, sidecar_send, set_typing, perm_status, perm_request, perm_guide, screen_check, open_settings, onboarding_finish, guide_close, panel_hide, esc_watch, relaunch, focus_guide, guide_aside, drag_window])
+        .invoke_handler(tauri::generate_handler![buddy, ink_wait, set_hot, set_hit_rects, dock_get, dock_state, talk_state, sidecar_send, set_typing, perm_status, perm_request, perm_guide, screen_check, open_settings, onboarding_finish, guide_close, panel_hide, esc_watch, relaunch, focus_guide, guide_aside, drag_window])
         .on_menu_event(|app, e| match e.id.as_ref() {
             "quit" => app.exit(0),
             "restart" => spawn_sidecar(app),
@@ -1542,6 +1555,9 @@ fn main() {
             if let Err(e) = set_hotkey(1, "Control+Alt+KeyA") {
                 eprintln!("could not register the area shortcut: {e}");
             }
+            // Linux: volumes a crash left lowered go back up, before anything can lower them again.
+            #[cfg(target_os = "linux")]
+            linux::duck_start();
             build_overlays(app.handle())?;
             pump_cursor(app.handle().clone());
             #[cfg(target_os = "macos")]
@@ -1554,6 +1570,11 @@ fn main() {
         .run(|_, e| {
             if matches!(e, tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit) {
                 sidecar::QUITTING.store(true, Ordering::SeqCst);
+            }
+            // Linux: other apps get their volumes back if Roamies quits while they're lowered.
+            #[cfg(target_os = "linux")]
+            if matches!(e, tauri::RunEvent::Exit) {
+                linux::duck_quit();
             }
         });
 }

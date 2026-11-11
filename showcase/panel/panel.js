@@ -490,6 +490,13 @@
           : v.keys ? `Hold ${v.keys} to talk` : 'Press your talk shortcut to talk', v.on, () => act('voice'), 'voice'),
         v.download && v.download.status !== 'downloading' ? el('div', { className: 'links' }, link(v.download.status === 'error' ? 'Retry the download' : `Download (${v.download.size})`, () => act('voicedl'), { k: 'voicedl' })) : null,
         v.mac ? toggle('Mute Mac while talking', 'Other sounds go quiet while you talk', v.mute, () => act('mutetalk'), 'mutetalk') : null) : null,
+      // Linux: other apps are turned down while I listen and while I talk, to a share of what each has, and get it back after.
+      state.duck ? group('Other sounds', 'Turn other apps down while I listen and while I talk.', null,
+        toggle('Lower other sounds', 'They come back when I stop', state.duck.on, () => act('duck'), 'duck'),
+        state.duck.on ? [
+          el('p', { className: 'sub', textContent: 'Lower to' }),
+          picks('Lower to', state.duck.levels.map((l) => [l, `${l}%`]), state.duck.level, (x) => act(`ducklevel:${x}`), 'ducklevel'),
+        ] : null) : null,
     ];
   }
   // Wayland: the commands to bind to keys in the desktop's settings (no app may hold its own shortcuts there).

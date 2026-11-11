@@ -6,8 +6,8 @@
 // (the cursor over other apps, global shortcuts, grabbing the screen) is handled per feature below.
 
 use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::sync::{mpsc, Mutex, OnceLock};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde_json::{json, Value};
 use tauri::{AppHandle, Manager};
@@ -485,9 +485,609 @@ pub(crate) fn open_releases_page() {
     let _ = std::process::Command::new("xdg-open").arg("https://github.com/KenKaiii/Roamies/releases/latest").stdin(std::process::Stdio::null()).spawn();
 }
 
+// ---------- other apps' sound ----------
+
+// With the Voice page's switch on, every other app's sound goes down while Roamies listens (the microphone hears the
+// user, not the music) and while it speaks a reply, and comes back after. It goes through `pactl`, which talks to
+// PulseAudio and to PipeWire's pulse server alike: each app's playback stream (a "sink input") is set to a percentage
+// of the volume it has at that moment. What each one had is kept in $XDG_RUNTIME_DIR/roamies/duck.json for as long
+// as it is down: {"streams": [{"index": 419, "pid": 1281, "volumes": [65536, 65536]}]}. A note still there at start
+// means Roamies went away with the volumes down, so they go back up then. With the switch off pactl is never run.
+
+/// A playback stream as `pactl -f json list sink-inputs` lists it: its index, the process that plays it (None for a
+/// stream no app owns: a filter chain's output, a loopback) and each channel's volume in channel order (65536 is 100 %).
+#[derive(Clone, PartialEq, Debug)]
+struct Stream {
+    index: u32,
+    pid: Option<u32>,
+    volumes: Vec<u32>,
+}
+
+/// The streams in pactl's listing, or None when it isn't one (no sound server, or a pactl too old to write JSON).
+/// A stream whose volumes can't be read is left out, so it's left alone.
+fn streams_from(text: &str) -> Option<Vec<Stream>> {
+    let list: Value = serde_json::from_str(text).ok()?;
+    let streams = list.as_array()?.iter().filter_map(|s| {
+        let index = u32::try_from(s.get("index")?.as_u64()?).ok()?;
+        let volume = s.get("volume")?.as_object()?;
+        // By the channel map, which is the order volumes are set in (the listing's own order isn't kept on reading).
+        let volumes: Vec<u32> = s.get("channel_map")?.as_str()?.split(',').map(|ch| volume.get(ch)?.get("value")?.as_u64().and_then(|v| u32::try_from(v).ok())).collect::<Option<_>>()?;
+        let pid = s.pointer("/properties/application.process.id").and_then(Value::as_str).and_then(|p| p.parse().ok());
+        (volumes.len() == volume.len()).then_some(Stream { index, pid, volumes })
+    });
+    Some(streams.collect())
+}
+
+/// The parent's pid in a /proc/<pid>/stat line. The program's name comes before it in brackets and may hold spaces
+/// and brackets of its own, so the fields are counted from the last bracket.
+fn stat_ppid(stat: &str) -> Option<u32> {
+    stat.rsplit_once(')')?.1.split_whitespace().nth(1)?.parse().ok()
+}
+
+/// Whether a process is Roamies or one it started, however far down (the webview's processes play the voice and the
+/// sound effects). `parent` gives a process's parent.
+fn is_own(pid: u32, me: u32, parent: impl Fn(u32) -> Option<u32>) -> bool {
+    let mut p = pid;
+    // No process tree is this deep: the cap is for a table that changes while it's being read.
+    for _ in 0..64 {
+        if p == me {
+            return true;
+        }
+        match parent(p) {
+            Some(up) if up != 0 && up != p => p = up,
+            _ => return false,
+        }
+    }
+    false
+}
+
+/// A level that lowers anything: 0 is the switch off, and 100 % would change nothing.
+fn duck_on(level: u32) -> bool {
+    (1..100).contains(&level)
+}
+
+/// The same stream then and now. The sound server hands indexes out again after it restarts, so the process counts too.
+fn same_stream(a: &Stream, b: &Stream) -> bool {
+    a.index == b.index && a.pid == b.pid
+}
+
+/// What to lower, and to what: every other app's stream, to `level` percent of the volume it has now. Left alone are
+/// Roamies' own streams (`own`), streams no app owns (everything may play through one, Roamies too) and the ones in
+/// `held`: those are down already, and lowering them again would lose what they really had.
+fn plan_lower(streams: &[Stream], level: u32, own: impl Fn(u32) -> bool, held: &[Stream]) -> Vec<(Stream, Vec<u32>)> {
+    if !duck_on(level) {
+        return Vec::new();
+    }
+    let lowered = |v: &u32| ((*v as u64 * level as u64 + 50) / 100) as u32;
+    streams.iter().filter(|s| s.pid.is_some_and(|p| !own(p)) && !held.iter().any(|h| same_stream(h, s))).map(|s| (s.clone(), s.volumes.iter().map(lowered).collect())).collect()
+}
+
+/// What to give back: what each stream had, for the ones that are still there. A stream that started meanwhile was
+/// never touched, and isn't now.
+fn plan_restore(held: &[Stream], streams: &[Stream]) -> Vec<Stream> {
+    held.iter().filter(|h| streams.iter().any(|s| same_stream(h, s) && s.volumes.len() == h.volumes.len())).cloned().collect()
+}
+
+/// duck.json: the streams that are down, with what they had.
+fn duck_note(held: &[Stream]) -> String {
+    json!({ "streams": held.iter().map(|s| json!({ "index": s.index, "pid": s.pid, "volumes": s.volumes })).collect::<Vec<_>>() }).to_string()
+}
+
+/// The streams in a duck.json; none from a note that can't be read.
+fn duck_from(text: &str) -> Vec<Stream> {
+    let Ok(note) = serde_json::from_str::<Value>(text) else { return Vec::new() };
+    let Some(list) = note.get("streams").and_then(Value::as_array) else { return Vec::new() };
+    let n = |v: &Value| v.as_u64().and_then(|n| u32::try_from(n).ok());
+    list.iter()
+        .filter_map(|s| {
+            let volumes: Vec<u32> = s.get("volumes")?.as_array()?.iter().map(n).collect::<Option<_>>()?;
+            (!volumes.is_empty()).then_some(Stream { index: n(s.get("index")?)?, pid: Some(n(s.get("pid")?)?), volumes })
+        })
+        .collect()
+}
+
+/// Writes down what is lowered (nothing lowered, no file). False when it couldn't be written.
+fn duck_save(dir: &Path, held: &[Stream]) -> bool {
+    let file = dir.join("duck.json");
+    if held.is_empty() {
+        return std::fs::remove_file(&file).is_ok() || !file.exists();
+    }
+    let _ = std::fs::create_dir_all(dir);
+    // Whole or not at all: half a note would give nothing back.
+    let part = dir.join("duck.json.part");
+    std::fs::write(&part, duck_note(held)).and_then(|()| std::fs::rename(&part, &file)).is_ok()
+}
+
+fn duck_load(dir: &Path) -> Vec<Stream> {
+    std::fs::read_to_string(dir.join("duck.json")).map(|t| duck_from(&t)).unwrap_or_default()
+}
+
+/// The sound server, so the steps below can be tried without one: the streams playing now (None when they can't be
+/// read), and setting one stream's volumes.
+trait Mixer {
+    fn streams(&mut self) -> Option<Vec<Stream>>;
+    fn set(&mut self, index: u32, volumes: &[u32]);
+}
+
+struct Pactl;
+
+impl Pactl {
+    /// What pactl printed, or None when it failed (not installed, no sound server, a stream that just closed).
+    fn run(args: &[String]) -> Option<String> {
+        use std::process::{Command, Stdio};
+        // The C locale: pactl writes its numbers with a point then, whatever the desktop's language is.
+        let out = Command::new("pactl").args(args).env("LC_ALL", "C.UTF-8").stdin(Stdio::null()).stderr(Stdio::null()).output().ok()?;
+        out.status.success().then(|| String::from_utf8_lossy(&out.stdout).into_owned())
+    }
+}
+
+impl Mixer for Pactl {
+    fn streams(&mut self) -> Option<Vec<Stream>> {
+        streams_from(&Self::run(&["-f", "json", "list", "sink-inputs"].map(String::from))?)
+    }
+    fn set(&mut self, index: u32, volumes: &[u32]) {
+        let args: Vec<String> = ["set-sink-input-volume".to_string(), index.to_string()].into_iter().chain(volumes.iter().map(u32::to_string)).collect();
+        let _ = Self::run(&args);
+    }
+}
+
+/// Lowers the other apps' streams and adds them to `held`. What they had is written down before any volume moves,
+/// so a crash in between still gives them back; with nowhere to write it, nothing is lowered.
+fn lower(mixer: &mut impl Mixer, dir: &Path, level: u32, own: impl Fn(u32) -> bool, held: &mut Vec<Stream>) {
+    if !duck_on(level) {
+        return;
+    }
+    let Some(streams) = mixer.streams() else { return };
+    let plan = plan_lower(&streams, level, own, held);
+    if plan.is_empty() {
+        return;
+    }
+    let all: Vec<Stream> = held.iter().cloned().chain(plan.iter().map(|(s, _)| s.clone())).collect();
+    if !duck_save(dir, &all) {
+        return;
+    }
+    *held = all;
+    for (s, to) in &plan {
+        mixer.set(s.index, to);
+    }
+}
+
+/// Gives the streams in `held` back what they had and forgets them. When the streams can't be read (the sound server
+/// is away) everything is kept for the next try.
+fn give_back(mixer: &mut impl Mixer, dir: &Path, held: &mut Vec<Stream>) {
+    if held.is_empty() {
+        return;
+    }
+    let Some(streams) = mixer.streams() else { return };
+    for s in plan_restore(held, &streams) {
+        mixer.set(s.index, &s.volumes);
+    }
+    held.clear();
+    duck_save(dir, held);
+}
+
+/// At start: a note still there means Roamies went away with the volumes down (a crash, a kill, a restart), so they
+/// go back up now. Returns what couldn't be given back yet.
+fn duck_recover(mixer: &mut impl Mixer, dir: &Path) -> Vec<Stream> {
+    let mut held = duck_load(dir);
+    give_back(mixer, dir, &mut held);
+    held
+}
+
+/// How long the volumes stay down after the listening or the reply ends: a reply that starts right after the
+/// listening would otherwise send them up and straight back down.
+const DUCK_GRACE_MS: u64 = 500;
+
+/// When the volumes go down and come back: down once when a take opens or a reply starts playing (`busy`) with the
+/// switch on (`level` above 0), back once when neither holds any more and the wait is over. Times are milliseconds
+/// on any clock that only goes forward.
+#[derive(Default)]
+struct Duck {
+    level: u32,
+    busy: bool,
+    down: bool,
+    restore_at: Option<u64>,
+}
+
+enum DuckEvent {
+    /// The Voice page's setting: the percentage to lower to, 0 when it's switched off.
+    Level(u32),
+    /// A take is open or a reply is playing, or neither any more.
+    Busy(bool),
+    /// Time passed (see `wait`).
+    Tick,
+    Quit,
+}
+
+#[derive(PartialEq, Debug)]
+enum DuckDo {
+    Nothing,
+    Lower(u32),
+    Restore,
+}
+
+impl Duck {
+    fn step(&mut self, event: DuckEvent, now: u64) -> DuckDo {
+        match event {
+            DuckEvent::Level(level) => self.level = level,
+            DuckEvent::Busy(busy) => self.busy = busy,
+            DuckEvent::Tick => {}
+            DuckEvent::Quit => (self.level, self.busy) = (0, false),
+        }
+        if self.busy && duck_on(self.level) {
+            self.restore_at = None;
+            // Only when they aren't down yet: a new level waits for the next time.
+            return if std::mem::replace(&mut self.down, true) { DuckDo::Nothing } else { DuckDo::Lower(self.level) };
+        }
+        if !self.down {
+            return DuckDo::Nothing;
+        }
+        // Switched off, or quitting: back at once. Otherwise after the wait.
+        let at = if duck_on(self.level) { *self.restore_at.get_or_insert(now + DUCK_GRACE_MS) } else { now };
+        if now < at {
+            return DuckDo::Nothing;
+        }
+        (self.down, self.restore_at) = (false, None);
+        DuckDo::Restore
+    }
+
+    /// How long until the volumes are due back (then a Tick is owed), or None when nothing is waiting.
+    fn wait(&self, now: u64) -> Option<u64> {
+        self.restore_at.map(|at| at.saturating_sub(now))
+    }
+}
+
+enum DuckMsg {
+    Event(DuckEvent),
+    /// Quitting: answered once the volumes are back.
+    Quit(mpsc::Sender<()>),
+}
+
+static DUCK: OnceLock<mpsc::Sender<DuckMsg>> = OnceLock::new();
+
+/// Everything pactl does happens on this thread, never the UI's: a sound server that is slow to answer would freeze
+/// the Roamie.
+fn duck_worker(dir: PathBuf, inbox: mpsc::Receiver<DuckMsg>) {
+    let (mut mixer, me, start) = (Pactl, std::process::id(), Instant::now());
+    let own = |pid: u32| is_own(pid, me, |p| stat_ppid(&std::fs::read_to_string(format!("/proc/{p}/stat")).ok()?));
+    let now = || start.elapsed().as_millis() as u64;
+    let mut held = duck_recover(&mut mixer, &dir);
+    let mut duck = Duck::default();
+    loop {
+        let msg = match duck.wait(now()) {
+            None => inbox.recv().ok(),
+            Some(ms) => match inbox.recv_timeout(Duration::from_millis(ms)) {
+                Err(mpsc::RecvTimeoutError::Timeout) => Some(DuckMsg::Event(DuckEvent::Tick)),
+                msg => msg.ok(),
+            },
+        };
+        let (event, quit) = match msg {
+            Some(DuckMsg::Event(e)) => (e, None),
+            Some(DuckMsg::Quit(done)) => (DuckEvent::Quit, Some(done)),
+            None => return,
+        };
+        match duck.step(event, now()) {
+            DuckDo::Lower(level) => lower(&mut mixer, &dir, level, own, &mut held),
+            DuckDo::Restore => give_back(&mut mixer, &dir, &mut held),
+            // Quitting with something still held (it couldn't be given back before): one more try.
+            DuckDo::Nothing if quit.is_some() => give_back(&mut mixer, &dir, &mut held),
+            DuckDo::Nothing => {}
+        }
+        if let Some(done) = quit {
+            let _ = done.send(());
+        }
+    }
+}
+
+/// Once, at start. Without a runtime folder there's nowhere to keep what was lowered, so nothing ever is.
+pub(crate) fn duck_start() {
+    let Some(dir) = dock_dir() else { return };
+    let (tx, inbox) = mpsc::channel();
+    if DUCK.set(tx).is_ok() {
+        std::thread::spawn(move || duck_worker(dir, inbox));
+    }
+}
+
+fn duck_send(event: DuckEvent) {
+    if let Some(tx) = DUCK.get() {
+        let _ = tx.send(DuckMsg::Event(event));
+    }
+}
+
+/// The Voice page's setting, from the sidecar: the percentage to lower other apps to, 0 when it's switched off.
+pub(crate) fn duck_level(level: u32) {
+    duck_send(DuckEvent::Level(level));
+}
+
+/// Roamies is quitting: the volumes go back up before it's gone. Waits for pactl, but not for long (a kill or a
+/// crash gets no say at all: the note gives them back at the next start).
+pub(crate) fn duck_quit() {
+    let Some(tx) = DUCK.get() else { return };
+    let (done, back) = mpsc::channel();
+    if tx.send(DuckMsg::Quit(done)).is_ok() {
+        let _ = back.recv_timeout(Duration::from_secs(2));
+    }
+}
+
+/// Notes what one overlay says (a take is open there, a reply is playing there) and answers for all of them
+/// together. Overlays that are gone are dropped: one that was taken down can't say it stopped.
+fn talk_set(all: &mut Vec<(String, bool, bool)>, label: &str, hearing: bool, speaking: bool, alive: impl Fn(&str) -> bool) -> (bool, bool) {
+    all.retain(|(l, ..)| l != label && alive(l));
+    all.push((label.to_owned(), hearing, speaking));
+    (all.iter().any(|t| t.1), all.iter().any(|t| t.2))
+}
+
+/// An overlay's page says a voice take opened or ended there (the microphone is on meanwhile), or a spoken reply
+/// started or stopped playing there (host.js). Other apps' sound is down while either holds anywhere.
+pub(crate) fn talk_state(app: &AppHandle, label: &str, hearing: bool, speaking: bool) {
+    static TALK: Mutex<Vec<(String, bool, bool)>> = Mutex::new(Vec::new());
+    let (hearing, speaking) = talk_set(&mut TALK.lock().unwrap(), label, hearing, speaking, |l| app.get_webview_window(l).is_some());
+    duck_send(DuckEvent::Busy(hearing || speaking));
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // `pactl -f json list sink-inputs` on a PipeWire desktop, cut down to the fields that are read and a few around
+    // them: a filter chain's output (no app behind it; everything that plays goes through it) and a browser's tab.
+    const SINK_INPUTS: &str = r#"[{"index":38,"driver":"PipeWire","owner_module":null,"client":null,"sink":73,"sample_specification":"float32le 2ch 48000Hz","channel_map":"front-left,front-right","corked":true,"mute":false,"volume":{"front-left":{"value":65536,"value_percent":"100%","db":"0.00 dB"},"front-right":{"value":65536,"value_percent":"100%","db":"0.00 dB"}},"balance":0.00,"properties":{"node.virtual":"true","media.class":"Stream/Output/Audio","object.serial":"38"}},{"index":419,"driver":"PipeWire","owner_module":null,"client":"160","sink":37,"sample_specification":"float32le 2ch 48000Hz","channel_map":"front-left,front-right","corked":true,"mute":false,"volume":{"front-left":{"value":65536,"value_percent":"100%","db":"0.00 dB"},"front-right":{"value":65536,"value_percent":"100%","db":"0.00 dB"}},"balance":0.00,"properties":{"client.api":"pipewire-pulse","application.process.id":"1281","media.class":"Stream/Output/Audio","object.serial":"419"}}]"#;
+
+    fn stream(index: u32, pid: Option<u32>, volumes: &[u32]) -> Stream {
+        Stream { index, pid, volumes: volumes.to_vec() }
+    }
+
+    /// A sound server made of a list: what was set is applied to it and counted.
+    struct FakeMixer {
+        now: Option<Vec<Stream>>,
+        lists: usize,
+        sets: Vec<(u32, Vec<u32>)>,
+    }
+
+    impl FakeMixer {
+        fn with(streams: &[Stream]) -> Self {
+            FakeMixer { now: Some(streams.to_vec()), lists: 0, sets: Vec::new() }
+        }
+    }
+
+    impl Mixer for FakeMixer {
+        fn streams(&mut self) -> Option<Vec<Stream>> {
+            self.lists += 1;
+            self.now.clone()
+        }
+        fn set(&mut self, index: u32, volumes: &[u32]) {
+            self.sets.push((index, volumes.to_vec()));
+            for s in self.now.iter_mut().flatten().filter(|s| s.index == index) {
+                s.volumes = volumes.to_vec();
+            }
+        }
+    }
+
+    /// A folder of its own for one test, outside the source tree; the test removes it when it's done.
+    fn scratch(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("roamies-duck-{}-{name}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("a scratch folder");
+        dir
+    }
+
+    #[test]
+    fn pactls_list_becomes_streams() {
+        assert_eq!(streams_from(SINK_INPUTS), Some(vec![stream(38, None, &[65536, 65536]), stream(419, Some(1281), &[65536, 65536])]));
+        // Volumes come in the channel map's order (the order they're set in), whatever order the listing names them in.
+        let surround = r#"[{"index":7,"channel_map":"front-left,front-right,rear-left,rear-right,front-center,lfe","volume":{"lfe":{"value":6},"front-center":{"value":5},"rear-right":{"value":4},"rear-left":{"value":3},"front-right":{"value":2},"front-left":{"value":1}},"properties":{"application.process.id":"900"}}]"#;
+        assert_eq!(streams_from(surround), Some(vec![stream(7, Some(900), &[1, 2, 3, 4, 5, 6])]));
+        assert_eq!(streams_from("[]"), Some(vec![]), "nothing is playing");
+        // A stream whose volumes can't be read in order is left out (so it's left alone); the rest are kept.
+        let odd = r#"[{"index":1,"channel_map":"mono","volume":{"front-left":{"value":9}},"properties":{}},{"index":2,"volume":{},"properties":{}},{"volume":{"mono":{"value":9}},"channel_map":"mono"},{"index":3,"channel_map":"mono","volume":{"mono":{"value":32768}},"properties":{"application.process.id":"x"}}]"#;
+        assert_eq!(streams_from(odd), Some(vec![stream(3, None, &[32768])]));
+        for bad in ["", "Connection failure: Connection refused", "{}", "3"] {
+            assert_eq!(streams_from(bad), None, "{bad}");
+        }
+    }
+
+    #[test]
+    fn roamies_own_processes_are_found_by_their_parents() {
+        assert_eq!(stat_ppid("4321 (roamies) S 1 4321 4321 0 -1 4194560 100 0"), Some(1));
+        assert_eq!(stat_ppid("77 (Web Content) (x) R 4321 77 77 0"), Some(4321), "a name with spaces and brackets");
+        assert_eq!(stat_ppid(""), None);
+        assert_eq!(stat_ppid("77 (cut"), None);
+        // 10 is Roamies, 11 its webview, 12 the webview's audio process; 20 is another app, started by 1 like Roamies.
+        let parent = |p: u32| [(10, 1), (11, 10), (12, 11), (20, 1), (1, 0)].iter().find(|(c, _)| *c == p).map(|(_, up)| *up);
+        assert!(is_own(10, 10, parent), "itself");
+        assert!(is_own(11, 10, parent) && is_own(12, 10, parent), "what it started, and what those started");
+        assert!(!is_own(20, 10, parent), "another app");
+        assert!(!is_own(1, 10, parent) && !is_own(99, 10, parent), "its own parent, and a process that's gone");
+        assert!(!is_own(5, 10, |p| Some(if p == 5 { 6 } else { 5 })), "a loop in the table ends");
+    }
+
+    #[test]
+    fn other_apps_are_lowered_and_roamies_never_is() {
+        let own = |pid: u32| pid == 500 || pid == 501;
+        let streams = [stream(1, Some(1281), &[65536, 65536]), stream(2, Some(500), &[65536]), stream(3, Some(501), &[40000, 40000]), stream(4, None, &[65536, 65536]), stream(5, Some(77), &[52429, 26214])];
+        // To 30 % of what each has now, each channel by itself (so its balance stays).
+        assert_eq!(plan_lower(&streams, 30, own, &[]), vec![(streams[0].clone(), vec![19661, 19661]), (streams[4].clone(), vec![15729, 7864])]);
+        assert_eq!(plan_lower(&streams, 10, own, &[])[0].1, vec![6554, 6554]);
+        assert_eq!(plan_lower(&streams, 50, own, &[])[1].1, vec![26215, 13107]);
+        // A stream that is already down isn't lowered again: what it really had would be lost.
+        assert_eq!(plan_lower(&streams, 30, own, &[stream(1, Some(1281), &[65536, 65536])]), vec![(streams[4].clone(), vec![15729, 7864])]);
+        // The same number on another process is another stream (the sound server started over).
+        assert_eq!(plan_lower(&streams, 30, own, &[stream(1, Some(9), &[1, 1])]).len(), 2);
+        // Switched off: nothing, whatever is playing. And 100 % would change nothing.
+        assert_eq!(plan_lower(&streams, 0, own, &[]), vec![]);
+        assert_eq!(plan_lower(&streams, 100, own, &[]), vec![]);
+        assert_eq!(plan_lower(&[], 30, own, &[]), vec![]);
+    }
+
+    #[test]
+    fn what_was_lowered_gets_back_what_it_had() {
+        let held = [stream(1, Some(1281), &[65536, 65536]), stream(5, Some(77), &[52429, 26214]), stream(8, Some(30), &[20000])];
+        // 1 is still down, 5 was changed meanwhile (it gets back what it had all the same), 8 has gone, 6 started
+        // while the others were down and was never touched.
+        let now = [stream(1, Some(1281), &[19661, 19661]), stream(5, Some(77), &[65536, 65536]), stream(6, Some(40), &[65536])];
+        assert_eq!(plan_restore(&held, &now), vec![held[0].clone(), held[1].clone()]);
+        assert_eq!(plan_restore(&held, &[stream(1, Some(2000), &[19661, 19661])]), vec![], "the number was handed to another process");
+        assert_eq!(plan_restore(&held, &[stream(1, Some(1281), &[19661])]), vec![], "it isn't the stream it was (other channels)");
+        assert_eq!(plan_restore(&held, &[]), vec![]);
+        assert_eq!(plan_restore(&[], &now), vec![]);
+    }
+
+    #[test]
+    fn what_was_lowered_is_written_down_and_read_back() {
+        let held = vec![stream(419, Some(1281), &[65536, 65536]), stream(7, Some(900), &[1, 2, 3, 4, 5, 6])];
+        assert_eq!(serde_json::from_str::<Value>(&duck_note(&held[..1])).unwrap(), json!({ "streams": [{ "index": 419, "pid": 1281, "volumes": [65536, 65536] }] }));
+        assert_eq!(duck_from(&duck_note(&held)), held);
+        for bad in ["", "[]", "{}", r#"{"streams":3}"#, r#"{"streams":[{"index":1,"pid":2}]}"#, r#"{"streams":[{"index":1,"pid":2,"volumes":[]}]}"#, r#"{"streams":[{"index":1,"volumes":[5]}]}"#, r#"{"streams":[{"index":-1,"pid":2,"volumes":[5]}]}"#, r#"{"streams":[{"index":1,"pid":2,"volumes":[5,"x"]}]}"#] {
+            assert_eq!(duck_from(bad), vec![], "{bad}");
+        }
+        let dir = scratch("note");
+        let nested = dir.join("roamies");
+        assert_eq!(duck_load(&nested), vec![], "no file, nothing lowered");
+        assert!(duck_save(&nested, &held), "the folder is made when it's missing");
+        assert_eq!(duck_load(&nested), held);
+        assert!(duck_save(&nested, &[]));
+        assert!(!nested.join("duck.json").exists(), "nothing lowered, no file");
+        assert_eq!(std::fs::read_dir(&nested).unwrap().count(), 0, "and nothing else left behind");
+        // Nowhere to write it down: said so, for nothing to be lowered then.
+        std::fs::write(dir.join("a-file"), "").unwrap();
+        assert!(!duck_save(&dir.join("a-file"), &held));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn lowering_writes_it_down_first_and_giving_back_clears_it() {
+        let dir = scratch("lower");
+        let own = |pid: u32| pid == 500;
+        let playing = [stream(1, Some(1281), &[65536, 65536]), stream(2, Some(500), &[65536]), stream(5, Some(77), &[52429, 26214])];
+        let mut mixer = FakeMixer::with(&playing);
+        let mut held = Vec::new();
+        lower(&mut mixer, &dir, 30, own, &mut held);
+        assert_eq!(mixer.sets, vec![(1, vec![19661, 19661]), (5, vec![15729, 7864])]);
+        assert_eq!(held, vec![playing[0].clone(), playing[2].clone()], "what they had is remembered");
+        assert_eq!(duck_load(&dir), held, "and written down");
+        // Asked again while they're down: nothing is lowered twice, and what they really had is still what's kept.
+        lower(&mut mixer, &dir, 30, own, &mut held);
+        assert_eq!(mixer.sets.len(), 2);
+        assert_eq!(duck_load(&dir), vec![playing[0].clone(), playing[2].clone()]);
+        // Meanwhile 5 closes and 6 starts (left alone, then and after).
+        mixer.now = Some(vec![stream(1, Some(1281), &[19661, 19661]), stream(2, Some(500), &[65536]), stream(6, Some(40), &[65536])]);
+        mixer.sets.clear();
+        give_back(&mut mixer, &dir, &mut held);
+        assert_eq!(mixer.sets, vec![(1, vec![65536, 65536])]);
+        assert_eq!(held, vec![]);
+        assert!(!dir.join("duck.json").exists());
+        // Nothing is held: the sound server isn't even asked.
+        let lists = mixer.lists;
+        give_back(&mut mixer, &dir, &mut held);
+        assert_eq!((mixer.lists, mixer.sets.len()), (lists, 1));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn switched_off_the_sound_server_is_never_asked() {
+        let dir = scratch("off");
+        let mut mixer = FakeMixer::with(&[stream(1, Some(1281), &[65536, 65536])]);
+        let mut held = Vec::new();
+        lower(&mut mixer, &dir, 0, |_| false, &mut held);
+        assert_eq!((mixer.lists, mixer.sets.len(), held.len()), (0, 0, 0));
+        assert_eq!(duck_recover(&mut mixer, &dir), vec![], "no note from last time");
+        assert_eq!(mixer.lists, 0);
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0, "and nothing is written");
+        // Nowhere to write down what they had: nothing is lowered, since it couldn't be given back after a crash.
+        std::fs::write(dir.join("a-file"), "").unwrap();
+        lower(&mut mixer, &dir.join("a-file"), 30, |_| false, &mut held);
+        assert_eq!((mixer.sets.len(), held.len()), (0, 0));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_note_left_by_a_crash_gives_the_volumes_back_at_the_next_start() {
+        let dir = scratch("recover");
+        let before = [stream(1, Some(1281), &[65536, 65536]), stream(5, Some(77), &[52429, 26214])];
+        // Roamies lowers them and is gone before it gives them back: the note stays.
+        let mut mixer = FakeMixer::with(&before);
+        lower(&mut mixer, &dir, 20, |_| false, &mut Vec::new());
+        assert_eq!(mixer.now.as_deref(), Some(&[stream(1, Some(1281), &[13107, 13107]), stream(5, Some(77), &[10486, 5243])][..]));
+        assert!(dir.join("duck.json").is_file());
+        // The next start, with the sound server away: nothing can be given back yet, so it's all kept.
+        let mut away = FakeMixer { now: None, lists: 0, sets: Vec::new() };
+        assert_eq!(duck_recover(&mut away, &dir), before.to_vec());
+        assert!(dir.join("duck.json").is_file());
+        // The next start: back to what they had, and the note is gone.
+        mixer.sets.clear();
+        assert_eq!(duck_recover(&mut mixer, &dir), vec![]);
+        assert_eq!(mixer.now.as_deref(), Some(&before[..]));
+        assert!(!dir.join("duck.json").exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn volumes_go_down_once_and_come_back_once_after_a_short_wait() {
+        use DuckEvent::*;
+        let mut d = Duck::default();
+        assert_eq!(d.step(Level(30), 0), DuckDo::Nothing, "nobody is talking yet");
+        assert_eq!(d.step(Busy(true), 1000), DuckDo::Lower(30), "listening starts");
+        assert_eq!(d.step(Busy(true), 1100), DuckDo::Nothing, "once");
+        assert_eq!(d.wait(1100), None);
+        // Listening ends and the reply starts right after: the volumes stay down in between.
+        assert_eq!(d.step(Busy(false), 3000), DuckDo::Nothing);
+        assert_eq!(d.wait(3000), Some(DUCK_GRACE_MS));
+        assert_eq!(d.wait(3200), Some(DUCK_GRACE_MS - 200));
+        assert_eq!(d.step(Busy(true), 3300), DuckDo::Nothing, "no bounce");
+        assert_eq!(d.wait(3300), None);
+        // The reply ends and nothing follows.
+        assert_eq!(d.step(Busy(false), 9000), DuckDo::Nothing);
+        assert_eq!(d.step(Tick, 9000 + DUCK_GRACE_MS - 1), DuckDo::Nothing);
+        assert_eq!(d.wait(9000 + DUCK_GRACE_MS), Some(0));
+        assert_eq!(d.step(Tick, 9000 + DUCK_GRACE_MS), DuckDo::Restore);
+        assert_eq!(d.step(Tick, 20_000), DuckDo::Nothing, "once");
+        assert_eq!(d.wait(20_000), None);
+        // The level changes while they're down: they stay where they are, and the next time uses the new one.
+        assert_eq!(d.step(Busy(true), 30_000), DuckDo::Lower(30));
+        assert_eq!(d.step(Level(10), 30_100), DuckDo::Nothing);
+        assert_eq!(d.step(Busy(false), 31_000), DuckDo::Nothing);
+        assert_eq!(d.step(Tick, 31_000 + DUCK_GRACE_MS), DuckDo::Restore);
+        assert_eq!(d.step(Busy(true), 40_000), DuckDo::Lower(10));
+    }
+
+    #[test]
+    fn switching_it_off_or_quitting_gives_the_volumes_back_at_once() {
+        use DuckEvent::*;
+        let mut d = Duck::default();
+        // Off (as it starts): talking changes nothing.
+        assert_eq!(d.step(Busy(true), 0), DuckDo::Nothing);
+        assert_eq!(d.step(Busy(false), 100), DuckDo::Nothing);
+        assert_eq!(d.step(Tick, 5000), DuckDo::Nothing);
+        assert_eq!(d.wait(5000), None);
+        // Switched on in the middle of a reply: down now.
+        assert_eq!(d.step(Busy(true), 6000), DuckDo::Nothing);
+        assert_eq!(d.step(Level(50), 6100), DuckDo::Lower(50));
+        // Switched off in the middle of it: back now, no wait.
+        assert_eq!(d.step(Level(0), 6200), DuckDo::Restore);
+        assert_eq!(d.step(Busy(false), 6300), DuckDo::Nothing);
+        // Quitting while they're down: back now; and nothing goes down after it.
+        assert_eq!(d.step(Level(30), 7000), DuckDo::Nothing);
+        assert_eq!(d.step(Busy(true), 7100), DuckDo::Lower(30));
+        assert_eq!(d.step(Quit, 7200), DuckDo::Restore);
+        assert_eq!(d.step(Busy(true), 7300), DuckDo::Nothing);
+        assert_eq!(d.wait(7300), None);
+    }
+
+    #[test]
+    fn every_overlay_has_its_say_and_a_closed_one_is_forgotten() {
+        let mut all = Vec::new();
+        let alive = |_: &str| true;
+        assert_eq!(talk_set(&mut all, "overlay-0-0", false, false, alive), (false, false));
+        assert_eq!(talk_set(&mut all, "overlay-0-0", true, false, alive), (true, false), "a take is open");
+        assert_eq!(talk_set(&mut all, "overlay-0-1", false, true, alive), (true, true), "a reply plays on the other screen");
+        assert_eq!(talk_set(&mut all, "overlay-0-0", false, false, alive), (false, true));
+        assert_eq!(talk_set(&mut all, "overlay-0-1", false, false, alive), (false, false), "neither holds any more");
+        assert_eq!(all.len(), 2, "one note per overlay");
+        // An overlay that was taken down while a reply played can't say it stopped: the next report drops it.
+        talk_set(&mut all, "overlay-0-1", false, true, alive);
+        assert_eq!(talk_set(&mut all, "overlay-1-0", false, false, |l| l.starts_with("overlay-1-")), (false, false));
+        assert_eq!(all, vec![("overlay-1-0".to_string(), false, false)]);
+    }
 
     #[test]
     fn a_bars_slot_is_read_only_when_it_makes_sense() {

@@ -30,7 +30,7 @@ import { createTools, expand, fitImage, imageBlock, winOpen } from './tools.mjs'
 import { describeMarks } from './marks.mjs';
 import { faviconFor } from './draw.mjs';
 import { QUESTIONS, openNote, answerTurn, wantsSkip, endsChat, splitTurn, plain, stripNote, tourBeats, goalFrom, showcaseBeats } from './intro.mjs';
-import { SpeechText, CueFilter, VOICE_CUES, endsWithQuestion, LANGUAGES, languageOf, languageLine } from './speech.mjs';
+import { SpeechText, CueFilter, VOICE_CUES, endsWithQuestion, LANGUAGES, languageOf, languageLine, DUCK_LEVELS, duckOf, duckLevel } from './speech.mjs';
 import { createSpeaker } from './speaker.mjs';
 import { DEFAULT_VOICE, FISH_CHOICES } from './fish.mjs';
 import { createSecrets, retryLoad } from './secrets.mjs';
@@ -86,6 +86,7 @@ const DEFAULTS = {
   replies: 'text', // 'voice': spoken with Fish Audio as well as shown
   fishModel: FISH_CHOICES[0].id, // Drama 3 (most expressive) or S2.1 Pro (natural pace, cheaper)
   language: 'auto', // the reply language: 'auto' (nothing is asked of the model), 'en' or 'es' (speech.mjs LANGUAGES)
+  duckOthers: false, duckLevel: 30, // Linux: other apps' sound goes down to this percentage while it listens and speaks (speech.mjs duckOf)
 };
 const LINUX = process.platform === 'linux';
 // Linux: "x11" or "wayland" (the app says which). Wayland keeps apps from seeing the pointer over other apps and
@@ -1276,6 +1277,7 @@ function panelState() {
     replies: config.replies === 'voice' ? 'voice' : 'text', fishKey: speech.on,
     fishModel: speech.pick, fishModels: FISH_CHOICES, fishFree: speech.on && speech.model.endsWith('-free'),
     language: languageOf(config.language), languages: LANGUAGES,
+    duck: LINUX ? { ...duckOf(config), levels: DUCK_LEVELS } : null,
     voice: VOICE_OK ? {
       on: !!config.voice, keys: HOTKEYS_OK ? talkSymbols() : null, ready: voiceReady(), mac: MAC, mute: config.muteWhileTalking !== false, autoListen: !!config.autoListen,
       download: NEEDS_MODEL && config.voice && !voiceReady() ? { status: voiceModel.status, pct: voiceModel.total ? Math.floor((voiceModel.done / voiceModel.total) * 100) : 0, size: sizeLabel() } : null,
@@ -1288,7 +1290,8 @@ function panelState() {
 }
 
 
-const voiceConfig = () => send({ type: 'voice_config', enabled: VOICE_OK && config.voice && voiceReady(), mute: config.muteWhileTalking !== false, sound: !!config.sound, ...(NEEDS_MODEL ? { model: MODEL_DIR } : {}) });
+// duck (Linux): the percentage other apps' sound is lowered to while it listens and speaks, 0 when that's off.
+const voiceConfig = () => send({ type: 'voice_config', enabled: VOICE_OK && config.voice && voiceReady(), mute: config.muteWhileTalking !== false, sound: !!config.sound, ...(NEEDS_MODEL ? { model: MODEL_DIR } : {}), ...(LINUX ? { duck: duckLevel(config) } : {}) });
 
 // Progress goes to the setup guide often and to the tray menu now and then.
 let modelShownAt = 0, modelMenuAt = 0;
@@ -1443,6 +1446,8 @@ async function onMenu(id) {
   else if (id === 'list') showList({ seconds: 20 });
   else if (id === 'mutetalk') { config.muteWhileTalking = config.muteWhileTalking === false; saveConfig(); voiceConfig(); menu(); }
   else if (id === 'autolisten') { config.autoListen = !config.autoListen; saveConfig(); menu(); }
+  else if (id === 'duck' && LINUX) { config.duckOthers = !duckOf(config).on; saveConfig(); voiceConfig(); menu(); }
+  else if (id.startsWith('ducklevel:') && LINUX && DUCK_LEVELS.includes(Number(id.slice(10)))) { config.duckLevel = Number(id.slice(10)); saveConfig(); voiceConfig(); menu(); }
   else if (id === 'voicedl') startVoiceDownload();
   else if (id === 'voice') {
     config.voice = !config.voice; saveConfig(); voiceConfig(); menu();
