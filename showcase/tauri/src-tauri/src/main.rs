@@ -1709,6 +1709,9 @@ fn second_launch(app: &AppHandle, args: &[String]) {
 }
 
 fn main() {
+    // ROAMIES_FISH_MODEL (the sidecar's voice model for one run, to compare them) is for debug builds only.
+    #[cfg(not(debug_assertions))]
+    std::env::remove_var("ROAMIES_FISH_MODEL");
     #[cfg(target_os = "linux")]
     linux::init();
     tauri::Builder::default()

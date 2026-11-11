@@ -9,6 +9,8 @@
   const typing = (on) => invoke('set_typing', { on }).catch(() => {});
   // Drawings (ink.js) talk to the sidecar (started, waits done, buttons, closed cards) and arm the shell's click watch.
   if (Roamie.ink) { Roamie.ink.send = send; Roamie.ink.invoke = (cmd, args) => invoke(cmd, args).catch(() => {}); }
+  // ROAMIES_LATENCY: when a traced reply's first audio starts playing (voice-out.js), for the sidecar's stage times.
+  if (Roamie.voiceOut) Roamie.voiceOut.started = (id, t) => send({ type: 'latency', id, t: Math.round(t) });
   window.__roamieClick = (x, y) => Roamie.ink?.click(x, y);
 
   window.__roamieSafe = (s) => Roamie.setSafe?.(s);

@@ -368,8 +368,13 @@ fn handle_voice(app: &AppHandle, msg: Value) {
 
 /// What the sidecar hears of the words of a take. area: the part of the screen marked with the pen while talking (a
 /// PNG, its rect and the strokes), the helper's or the mouse's.
+/// The helper's stage times (ROAMIES_LATENCY) go along when it sent them.
 fn spoken(msg: &Value, area: Option<&Value>) -> Value {
-    json!({ "type": "voice", "text": msg.get("text"), "area": area, "ms": msg.get("ms"), "via": msg.get("via") })
+    let mut v = json!({ "type": "voice", "text": msg.get("text"), "area": area, "ms": msg.get("ms"), "via": msg.get("via") });
+    if let Some(t) = msg.get("trace") {
+        v["trace"] = t.clone();
+    }
+    v
 }
 
 #[cfg(all(test, target_os = "linux"))]
@@ -412,6 +417,10 @@ mod tests {
         let plain = json!({ "type": "final", "text": "hi" });
         assert_eq!(spoken(&plain, plain.get("area")), json!({ "type": "voice", "text": "hi", "area": null, "ms": null, "via": null }), "none, as before");
         assert_eq!(spoken(&plain, Some(&area))["area"], area, "the mouse's, in the same place");
+        // ROAMIES_LATENCY: the helper's stage times go along as they came; without them nothing is added.
+        let trace = json!({ "take": 4, "voiced": 1, "closed": 2, "final": 3, "why": "pause", "read": "live" });
+        assert_eq!(spoken(&json!({ "type": "final", "text": "hi", "trace": trace }), None)["trace"], trace);
+        assert!(spoken(&plain, None).get("trace").is_none());
     }
 
     #[test]

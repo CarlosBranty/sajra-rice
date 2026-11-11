@@ -26,6 +26,12 @@ and `ROAMIES_LAYER_SHELL=1` takes layer surfaces on any Wayland session, and in 
 `ROAMIES_TEST_AUDIO=<wav>` stands in for the microphone and `ROAMIES_SHOT_DIR=<dir>` keeps a copy of every
 screenshot handed to the agent there, with its pixels and bounds in a `.json` beside it (`roamies --shot` takes one
 without asking the agent anything; they show your screen, so delete them after).
+`ROAMIES_LATENCY=1` (any build) times each spoken question on the wall clock: the Windows and Linux voice helper sends
+when the voice stopped, the take closed (and why) and its words were ready with the words, the
+sidecar adds the request, first token, first sentence to the voice and first Fish audio, and the page when that audio
+starts playing (`voice-out.js`); `~/.gg/sidekick.log` gets one `[latency]` line per stage and a summary with the gaps
+(`sidecar/latency.mjs`). Debug builds: `ROAMIES_FISH_MODEL=s2.1-pro` (or `drama-3`) voices that run without changing
+the saved setting (an account with no credit stays on the free tier either way).
 
 ## Commands
 

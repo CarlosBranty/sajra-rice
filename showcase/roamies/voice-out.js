@@ -49,15 +49,18 @@
     for (const s of old) { try { s.stop(t + 0.05); } catch { /* not started */ } }
   };
 
+  // ROAMIES_LATENCY: the first chunk of a reply the sidecar traces (m.trace) has started() told when it starts sounding.
+  let traced = false;
   const play = (m) => {
     const a = ctx();
-    if (m.id !== id) { stop(); id = m.id; secs = 0; }
+    if (m.id !== id) { stop(); id = m.id; secs = 0; traced = !!m.trace; }
     const b = pcm(m.pcm, m.rate || 44100), s = a.createBufferSource();
     s.buffer = b; s.connect(out);
     const now = a.currentTime;
     if (!live.length) { out.gain.cancelScheduledValues(now); out.gain.setValueAtTime(1, now); }
     const at = Math.max(endAt, now + LEAD);
     s.start(at); endAt = at + b.duration; secs += b.duration;
+    if (traced) { traced = false; R.voiceOut.started?.(m.id, Date.now() + (at - now + (a.outputLatency || 0)) * 1000); }
     live.push(s);
     s.onended = () => { live = live.filter((x) => x !== s); };
   };

@@ -51,4 +51,17 @@ V.stop();
 assert.equal(V.playing(), false);
 assert.equal(V.finished('c'), true);
 
+// ROAMIES_LATENCY: a traced reply's first chunk says when it starts sounding (wall clock ms), once; others say nothing.
+const started = [];
+V.started = (id, t) => started.push([id, t]);
+at(2, 5000);
+V.handle({ id: 'd', pcm: second, rate: 44100 });
+V.handle({ id: 'e', pcm: second, rate: 44100, trace: true });
+const t0 = Date.now();
+V.handle({ id: 'e', pcm: second, rate: 44100, trace: true });
+assert.equal(started.length, 1, 'only the first chunk of a traced reply');
+assert.equal(started[0][0], 'e');
+assert.ok(Math.abs(started[0][1] - (t0 + 120)) < 50, `when its first buffer starts, after the lead: ${started[0][1] - t0}`);
+V.stop();
+
 console.log('voice out tests: passed');

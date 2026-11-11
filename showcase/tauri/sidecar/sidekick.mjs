@@ -32,6 +32,7 @@ import { faviconFor } from './draw.mjs';
 import { QUESTIONS, openNote, answerTurn, wantsSkip, endsChat, splitTurn, plain, stripNote, tourBeats, goalFrom, showcaseBeats } from './intro.mjs';
 import { SpeechText, CueFilter, VOICE_CUES, endsWithQuestion, LANGUAGES, languageOf, languageLine, DUCK_LEVELS, duckOf, duckLevel, WAKE_MIN, WAKE_MAX, wakePhrase, wakeOf, wakeFor, THEMES, themeOf } from './speech.mjs';
 import { createSpeaker } from './speaker.mjs';
+import { createLatency } from './latency.mjs';
 import { DEFAULT_VOICE, FISH_CHOICES } from './fish.mjs';
 import { createSecrets, retryLoad } from './secrets.mjs';
 import { createActivity } from './activity.mjs';
@@ -138,9 +139,18 @@ const saveConfig = () => writeJson(CONFIG_PATH, config, { backup: true });
 // never in the config or logs.
 const secrets = createSecrets({ hands: process.env.ROAMIES_HANDS || '', dataDir: path.join(path.dirname(CONFIG_PATH), 'sidekick') });
 let voiceProblemAt = 0;
+// ROAMIES_LATENCY=1: the stage times of each spoken question (latency.mjs). asked: a question's trace until its request
+// starts; tracing: the one whose reply is being spoken.
+const latency = createLatency();
+let asked = null, tracing = null;
 const speech = createSpeaker({
-  emit: (m) => ui(m),
-  log: (kind, data) => logLine(kind, data),
+  // The traced reply's audio is marked, so the page says when it starts playing.
+  emit: (m) => ui(tracing && m.pcm && m.id === tracing.speech ? { ...m, trace: true } : m),
+  log: (kind, data) => {
+    logLine(kind, data);
+    if (tracing && data?.id === tracing.speech && kind === 'speech_first_audio') { tracing.about.model = data.model; tracing.mark('audio'); }
+    if (tracing && data?.id === tracing.speech && kind === 'speech_beat') tracing.about.beat = data.ms;
+  },
   // Once in a while, not on every reply: the text is there either way.
   onProblem: (what) => {
     if (Date.now() - voiceProblemAt < 10 * 60_000) return;
@@ -151,6 +161,9 @@ const speech = createSpeaker({
 speech.setVoice(lookVoice());
 speech.setModel(config.fishModel);
 speech.setLanguage(config.language);
+// Debug builds (the shell clears it in release ones): ROAMIES_FISH_MODEL picks the voice model for this run only, to
+// compare them, without touching the saved setting.
+if (process.env.ROAMIES_FISH_MODEL) speech.setModel(process.env.ROAMIES_FISH_MODEL);
 // Read once, and again later if the keychain couldn't be read yet (locked at login, or its prompt unanswered): before,
 // one failed read left spoken replies off until the app restarted.
 // Linux: reading the keyring can pop up an "unlock your keyring" dialog (an auto-login desktop leaves it locked), so it's
@@ -764,7 +777,10 @@ async function prompt(text, image = null, note = '', byVoice = false) {
   const voice = VOICE_ON() ? speech.start() : (speech.stop(), null);
   turnVoice = voice;
   if (voice && intro) guideVoices.add(voice.id);
-  const spoken = voice && new SpeechText((t) => voice.say(t));
+  const lt = byVoice ? asked : null;
+  if (byVoice) asked = null;
+  if (lt) { tracing?.done(); tracing = lt; lt.speech = voice?.id ?? null; }
+  const spoken = voice && new SpeechText(lt ? (t) => { lt.mark('sentence'); voice.say(t); } : (t) => voice.say(t));
   let stalled = false, watch = null;
   try {
     // Voice: a short first line before a tool ("On it, checking Paris.") is a beat: it's spoken, but not
@@ -806,8 +822,10 @@ async function prompt(text, image = null, note = '', byVoice = false) {
     // and say so, instead of waiting silently forever with every later request queued behind it.
     const ctl = controller;
     watch = stallWatch(STALL_MS, () => { stalled = true; logLine('stalled', { turn, ms: Date.now() - use.t }); ctl.abort(); });
+    lt?.mark('sent');
     for await (const e of agentEvents(agent.prompt(content))) {
       watch.event(e);
+      if (lt && /^(?:text|thinking|toolcall)_delta$/.test(e.type)) lt.mark('token');
       if (e.type === 'text_delta') { const t = echo.push(e.text); reply.push(t); if (fresh) { lastReply = ''; fresh = false; } lastReply += t; }
       else if (e.type === 'turn_end') {
         doneWriting();
@@ -882,6 +900,8 @@ async function prompt(text, image = null, note = '', byVoice = false) {
   } finally {
     watch?.stop();
     busy = false; turnVoice = null;
+    // The summary waits for the page to say the first audio played; a reply never spoken has none to wait for.
+    if (lt) setTimeout(() => lt.done(), voice ? 20_000 : 0);
     // A tool cut off by Stop never reports back: end its tag too, or the Sidekick kept showing it ("looking at
     // CapCut") on every later request, with their own tags queued behind it.
     for (const id of activity.stopped()) ui({ kind: 'agent', e: { type: 'tool_end', id, isError: true } });
@@ -1010,8 +1030,8 @@ function setLook(l) {
   ui({ kind: 'look', look: l }); menu();
 }
 
-// The reply language: Auto says nothing about it to the model; a picked one is the prompt's last line, and the
-// English "One sec." beats stay quiet in any other language.
+// The reply language: Auto says nothing about it to the model; a picked one is the prompt's last line, and the beats
+// before something slow are in it ("One sec." on Auto and English, "Vale, déjame ver." in Spanish).
 function setLanguage(l) {
   if (languageOf(config.language) === l) return;
   config.language = l; saveConfig();
@@ -1356,6 +1376,7 @@ function onVoice(m) {
   else if (m.type === 'voice' && m.text?.trim()) {
     // Key release to the words arriving (mic tail and the recogniser finishing), to see what that step costs.
     if (typeof m.ms === 'number') logLine('voice_final', { ms: m.ms, via: String(m.via ?? ''), chars: m.text.trim().length });
+    if (latency.on) asked = latency.start(m.trace);
     onSpoken(m.text.trim(), m.area);
   }
   else if (m.type === 'voice_state' && m.state === 'idle' && snap?.waitingVoice) snap.waitingVoice = false;
@@ -1733,6 +1754,8 @@ createInterface({ input: process.stdin }).on('line', (line) => {
   else if (m.type === 'list_toggle') toggleItem(String(m.id)).catch((e) => console.error('list', e));
   else if (m.type === 'show_list') showList({ seconds: 20, toggle: true });
   // The overlay's drawing: a segment started, a wait for a click or hover ended, a card was closed, a button clicked.
+  // ROAMIES_LATENCY: the page started playing the traced reply's first audio (its own clock time).
+  else if (m.type === 'latency' && tracing && m.id === tracing.speech) { tracing.mark('played', Number(m.t)); tracing.done(); }
   else if (m.type === 'draw_started') { ink.started(String(m.id), m.seg | 0); if (String(m.id) === showcase?.id) ob({ kind: 'showcase', phase: 'beat', beat: m.seg | 0 }); }
   else if (m.type === 'draw_done') { if (String(m.id) === showcase?.id) showcaseDrawn(); }
   else if (m.type === 'draw_wait_done') ink.waitDone(String(m.id), m.beat | 0, String(m.result));
