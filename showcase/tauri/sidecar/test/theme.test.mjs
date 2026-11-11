@@ -77,6 +77,11 @@ const CLASSIC = {
   rule: '#12302e', hover: '#0d2a2a', well: '#030c0d',
   glass: 'rgba(6,22,24,0.94)', text: '#dcfff6', hot: '#e6fffa', mid: '#28c4b8', deep: '#0e5c60', faint: '#3f8f88',
   edge: 'rgba(3,39,34,0.6)', coral: '#ff8a7a', note: '#e9a196', flash: '#ffffff', scrim: '#030e10',
+  // The rest of what onboarding.css and panel.css had written out (theme-pages.test.mjs is about these).
+  field: '#061719', tip: '#08201f', bar: '#0b1f21', track: '#0b2224', press: '#0b2526', pressHi: '#0d2e2e', picked: '#0a2a28',
+  key: '#0c2a2c', lit: '#0e3a36', disabled: '#1c3634', disabledInk: '#7f9f9a', bubble: '#04191b', bubbleInk: '#d6fff6',
+  seg: '#14302f', segDone: '#2fae9b', ledOff: '#1e3f3d', stub: '#2b4a48', keyLine: '#2f6d66', lineOk: '#24675f',
+  dangerLo: '#ff8a78', dangerInk: '#032722', halo: '#28aa96', dots: '#50d2be',
   led: [[4, 16, 18], [14, 92, 96], [40, 196, 184], [120, 255, 226], [230, 255, 250]],
   screen: ['#051214', '#0e5c60', '#28c4b8', '#78ffe2', '#e6fffa'],
   tones: { accent: '#78ffe2', teal: '#78ffe2', amber: '#ffcf5c', coral: '#ff8a7a', lilac: '#b9a4ff', sky: '#7cc8ff', lime: '#b6f36b', red: '#ff6b6b', white: '#e8fffa' },
@@ -468,10 +473,12 @@ await rule('the setting is saved, shown on the Appearance page and reaches the o
   assert.match(ready, /ui\(\{ kind: 'size', size: sizeNow\(\) \}\);\n\s+ui\(\{ kind: 'look', look: config\.look \?\? 'classic' \}\);/, 'which are as they were');
   assert.match(side, /theme: themeOf\(config\.theme\), themes: THEMES,/, 'the panel is told the choice and the choices');
   assert.match(side, /else if \(id\.startsWith\('size:'\) && SIZES\.some\(\(\[s\]\) => s === id\.slice\(5\)\)\) \{ config\.size = id\.slice\(5\); saveConfig\(\); ui\(\{ kind: 'size', size: config\.size \}\); menu\(\); \}/, 'the Size choice is untouched');
-  // The panel's Appearance page: the picker, after Look and Size.
+  // The panel's Appearance page: the picker, with Look and Size.
   const panel = read('../../../panel/panel.js');
   const page = panel.slice(panel.indexOf('function appearancePage()'), panel.indexOf('// The looks as live tiles'));
-  assert.match(page, /group\('Look', 'Each look has its own name and voice\.', null, lookTiles\(\)\),\n\s+group\('Size', 'How big I am on your screen\.', null, picks\('Size', state\.sizes, state\.size, \(x\) => act\(`size:\$\{x\}`\), 'size'\)\),/, 'Look and Size as they were');
+  // (Look has a tab to itself since the page outgrew the panel; Size shares the other with Colors: theme-pages.test.mjs.)
+  assert.match(page, /group\('Look', 'Each look has its own name and voice\.', null, lookTiles\(\)\),/, 'Look as it was');
+  assert.match(page, /group\('Size', 'How big I am on your screen\.', null, picks\('Size', state\.sizes, state\.size, \(x\) => act\(`size:\$\{x\}`\), 'size'\)\),/, 'Size as it was');
   assert.match(page, /group\('Colors', [^\n]*, null, picks\('Colors', state\.themes, state\.theme, \(x\) => act\(`theme:\$\{x\}`\), 'theme'\)\)/, 'the picker');
   // The overlay: on System it follows what the shell says; the shell's answer is one command.
   const host = read('../../../roamies/host.js');

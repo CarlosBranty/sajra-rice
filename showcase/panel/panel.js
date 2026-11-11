@@ -12,11 +12,16 @@
   const hide = () => invoke('panel_hide').catch(() => {});
   // An action from the menu's list. away: it happens on the desktop, so the panel steps aside first.
   const act = (id, away = false) => { if (away) hide(); send({ type: 'menu', id }); };
+  // The colour scheme in use (theme.js) as this page's CSS variables and its light or dark, now and whenever it
+  // changes. Which scheme that is follows the Colors setting, which comes with the state (themed: the one followed).
+  const THEME = window.Roamie?.theme;
+  THEME?.page(document.documentElement);
+  let themed;
 
   let state = null, tab = 'home', deferred = false;
   // What's open in the panel itself: a key field (provider id or 'fish'), the row action waiting for its
   // Confirm, each long list's page (pg) and how many rows fit on one (per, measured), Memory's tab and its search.
-  const ui = { key: null, kind: {}, arm: null, pg: {}, per: {}, mtab: 'facts', vtab: 'replies', q: '', bindShown: new Set() };
+  const ui = { key: null, kind: {}, arm: null, pg: {}, per: {}, mtab: 'facts', vtab: 'replies', atab: 'look', q: '', bindShown: new Set() };
   let armTimer = 0;
   const disarm = () => { clearTimeout(armTimer); if (ui.arm) { ui.arm = null; return true; } return false; };
 
@@ -173,8 +178,8 @@
   // ---------------------------------------------------------------- live Roamies
   // The same LED renderer as on the desktop and in the setup guide, drawn small: one in the header (the Roamie
   // you have, reacting to what's going on) and one per look on the Appearance page. One loop draws them all,
-  // only while the panel is up and each canvas is on screen.
-  const LED = [[4, 16, 18], [14, 92, 96], [40, 196, 184], [120, 255, 226], [230, 255, 250]];
+  // only while the panel is up and each canvas is on screen. Their dots and glow are the colour scheme's, read
+  // every frame, so a change of scheme shows on the next one.
   const live = new Set();
   let pointer = null; // the cursor in page px, for their eyes
   addEventListener('pointermove', (e) => { pointer = [e.clientX, e.clientY]; }, { passive: true });
@@ -203,7 +208,7 @@
     const me = {
       pose: null, look, form,
       kit: Roamie.ditherKit({
-        id: 'panel', label: 'Panel', matrix: true, pixel: 1.3, glow: 0.55, speed: 80, pal: LED,
+        id: 'panel', label: 'Panel', matrix: true, pixel: 1.3, glow: () => 0.55 * Roamie.theme.now.glow, speed: 80, pal: () => Roamie.theme.now.led,
         // busy: no acts of its own; pose: whatever's going on, except while it's acting something out.
         plugin: (kit) => { K = kit; return { busy: () => true, pose: () => (clock < actUntil ? null : POSES[me.pose]?.(clock) ?? null) }; },
       }).create(env),
@@ -437,14 +442,25 @@
       foot(null, nav),
     ];
   }
+  // Two tabs, the looks and the rest: the panel doesn't scroll, and as one page this had grown past its height, with
+  // the Colors picker cut off at the bottom edge.
   function appearancePage() {
-    return [
+    const on = ui.atab;
+    const tabBtn = (id, label) => el('button', {
+      className: 'tab', type: 'button', role: 'tab', id: `atab-${id}`, 'aria-selected': String(on === id), tabIndex: on === id ? 0 : -1, 'data-k': `atab-${id}`,
+      on: { click: () => { if (ui.atab !== id) { ui.atab = id; disarm(); render(`atab-${id}`); } } },
+    }, label);
+    const head = el('div', { className: 'mhead' }, el('div', { className: 'tabs', role: 'tablist', 'aria-label': 'Appearance' }, tabBtn('look', 'Look'), tabBtn('style', 'Size and colors')));
+    const look = [
       group('Look', 'Each look has its own name and voice.', null, lookTiles()),
+    ];
+    const style = [
       group('Size', 'How big I am on your screen.', null, picks('Size', state.sizes, state.size, (x) => act(`size:${x}`), 'size')),
       group('Colors', 'Mine, or your desktop\'s: light or dark, as it is.', null, picks('Colors', state.themes, state.theme, (x) => act(`theme:${x}`), 'theme')),
     ];
+    return [head, ...(on === 'style' ? style : look)];
   }
-  // The looks as live tiles: each one's character, playing, at the size picked below. Kept between renders (a state update mustn't restart
+  // The looks as live tiles: each one's character, playing, at the size picked on the other tab. Kept between renders (a state update mustn't restart
   // them); hovering or focusing one makes it wave; picking it makes it cheer.
   const tiles = new Map();
   function lookTiles() {
@@ -711,6 +727,9 @@
   window.__panel = (m) => {
     if (m.kind === 'state') {
       const first = !state; state = m.state;
+      // The Colors setting: on System the shell is asked for the desktop's scheme, now and every couple of seconds;
+      // on Classic it is Classic. Only when the setting changed, so another update doesn't start the asking over.
+      if (state.theme !== themed) { themed = state.theme; THEME?.follow(themed, () => invoke('theme_get')); }
       if (ui.arm && !document.querySelector(`[data-k="${CSS.escape(ui.arm)}"]`)) ui.arm = null;
       render(null, first);
     }
@@ -728,7 +747,11 @@
   // ---------------------------------------------------------------- browser preview
   function preview() {
     document.title = 'Roamies panel (preview with sample data)';
-    const at = Date.now();
+    const at = Date.now(), q = new URLSearchParams(location.search);
+    // ?theme=light, dark or note: the desktop this preview pretends to have (note: the colours a light shell leaves
+    // in its note). The Colors setting is then System and the shell's answer is that desktop's, as in the app.
+    const DESK = { light: { light: true }, dark: { light: false }, note: { light: true, bg: '#f2e7de', surface: '#ffffff', fg: '#100a05', muted: '#786c61', line: '#e4d6cb', accent: '#9e6630', danger: '#d71921' } };
+    const desk = DESK[q.get('theme')] ?? null;
     const s = {
       version: '0.9.0', os: /Win/.test(navigator.platform) ? 'win' : 'mac',
       status: { state: 'ready', text: 'Ready' }, busy: false, canNew: true,
@@ -756,16 +779,17 @@
       commitments: [{ id: 'c1', text: 'Send the launch email', when: 'Fri 7 Nov, 10:00', overdue: false }, { id: 'c2', text: 'Book the dentist', when: 'Mon 3 Nov, 09:00', overdue: true }],
       name: 'Roamie', look: 'classic', looks: [['classic', 'Roamie'], ['jarvis', 'JARVIS'], ['anime', 'Anime Girl'], ['sarah', 'Sarah'], ['adrian', 'Adrian']],
       size: 'default', sizes: [['default', 'Default'], ['small', 'Small'], ['cursor', 'Cursor']],
-      theme: 'classic', themes: [['classic', 'Classic'], ['system', 'System']],
+      theme: desk ? 'system' : 'classic', themes: [['classic', 'Classic'], ['system', 'System']],
       replies: 'voice', fishKey: true, fishModel: 'drama-3', fishFree: false,
       language: 'auto', languages: [['auto', 'Auto'], ['en', 'English'], ['es', 'Español']],
       fishModels: [{ id: 'drama-3', name: 'Drama 3', perM: 50, promo: { perM: 10, until: '2026-12-01T08:00:00Z' } }, { id: 's2.1-pro', name: 'S2.1 Pro', perM: 15 }],
-      voice: { on: true, keys: '⌃⌥', ready: true, mac: true, mute: true, download: null },
+      voice: { on: true, keys: null, ready: true, mac: false, mute: true, download: null },
+      // Linux's groups too, so every group of the Voice page can be seen here.
+      duck: { on: true, level: 30, levels: [10, 20, 30, 50] }, wake: { on: true, phrase: 'oye jarvis' },
       sound: true, actions: false, login: { on: true },
       update: { available: new URLSearchParams(location.search).has('update') ? '0.9.1' : null, installing: false, checking: false, result: null },
       intro: false,
     };
-    const q = new URLSearchParams(location.search);
     if (q.has('busy')) Object.assign(s, { busy: true, status: { state: 'busy', text: 'Reading notes.md' } });
     if (q.has('empty')) Object.assign(s, { recent: [], facts: [], commitments: [], usage: null });
     if (q.has('many')) {
@@ -776,13 +800,15 @@
     }
     if (q.has('checking')) s.update.checking = true;
     if (q.has('uptodate')) s.update.result = { ok: true, at: Date.now() + 60e3 };
-    if (q.get('tab')) setTimeout(() => { if (q.get('mtab')) ui.mtab = q.get('mtab'); if (q.get('vtab')) ui.vtab = q.get('vtab'); show(q.get('tab')); }, 0);
+    if (q.get('tab')) setTimeout(() => { if (q.get('mtab')) ui.mtab = q.get('mtab'); if (q.get('vtab')) ui.vtab = q.get('vtab'); if (q.get('atab')) ui.atab = q.get('atab'); show(q.get('tab')); }, 0);
     setTimeout(() => window.__panel({ kind: 'state', state: s }), 0);
     return async (cmd, args) => {
+      if (cmd === 'theme_get') return desk;
       if (cmd !== 'sidecar_send') return null;
       console.log('[preview] would send', JSON.stringify(args.msg));
       // A look change comes back as new state, as from the sidecar, so the Roamie's reaction can be seen.
       const id = args.msg?.id ?? '';
+      if (id.startsWith('theme:')) { s.theme = id.slice(6); setTimeout(() => window.__panel({ kind: 'state', state: s }), 120); }
       if (id.startsWith('size:')) { s.size = id.slice(5); setTimeout(() => window.__panel({ kind: 'state', state: s }), 120); }
       if (id.startsWith('look:')) { s.look = id.slice(5); s.name = s.looks.find(([v]) => v === s.look)?.[1] ?? s.name; setTimeout(() => window.__panel({ kind: 'state', state: s }), 120); }
       return null;

@@ -11,6 +11,10 @@
   const invoke = window.__TAURI__?.core?.invoke ?? preview();
   const send = (msg) => invoke('sidecar_send', { msg }).catch(() => {});
   const sfx = (name, arg) => Roamie.sfx?.play(name, arg);
+  // The colour scheme in use (theme.js) as this page's CSS variables and its light or dark, now and whenever it
+  // changes. Which scheme that is follows the Colors setting, which comes with the state (themed: the one followed).
+  Roamie.theme.page(document.documentElement);
+  let themed;
 
   // ---------------------------------------------------------------- the Sidekick
   const canvas = $('roamie'), ctx = canvas.getContext('2d'), quipEl = $('quip'), tailEl = $('quip-tail');
@@ -22,8 +26,9 @@
     mouse: { x: 0, y: 0, inside: false, active: false }, sleepy: 0, reduced: reduced.matches,
   };
   const sidekick = Roamie.ditherKit({
-    id: 'guide', label: 'Guide', matrix: true, pixel: 1.3, glow: 0.55, speed: 80,
-    pal: [[4, 16, 18], [14, 92, 96], [40, 196, 184], [120, 255, 226], [230, 255, 250]],
+    // Its dots and glow are the colour scheme's, read every frame, so a change of scheme shows on the next one.
+    id: 'guide', label: 'Guide', matrix: true, pixel: 1.3, glow: () => 0.55 * Roamie.theme.now.glow, speed: 80,
+    pal: () => Roamie.theme.now.led,
     // busy: no random acts; pose: whatever the current step wants, except while acting something out.
     // calm while a quip is up: the act keeps its gesture but drops its icon, which would sit on the bubble.
     plugin: (kit) => { K = kit; return { busy: () => true, calm: () => !!quipText && clock < quipUntil, pose: () => (clock < actUntil ? null : poseFn?.(clock) ?? null) }; },
@@ -1172,6 +1177,8 @@
         const first = !state;
         state = msg;
         if (Roamie.sfx) Roamie.sfx.enabled = msg.sound !== false;
+        // The Colors setting: on System the shell is asked for the desktop's scheme, now and every couple of seconds.
+        if (msg.theme !== themed) { themed = msg.theme; Roamie.theme.follow(themed, () => invoke('theme_get')); }
         if (first) { sidekick.setLook?.(msg.look); sidekick.setForm?.(msg.size); }
         if (at('welcome')) look.render();
         if (first) go(MODE === 'chat' ? 0 : clamp(msg.step | 0, 0, STEPS.length - 1));
@@ -1221,13 +1228,17 @@
     // ?speech=1 previews an older Mac that also needs Speech recognition; ?granted=1 a Mac that already allowed everything.
     const old = q.get('speech') === '1', pre = q.get('granted') === '1' ? 'granted' : 'unknown';
     const win = q.get('platform') === 'win32' || q.get('platform') === 'linux';
+    // ?theme=light, dark or note previews a desktop with that scheme (note: the colours a light shell leaves in its
+    // note): the Colors setting is then System and the shell's answer is that desktop's, as in the app.
+    const DESK = { light: { light: true }, dark: { light: false }, note: { light: true, bg: '#f2e7de', surface: '#ffffff', fg: '#100a05', muted: '#786c61', line: '#e4d6cb', accent: '#9e6630', danger: '#d71921' } };
+    const desk = DESK[q.get('theme')] ?? null;
     // ?platform=win32 previews Windows (&blocked=1: microphone switched off in Privacy settings; &model=downloading|ready|error).
     // ?platform=linux&session=wayland previews a Wayland desktop (commands to bind instead of shortcuts).
     const sys = win ? { type: 'perms', mic: q.get('blocked') === '1' ? 'denied' : 'granted', input: true } : { type: 'perms', mic: pre, speech: old ? pre : 'granted', speechNeeded: old, screen: pre, accessibility: pre };
     const st = {
       // &filesAsked=1: Allow was tapped for the folders in an earlier run. &replies=voice&fish=1: voice already on.
       kind: 'state', platform: q.get('platform') || 'darwin', step: +(q.get('step') || 0), sound: true, look: q.get('look') || 'classic', size: q.get('size') || 'default', voice: true, actions: false, login: true, filesAsked: q.get('filesAsked') === '1',
-      replies: q.get('replies') === 'voice' ? 'voice' : 'text', fishKey: q.get('fish') === '1',
+      replies: q.get('replies') === 'voice' ? 'voice' : 'text', fishKey: q.get('fish') === '1', theme: desk ? 'system' : 'classic',
       bind: q.get('session') === 'wayland' ? Object.fromEntries(['summon', 'talk', 'ask', 'list', 'panel'].map((k) => [k, `'/home/sam/Apps/Roamies 0.1.33.AppImage' --${k}`])) : null,
       keys: q.get('platform') === 'win32' ? { talk: ['control', 'option'], summon: 'Control+Shift+KeyS', snap: 'Control+Shift+KeyA' } : { talk: ['control', 'option'], summon: 'Control+Alt+KeyS', snap: 'Control+Alt+KeyA' }, connected: null,
       voiceModel: win ? { status: q.get('model') || 'missing', done: q.get('model') === 'downloading' ? 281601575 : 0, total: 670479942, error: q.get('model') === 'error' ? 'Download failed. Check your internet.' : null, size: '670 MB' } : null,
@@ -1242,6 +1253,7 @@
     const showcase = { at: null, n: 0 };
     return async (cmd, args) => {
       if (cmd === 'perm_status') return { ...sys };
+      if (cmd === 'theme_get') return desk;
       if (cmd === 'guide_aside') return;
       // &shot=fail: the test screenshot fails.
       if (cmd === 'screen_check') { await wait(900); return { seen: q.get('shot') !== 'fail' }; }

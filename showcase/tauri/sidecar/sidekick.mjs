@@ -1605,6 +1605,8 @@ function obState() {
     filesAsked: config.filesAsked,
     look: config.look ?? 'classic',
     size: sizeNow(),
+    // The Colors setting: the guide follows it as the panel and the overlay do.
+    theme: themeOf(config.theme),
     replies: config.replies === 'voice' ? 'voice' : 'text',
     fishKey: speech.on,
   });

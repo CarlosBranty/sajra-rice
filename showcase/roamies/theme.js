@@ -4,7 +4,8 @@
 // ($XDG_RUNTIME_DIR/roamies/theme.json: light or dark, background, surface, text, muted text, line, accent, danger).
 // Whatever draws reads Roamie.theme.now when it draws, so a change shows on the next frame.
 // API on Roamie.theme: now, rev, schemes, fromNote(note), resolve(what), set(what), onChange(fn), follow(setting, ask),
-// cssVars(scheme), apply(el, scheme), and the colour helpers rgb, rgba, mix, luminance, contrast. Roamie.setTheme = set.
+// cssVars(scheme), apply(el, scheme), page(el), and the colour helpers rgb, rgba, mix, luminance, contrast.
+// Roamie.setTheme = set.
 (() => {
   const R = window.Roamie;
   if (!R) return;
@@ -28,6 +29,13 @@
     const pole = luminance(on[0]) > 0.179 ? '#000000' : '#ffffff';
     for (let k = 0.04; k < 1; k += 0.04) { const m = mix(c, pole, k); if (ok(m)) return m; }
     return pole;
+  };
+  // The other way round: a fill c, moved back toward `base` (which they do read on) until every [colour, min] in
+  // `need` reads on it.
+  const holds = (c, base, need) => {
+    const ok = (x) => need.every(([fg, min]) => contrast(fg, x) >= min);
+    for (let k = 0; k < 1; k += 0.1) { const m = mix(c, base, k); if (ok(m)) return m; }
+    return base;
   };
   const hsl = (c) => {
     const [r, g, b] = rgb(c).map((v) => v / 255), hi = Math.max(r, g, b), lo = Math.min(r, g, b), l = (hi + lo) / 2, d = hi - lo;
@@ -55,6 +63,17 @@
     // anything; coral: something failed; note: why; flash: a letter as it lands; scrim: what dims the screen.
     glass: 'rgba(6,22,24,0.94)', text: '#dcfff6', hot: '#e6fffa', mid: '#28c4b8', deep: '#0e5c60', faint: '#3f8f88',
     edge: 'rgba(3,39,34,0.6)', coral: '#ff8a7a', note: '#e9a196', flash: '#ffffff', scrim: '#030e10',
+    // The pages' own (the panel, the setup guide). Fills: field (what is typed into), tip (a tooltip), bar (the
+    // picture of a menu bar), track (a switch that is off), press and pressHi (a card and a button held down), picked
+    // (the chosen one), key (a keycap), lit (a switch that is on, a key held down), disabled with disabledInk its
+    // words, bubble with bubbleInk (what the guide's Roamie says). Dots and lines: seg and segDone (a step bar's
+    // segments, unlit and finished), ledOff, stub (what stands for someone else's icons), keyLine (round a keycap),
+    // lineOk (round what was allowed). dangerLo: what Confirm blinks to, dangerInk its words. halo and dots: what
+    // glows behind the guide's Roamie and the dot grid of a page, only ever see-through.
+    field: '#061719', tip: '#08201f', bar: '#0b1f21', track: '#0b2224', press: '#0b2526', pressHi: '#0d2e2e', picked: '#0a2a28',
+    key: '#0c2a2c', lit: '#0e3a36', disabled: '#1c3634', disabledInk: '#7f9f9a', bubble: '#04191b', bubbleInk: '#d6fff6',
+    seg: '#14302f', segDone: '#2fae9b', ledOff: '#1e3f3d', stub: '#2b4a48', keyLine: '#2f6d66', lineOk: '#24675f',
+    dangerLo: '#ff8a78', dangerInk: '#032722', halo: '#28aa96', dots: '#50d2be',
     // The character's LED levels, darkest to brightest, and the same for pictures shown on a card.
     led: [[4, 16, 18], [14, 92, 96], [40, 196, 184], [120, 255, 226], [230, 255, 250]],
     screen: ['#051214', '#0e5c60', '#28c4b8', '#78ffe2', '#e6fffa'],
@@ -86,6 +105,22 @@
     const [h, s] = hsl(accent);
     const led = [[0.045, 0.64], [0.215, 0.74], [0.46, 0.66], [0.735, 1], [0.95, 1]].map(([l, k]) => fromHsl(h, s * k, l));
     const tone = (c) => reads(c, on, 3);
+    // The pages' fills: the surface with a little of the accent in it (more of it, the more lit the thing is), kept
+    // where what is written on each still reads. Their unlit dots and lines are the line colour, made to show.
+    const words = [[ink, 4.5], [ink3, 3], [accent, 3]];
+    const fill = (k, need = words) => holds(mix(b.surface, accent, k), b.surface, need);
+    const bar = holds(mix(b.surface, ink, 0.02), b.surface, words), disabled = mix(b.surface, ink3, 0.2);
+    // Confirm blinks away from its words: darker under light ones, lighter under dark ones.
+    const pale = luminance(danger) > 0.179, dangerLo = mix(danger, pale ? '#ffffff' : '#000000', 0.18);
+    const pages = {
+      field: holds(mix(b.bg, b.surface, 0.5), b.surface, words), tip: fill(0.06), bar, track: fill(0.035), press: fill(0.05), pressHi: fill(0.085),
+      picked: fill(0.07), key: fill(0.075), lit: fill(0.13, [[accent, 3]]),
+      disabled, disabledInk: reads(mix(ink3, disabled, 0.15), [disabled], 4.5), bubble: b.surface, bubbleInk: ink,
+      seg: reads(mix(b.bg, b.line, 0.6), on, 1.3), segDone: reads(mix(accent, b.bg, 0.4), on, 3), ledOff: reads(mix(b.bg, b.line, 0.8), on, 1.5),
+      stub: reads(mix(b.line, ink3, 0.12), [bar], 1.5), keyLine: reads(mix(b.line, accent, 0.25), on, 1.5), lineOk: reads(mix(b.line, accent, 0.15), on, 1.5),
+      dangerLo, dangerInk: reads(mix(danger, pale ? '#000000' : '#ffffff', pale ? 0.86 : 0.9), [danger, dangerLo], 4.5),
+      halo: mix(accent, b.bg, 0.3), dots: mix(accent, b.bg, 0.15),
+    };
     return deep({
       name, light: b.light,
       bg: b.bg, panel: b.surface, ink, ink2: reads(mix(ink, b.bg, 0.22), on, 4.5), ink3,
@@ -98,6 +133,7 @@
       edge: rgba(accentInk, 0.6), coral: danger, note: reads(mix(danger, ink3, 0.45), on, 3),
       // On paper a white letter wouldn't show: it lands in the accent instead.
       flash: b.light ? accent : '#ffffff', scrim: b.light ? mix(ink, '#000000', 0.3) : mix(b.bg, '#000000', 0.45),
+      ...pages,
       led, screen: led.map(toHex),
       tones: { accent, teal: tone(classic.tones.teal), amber: tone(classic.tones.amber), coral: tone(classic.tones.coral), lilac: tone(classic.tones.lilac), sky: tone(classic.tones.sky), lime: tone(classic.tones.lime), red: tone(classic.tones.red), white: ink },
       // The glow is added light: over a bright desktop less of it keeps the dots crisp.
@@ -156,21 +192,29 @@
   }
 
   // ---------------------------------------------------------------- for pages
-  // A scheme as CSS custom properties: every colour role under its name (--bg, --ink-2, --accent-hi, …), and the
-  // three that get mixed with transparency also as "r, g, b" (--bg-rgb, --ink-rgb, --accent-rgb) for rgba().
+  // A scheme as CSS custom properties: every colour role under its name (--bg, --ink-2, --accent-hi, …), and those
+  // that get mixed with transparency also as "r, g, b" (--bg-rgb, --ink-rgb, --accent-rgb, --halo-rgb, --dots-rgb)
+  // for rgba().
   const cssName = (k) => `--${k.replace(/[A-Z]/g, (c) => `-${c.toLowerCase()}`).replace(/(\d)/, '-$1')}`;
   function cssVars(s = now) {
     const out = {};
     for (const [k, v] of Object.entries(s)) if (typeof v === 'string' && k !== 'name') out[cssName(k)] = v;
-    for (const k of ['bg', 'ink', 'accent']) out[`--${k}-rgb`] = rgb(s[k]).join(', ');
+    for (const k of ['bg', 'ink', 'accent', 'halo', 'dots']) out[`--${k}-rgb`] = rgb(s[k]).join(', ');
     return out;
   }
   // Sets them on an element (a page's root, a card). scheme.light says which color-scheme the page is.
   const apply = (el, s = now) => { for (const [k, v] of Object.entries(cssVars(s))) el.style.setProperty(k, v); };
+  // A whole page (its root element) in the scheme in use, now and after every change: the variables, and whether
+  // the browser draws what is its own (scrollbars, a dropdown's list) light or dark. Returns how to stop.
+  const page = (el) => {
+    const paint = () => { apply(el); el.style.setProperty('color-scheme', now.light ? 'light' : 'dark'); };
+    paint();
+    return onChange(paint);
+  };
 
   R.theme = {
     get now() { return now; }, get rev() { return rev; },
-    schemes, fromNote, resolve, set, onChange, follow, cssVars, apply, rgb, rgba, mix, luminance, contrast,
+    schemes, fromNote, resolve, set, onChange, follow, cssVars, apply, page, rgb, rgba, mix, luminance, contrast,
   };
   R.setTheme = set;
 })();

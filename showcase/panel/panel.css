@@ -1,5 +1,6 @@
 /* The panel that opens from the menu bar or tray icon. Built on the setup guide's stylesheet (fonts, colours,
    pixel frames, buttons, switches, fields), so it's the same LED-panel world; this file only lays it out.
+   Every colour is one of that stylesheet's :root variables, which follow the colour scheme (theme.js).
    One accent fill per view: the header's update button when there is one, otherwise Ask. */
 :root {
   --gut: 16px;      /* the one inline gutter: header, pages and note */
@@ -17,7 +18,7 @@ html, body { height: 100%; background: transparent; }
 .frame {
   height: 100%; display: flex; flex-direction: column; overflow: hidden;
   background:
-    radial-gradient(circle at 50% 50%, rgba(80, 210, 190, 0.07) 0.9px, transparent 1.3px) 0 0 / 8px 8px,
+    radial-gradient(circle at 50% 50%, rgba(var(--dots-rgb), 0.07) 0.9px, transparent 1.3px) 0 0 / 8px 8px,
     var(--bg);
   color: var(--ink);
   border: 1px solid var(--line-hi);
@@ -71,7 +72,7 @@ html, body { height: 100%; background: transparent; }
 .head { display: flex; align-items: center; gap: 8px; padding: 6px var(--gut) 6px 4px; }
 .head-text { min-width: 0; flex: 1; display: grid; }
 /* The Roamie stands on a small LED pad, like the setup guide's. */
-.avatar { flex: none; width: 100px; height: 74px; margin-inline-end: -10px; background: radial-gradient(closest-side, rgba(120, 255, 226, 0.10), transparent) 50% 92% / 70% 22% no-repeat; }
+.avatar { flex: none; width: 100px; height: 74px; margin-inline-end: -10px; background: radial-gradient(closest-side, rgba(var(--accent-rgb), 0.10), transparent) 50% 92% / 70% 22% no-repeat; }
 /* Something it says (a new look, an update; not the setup guide's .quip bubble): in the status line's place for a moment, typed in its own font. */
 .head-text .by, .head-text .saying { grid-area: 2 / 1; }
 .saying {
@@ -103,11 +104,11 @@ html, body { height: 100%; background: transparent; }
 .looktile canvas { display: block; width: 104px; height: 76px; }
 .looktile .name { font: 700 var(--t-small)/1.25 var(--mono); font-stretch: 87.5%; letter-spacing: 0.06em; text-transform: uppercase; white-space: nowrap; }
 .looktile:hover { --bc: var(--line-hi); color: var(--ink); }
-.looktile[aria-checked="true"] { --bc: var(--accent); --fill: #0a2a28; color: var(--accent); }
+.looktile[aria-checked="true"] { --bc: var(--accent); --fill: var(--picked); color: var(--accent); }
 
 /* ---------- About: who made it ---------- */
 .maker { display: flex; align-items: center; gap: 4px; min-width: 0; }
-.maker canvas { flex: none; width: 100px; height: 74px; margin-inline-start: -14px; background: radial-gradient(closest-side, rgba(120, 255, 226, 0.10), transparent) 50% 92% / 70% 22% no-repeat; }
+.maker canvas { flex: none; width: 100px; height: 74px; margin-inline-start: -14px; background: radial-gradient(closest-side, rgba(var(--accent-rgb), 0.10), transparent) 50% 92% / 70% 22% no-repeat; }
 .maker > span { min-width: 0; font: 700 var(--t-head)/1.35 var(--mono); color: var(--ink); white-space: nowrap; }
 .maker > span small { display: block; font: 400 var(--t-small)/1.35 var(--mono); color: var(--ink-3); }
 
@@ -125,8 +126,8 @@ html, body { height: 100%; background: transparent; }
   --bc: transparent; --fill: transparent;
   transition: color 120ms steps(2, end);
 }
-.navi:hover { color: var(--ink); --fill: rgba(120, 255, 226, 0.05); }
-.navi[aria-current="page"] { color: var(--accent); font-weight: 700; --fill: #0a2a28; --bc: var(--accent); }
+.navi:hover { color: var(--ink); --fill: rgba(var(--accent-rgb), 0.05); }
+.navi[aria-current="page"] { color: var(--accent); font-weight: 700; --fill: var(--picked); --bc: var(--accent); }
 /* Needs you (an update, no account): one small LED at the end, nothing more. */
 .navi .dot { display: none; width: 6px; height: 6px; margin-inline-start: auto; background: var(--accent); }
 .navi.flag .dot { display: block; }
@@ -193,7 +194,7 @@ html, body { height: 100%; background: transparent; }
 .item .text small { display: block; font-size: var(--t-small); line-height: 1.3; color: var(--ink-3); overflow: hidden; text-overflow: ellipsis; }
 .item.ask .text { color: var(--ink-2); }
 .item.bad .text, .item .text small.late { color: var(--danger); }
-.mark { width: 8px; height: 8px; justify-self: center; background: #1e3f3d; }
+.mark { width: 8px; height: 8px; justify-self: center; background: var(--led-off); }
 .item.did .mark { background: var(--accent-lo); }
 .item.bad .mark { background: var(--danger); }
 /* A question: two stacked bars, like a quote, instead of a dot. */
@@ -213,8 +214,8 @@ html, body { height: 100%; background: transparent; }
 .arm > span { grid-area: 1 / 1; padding: 1px 6px; transition: opacity 90ms steps(2, end); }
 .arm > .yes { opacity: 0; }
 .arm[aria-pressed="true"] > .no { opacity: 0; }
-.arm[aria-pressed="true"] > .yes { opacity: 1; color: var(--accent-ink); background: var(--danger); animation: arm-blink 600ms steps(2, end) 2; }
-@keyframes arm-blink { 50% { background: #ff8a78; } }
+.arm[aria-pressed="true"] > .yes { opacity: 1; color: var(--danger-ink); background: var(--danger); animation: arm-blink 600ms steps(2, end) 2; }
+@keyframes arm-blink { 50% { background: var(--danger-lo); } }
 
 /* ---------- settings ---------- */
 .setting { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 12px; min-height: 32px; }
@@ -232,7 +233,12 @@ html, body { height: 100%; background: transparent; }
 .body select {
   appearance: none; min-width: 0; flex: 1; border: 0; color: var(--ink); padding-inline-end: 30px;
   font-family: var(--mono); font-weight: 500; font-stretch: 87.5%; cursor: pointer;
-  background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' shape-rendering='crispEdges'%3E%3Cpath d='M0 0h2v2H0zM2 2h2v2H2zM4 4h2v2H4zM6 2h2v2H6zM8 0h2v2H8z' fill='%23b4d8d1'/%3E%3C/svg%3E") no-repeat right 12px center;
+  background: none;
+}
+/* Its chevron: drawn by the field as a mask, so it is in the scheme's colour (a picture can't read a variable). */
+.body .field.select::after {
+  content: ""; position: absolute; right: 12px; top: calc(50% - 3px); width: 10px; height: 6px; pointer-events: none;
+  background: var(--ink-2); -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' shape-rendering='crispEdges'%3E%3Cpath d='M0 0h2v2H0zM2 2h2v2H2zM4 4h2v2H4zM6 2h2v2H6zM8 0h2v2H8z'/%3E%3C/svg%3E") no-repeat; mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' shape-rendering='crispEdges'%3E%3Cpath d='M0 0h2v2H0zM2 2h2v2H2zM4 4h2v2H4zM6 2h2v2H6zM8 0h2v2H8z'/%3E%3C/svg%3E") no-repeat;
 }
 .body select option { background: var(--panel); color: var(--ink); }
 .body select:focus-visible { outline: none; }
@@ -253,7 +259,7 @@ html, body { height: 100%; background: transparent; }
 
 /* Tooltip: a small LED-framed card against its control, dissolving in like the rows. */
 .tip {
-  position: fixed; z-index: 20; padding: 9px 11px; --bc: var(--line-hi); --fill: #08201f;
+  position: fixed; z-index: 20; padding: 9px 11px; --bc: var(--line-hi); --fill: var(--tip);
   font-size: var(--t-small); line-height: 1.45; color: var(--ink);
 }
 .tip[hidden] { display: none; }
