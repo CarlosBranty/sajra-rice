@@ -16,7 +16,7 @@
   let state = null, tab = 'home', deferred = false;
   // What's open in the panel itself: a key field (provider id or 'fish'), the row action waiting for its
   // Confirm, each long list's page (pg) and how many rows fit on one (per, measured), Memory's tab and its search.
-  const ui = { key: null, kind: {}, arm: null, pg: {}, per: {}, mtab: 'facts', q: '', bindShown: new Set() };
+  const ui = { key: null, kind: {}, arm: null, pg: {}, per: {}, mtab: 'facts', vtab: 'replies', q: '', bindShown: new Set() };
   let armTimer = 0;
   const disarm = () => { clearTimeout(armTimer); if (ui.arm) { ui.arm = null; return true; } return false; };
 
@@ -470,9 +470,17 @@
     }));
     return g;
   }
+  // Tabs, what I say (Replies), how you talk to me (Talking) and, on Linux, Other sounds: the panel doesn't scroll, and
+  // as one page this had grown past its height, with the last settings cut off below the edge. Each tab fits with its
+  // typing field open.
   function voicePage() {
-    const v = state.voice;
-    return [
+    const v = state.voice, on = ui.vtab === 'sounds' && !state.duck ? 'replies' : ui.vtab;
+    const tabBtn = (id, label) => el('button', {
+      className: 'tab', type: 'button', role: 'tab', id: `vtab-${id}`, 'aria-selected': String(on === id), tabIndex: on === id ? 0 : -1, 'data-k': `vtab-${id}`,
+      on: { click: () => { if (ui.vtab !== id) { ui.vtab = id; ui.key = null; disarm(); render(`vtab-${id}`); } } },
+    }, label);
+    const head = el('div', { className: 'mhead' }, el('div', { className: 'tabs', role: 'tablist', 'aria-label': 'Voice' }, tabBtn('replies', 'Replies'), tabBtn('talking', 'Talking'), state.duck ? tabBtn('sounds', 'Other sounds') : null));
+    const replies = [
       group('Spoken replies', 'Hear me as well as read me.', null,
         picks('Replies', [['text', 'Text only'], ['voice', 'Voice and text']], state.replies, (x) => {
           if (x === 'voice' && !state.fishKey) { ui.key = 'fish'; render('key-fish'); note('Add a Fish Audio key to hear me talk.'); return; }
@@ -493,19 +501,14 @@
       // What I reply in, spoken and written: Auto leaves it to me, a picked one is kept whatever the screen is in.
       state.languages?.length ? group('Language', 'What I reply in, spoken and written.', null,
         picks('Language', state.languages, state.language, (x) => act(`language:${x}`), 'language')) : null,
+    ];
+    const talking = [
       v ? group('Talking to me', 'Speak instead of typing.', null,
         toggle('Voice control', v.download
           ? (v.download.status === 'downloading' ? `Downloading the voice model… ${v.download.pct}%` : v.download.status === 'error' ? 'The download failed' : `Needs a ${v.download.size} download`)
           : v.keys ? `Hold ${v.keys} to talk` : 'Press your talk shortcut to talk', v.on, () => act('voice'), 'voice'),
         v.download && v.download.status !== 'downloading' ? el('div', { className: 'links' }, link(v.download.status === 'error' ? 'Retry the download' : `Download (${v.download.size})`, () => act('voicedl'), { k: 'voicedl' })) : null,
         v.mac ? toggle('Mute Mac while talking', 'Other sounds go quiet while you talk', v.mute, () => act('mutetalk'), 'mutetalk') : null) : null,
-      // Linux: other apps are turned down while I listen and while I talk, to a share of what each has, and get it back after.
-      state.duck ? group('Other sounds', 'Turn other apps down while I listen and while I talk.', null,
-        toggle('Lower other sounds', 'They come back when I stop', state.duck.on, () => act('duck'), 'duck'),
-        state.duck.on ? [
-          el('p', { className: 'sub', textContent: 'Lower to' }),
-          picks('Lower to', state.duck.levels.map((l) => [l, `${l}%`]), state.duck.level, (x) => act(`ducklevel:${x}`), 'ducklevel'),
-        ] : null) : null,
       // Linux: saying the phrase starts listening, as the talk shortcut does. The microphone stays on to hear it.
       state.wake ? group('Wake word', 'Say a phrase and I listen, no key needed. The microphone stays on to hear it; nothing leaves this computer until you say it.', null,
         toggle('Wake word', !v?.on ? 'Needs Voice control on' : state.wake.phrase ? `Say "${state.wake.phrase}" to talk to me` : 'Pick a phrase to call me with', state.wake.on, () => {
@@ -517,6 +520,16 @@
           link(ui.key === 'wake' ? 'Cancel' : state.wake.phrase ? 'Change' : 'Set', () => { ui.key = ui.key === 'wake' ? null : 'wake'; render(ui.key ? 'key-wake' : 'addkey:wake'); }, { k: 'addkey:wake', aria: state.wake.phrase ? 'Change the wake phrase' : 'Set the wake phrase' })),
         phraseForm('wake', state.wake.phrase, (phrase) => send({ type: 'panel_wake', phrase }))) : null,
     ];
+    const sounds = [
+      // Linux: other apps are turned down while I listen and while I talk, to a share of what each has, and get it back after.
+      state.duck ? group('Other sounds', 'Turn other apps down while I listen and while I talk.', null,
+        toggle('Lower other sounds', 'They come back when I stop', state.duck.on, () => act('duck'), 'duck'),
+        state.duck.on ? [
+          el('p', { className: 'sub', textContent: 'Lower to' }),
+          picks('Lower to', state.duck.levels.map((l) => [l, `${l}%`]), state.duck.level, (x) => act(`ducklevel:${x}`), 'ducklevel'),
+        ] : null) : null,
+    ];
+    return [head, ...(on === 'talking' ? talking : on === 'sounds' ? sounds : replies)];
   }
   // Wayland: the commands to bind to keys in the desktop's settings (no app may hold its own shortcuts there).
   // A command shows only after copying it failed, so it can be copied by hand.
@@ -761,7 +774,7 @@
     }
     if (q.has('checking')) s.update.checking = true;
     if (q.has('uptodate')) s.update.result = { ok: true, at: Date.now() + 60e3 };
-    if (q.get('tab')) setTimeout(() => { if (q.get('mtab')) ui.mtab = q.get('mtab'); show(q.get('tab')); }, 0);
+    if (q.get('tab')) setTimeout(() => { if (q.get('mtab')) ui.mtab = q.get('mtab'); if (q.get('vtab')) ui.vtab = q.get('vtab'); show(q.get('tab')); }, 0);
     setTimeout(() => window.__panel({ kind: 'state', state: s }), 0);
     return async (cmd, args) => {
       if (cmd !== 'sidecar_send') return null;

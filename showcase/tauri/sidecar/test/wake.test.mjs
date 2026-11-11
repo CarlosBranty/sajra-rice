@@ -78,4 +78,20 @@ assert.match(voicePage, /phraseForm\('wake', state\.wake\.phrase, \(phrase\) => 
 assert.match(panel, /function phraseForm\(id, value, onsave\) \{[\s\S]*?el\('input', \{ type: 'text', id: `key-\$\{id\}`,[^\n]*maxLength: 40 \}\);/, 'a plain text field, forty characters at most');
 assert.match(voicePage, /state\.duck \? group\('Other sounds',/, 'Lower other sounds is where it was');
 assert.match(voicePage, /toggle\('Voice control', /, 'and so is Voice control');
+// Regression: the panel does not scroll, and the Voice page had grown past its height: "Other sounds" and "Wake word"
+// were cut off below the edge and could not be reached. The page is tabs now, each short enough to fit, also with
+// the phrase field open.
+{
+  const panel = readFileSync(fileURLToPath(new URL('../../../panel/panel.js', import.meta.url)), 'utf8');
+  const page = panel.slice(panel.indexOf('function voicePage()'), panel.indexOf('// Wayland: the commands to bind to keys'));
+  assert.match(page, /tabBtn\('replies', 'Replies'\), tabBtn\('talking', 'Talking'\), state\.duck \? tabBtn\('sounds', 'Other sounds'\) : null/, 'the Voice page has its tabs; Other sounds only where it works');
+  const at = (name) => page.indexOf(`const ${name} = [`);
+  const replies = page.slice(at('replies'), at('talking')), talking = page.slice(at('talking'), at('sounds')), sounds = page.slice(at('sounds'));
+  const only = (tab, name, groups) => { for (const g of groups) for (const [t, n] of [[replies, 'replies'], [talking, 'talking'], [sounds, 'sounds']]) assert.equal(t.includes(`group('${g}'`), n === name, `${g}: ${n === name ? 'on' : 'not on'} ${n}`); };
+  only(replies, 'replies', ['Spoken replies', 'Language']);
+  only(talking, 'talking', ['Talking to me', 'Wake word']);
+  only(sounds, 'sounds', ['Other sounds']);
+  assert.match(page, /on === 'talking' \? talking : on === 'sounds' \? sounds : replies/, 'one tab shows at a time');
+}
+
 console.log('wake tests: passed');
