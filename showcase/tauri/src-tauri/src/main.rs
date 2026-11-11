@@ -1157,9 +1157,9 @@ fn build_overlays(app: &AppHandle) -> tauri::Result<()> {
         let (init, size) = (format!("{init}window.ROAMIE_LINUX={:?};", linux::session().name()), tauri::LogicalSize::new(size.width, size.height - 1.0));
         // Wayland with layer-shell (linux.rs): the overlay is a layer surface, drawn above a bar and not below it. The
         // compositor places and sizes it, so what the builder is told about either below counts for nothing, and it
-        // is built hidden for linux::layer_overlay to finish and show. It is resizable there, which only means it
-        // takes whatever size the compositor gives it: GTK holds a window that isn't to at least the size it has,
-        // so on a smaller screen (move_sidekick_to) it stayed as big as the one it came from.
+        // is built hidden for linux::layer_overlay to finish and show. It is not resizable: an undecorated resizable
+        // window gets Tauri's edge-resize handler, which takes presses near the screen's edges. linux::layer_move
+        // lets it resize for a moment instead, so it fits a smaller screen.
         #[cfg(target_os = "linux")]
         let layer = linux::layer();
         #[cfg(not(target_os = "linux"))]
@@ -1181,7 +1181,7 @@ fn build_overlays(app: &AppHandle) -> tauri::Result<()> {
             .transparent(true)
             .decorations(false)
             .shadow(false)
-            .resizable(layer)
+            .resizable(false)
             .always_on_top(true)
             .visible_on_all_workspaces(true)
             .skip_taskbar(true)

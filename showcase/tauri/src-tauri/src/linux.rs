@@ -544,9 +544,17 @@ pub(crate) fn layer_overlay(window: &tauri::WebviewWindow, mon: &tauri::Monitor)
 
 /// Moves an overlay's layer surface to another monitor. Main thread only.
 pub(crate) fn layer_move(window: &tauri::WebviewWindow, mon: &tauri::Monitor) {
+    use gtk::prelude::GtkWindowExt;
     use gtk_layer_shell::LayerShell;
     if let (Ok(win), Some(m)) = (window.gtk_window(), gdk_monitor(mon)) {
+        // An unresizable GTK window keeps its size when the compositor configures a smaller screen, so it may resize
+        // for the move. Only then: while it is resizable Tauri's edge handler takes presses near the screen's edges
+        // for a resize (a click on the bar would never reach the page). Moves happen only while nothing of the
+        // Roamie's takes clicks (dock_move's busy rule, or a drawing's move before it is played).
+        win.set_resizable(true);
         win.set_monitor(&m);
+        let w = win.clone();
+        gtk::glib::timeout_add_local_once(Duration::from_millis(600), move || w.set_resizable(false));
     }
 }
 

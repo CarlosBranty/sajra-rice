@@ -241,7 +241,9 @@ console.log(JSON.stringify(o));
     assert.deepEqual(segs[0].win, WIN, 'cards beside the helper\'s front window');
     assert.deepEqual(clicks, [true], 'clicks in the window are watched');
     fs.writeFileSync(swap, JSON.stringify({ id: 9, app: 'Other', bounds: [0, 0, 900, 700] }));
-    await wait(1700);
+    // The watch looks every 1.5 s and asks the helper (a node process) each time: wait for it rather than a fixed
+    // time, which was too tight on a loaded machine (CI, Windows).
+    for (const t0 = Date.now(); stale < 1 && Date.now() - t0 < 8000;) await wait(100);
     assert.equal(stale, 1, 'another window in front: the drawing goes');
     fs.rmSync(dir, { recursive: true, force: true });
   }

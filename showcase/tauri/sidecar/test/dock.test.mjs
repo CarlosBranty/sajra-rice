@@ -185,4 +185,17 @@ const travel = (c, to, secs, why) => {
   assert.match(summon, /else \{ if \(ask\) finishAsk\(null\); a\.hide\(\); \}/, 'hiding closes an open question, which gives the keyboard back');
 }
 
+// Regression (found by an independent check): the overlay was built resizable so that it could shrink to a smaller
+// screen, which turned on Tauri's edge-resize handler for undecorated windows: a press within a few px of the screen's
+// edges (the bar, with a question open or a pen take) was taken for a resize and never reached the page. It stays
+// unresizable; the move lets GTK resize it for a moment and turns it back.
+{
+  const read = (p) => fs.readFileSync(new URL(p, import.meta.url), 'utf8');
+  const main = read('../../src-tauri/src/main.rs'), linux = read('../../src-tauri/src/linux.rs');
+  const build = main.slice(main.indexOf('fn build_overlays'), main.indexOf('.build()?', main.indexOf('fn build_overlays')));
+  assert.match(build, /\.resizable\(false\)/, 'the overlay is not resizable');
+  const mv = linux.slice(linux.indexOf('pub(crate) fn layer_move'), linux.indexOf('\n}\n', linux.indexOf('pub(crate) fn layer_move')));
+  assert.match(mv, /set_resizable\(true\)[\s\S]*set_monitor[\s\S]*set_resizable\(false\)/, 'resizable only around the move');
+}
+
 console.log('dock tests: passed');
