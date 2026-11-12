@@ -106,11 +106,11 @@ pub(crate) fn read_line<R: BufRead>(r: &mut R, buf: &mut Vec<u8>) -> io::Result<
     Ok(true)
 }
 
-/// The socket's folder: $XDG_RUNTIME_DIR/roamies, made 0700 if it's missing, refused unless it's private (auth.rs).
+/// The socket's folder: $XDG_RUNTIME_DIR/roamies, made 0700 if it's missing or ours and open, refused otherwise (auth.rs).
 pub(crate) fn socket_dir(base: &Path) -> io::Result<PathBuf> {
     let root = base.join("roamies");
     fs::DirBuilder::new().recursive(true).mode(0o700).create(&root)?;
-    crate::auth::private_dir(&root)?;
+    crate::auth::own_private_dir(&root)?;
     Ok(root)
 }
 
@@ -321,11 +321,13 @@ mod tests {
 
     #[test]
     fn a_runtime_folder_that_isnt_private_is_refused() {
+        // Ours but left open (glyph's bar makes it with mkdir -p): closed to others, then used.
         let s = Scratch::new("dir");
         let open = s.0.join("roamies");
         fs::DirBuilder::new().mode(0o755).create(&open).unwrap();
         fs::set_permissions(&open, fs::Permissions::from_mode(0o755)).unwrap();
-        assert!(socket_dir(&s.0).is_err(), "0755");
+        assert!(socket_dir(&s.0).is_ok(), "0755 and ours: used");
+        assert_eq!(fs::metadata(&open).unwrap().permissions().mode() & 0o777, 0o700, "after it is closed to others");
 
         let s2 = Scratch::new("link");
         std::os::unix::fs::symlink(&s.0, s2.0.join("roamies")).unwrap();

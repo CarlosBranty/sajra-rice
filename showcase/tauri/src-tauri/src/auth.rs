@@ -272,6 +272,19 @@ pub(crate) fn private_dir(p: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
+/// The runtime folder made private when it is this user's own real folder left open: the desktop's bar (glyph) makes
+/// it with a plain `mkdir -p` to leave its notes there, which gives 0755, and every check-it's-you then failed. Only
+/// the mode is tightened; a symlink or a folder of someone else's is still refused (private_dir).
+pub(crate) fn own_private_dir(p: &Path) -> std::io::Result<()> {
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+    let m = fs::symlink_metadata(p)?;
+    let me = unsafe { libc::geteuid() };
+    if m.file_type().is_dir() && m.uid() == me && m.mode() & 0o077 != 0 {
+        fs::set_permissions(p, fs::Permissions::from_mode(0o700))?;
+    }
+    private_dir(p)
+}
+
 /// A folder with one PAM config in it, made for one attempt (0700, the file 0600) and removed when dropped.
 pub(crate) struct ConfDir {
     pub(crate) path: PathBuf,
@@ -285,7 +298,7 @@ impl ConfDir {
         }
         let root = base.join("roamies");
         fs::DirBuilder::new().recursive(true).mode(0o700).create(&root)?;
-        private_dir(&root)?;
+        own_private_dir(&root)?;
         let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.subsec_nanos());
         let path = root.join(format!("auth-{}-{}-{nanos:x}", std::process::id(), SEQ.fetch_add(1, Ordering::Relaxed)));
         // Not recursive: an existing folder of that name is an error, never reused.
@@ -726,8 +739,9 @@ mod tests {
         fs::remove_file(base.join("roamies")).unwrap();
         fs::create_dir(base.join("roamies")).unwrap();
         fs::set_permissions(base.join("roamies"), fs::Permissions::from_mode(0o755)).unwrap();
-        assert!(ConfDir::new(&base, PASSWORD_SERVICE, PASSWORD_CONF).is_err(), "open to others");
-        fs::set_permissions(base.join("roamies"), fs::Permissions::from_mode(0o700)).unwrap();
+        // Ours but left open (the desktop's bar makes it with mkdir -p): closed to others, then used.
+        assert!(ConfDir::new(&base, PASSWORD_SERVICE, PASSWORD_CONF).is_ok(), "ours, open: made private and used");
+        assert_eq!(fs::metadata(base.join("roamies")).unwrap().permissions().mode() & 0o777, 0o700, "closed to others");
         assert!(ConfDir::new(&base, PASSWORD_SERVICE, PASSWORD_CONF).is_ok(), "private: used");
         fs::remove_dir_all(&base).unwrap();
         fs::remove_dir_all(&elsewhere).unwrap();
