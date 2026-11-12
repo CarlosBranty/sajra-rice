@@ -4,6 +4,8 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 #[cfg(target_os = "linux")]
+mod auth;
+#[cfg(target_os = "linux")]
 mod linux;
 mod sidecar;
 #[cfg(target_os = "macos")]
@@ -325,9 +327,43 @@ fn to_sidekick_buddy(app: &AppHandle, msg: &Value) {
     }
 }
 
+/// Whether a page may send this to the sidecar: never anything about authentication, which only the shell reports
+/// (auth.rs). An auth_result from a page would approve a money change by itself.
+fn page_may_send(msg: &Value) -> bool {
+    !msg.get("type").and_then(Value::as_str).is_some_and(|t| t.starts_with("auth"))
+}
+
 #[tauri::command]
 fn sidecar_send(app: AppHandle, msg: Value) {
-    to_sidecar(&app, &msg);
+    if page_may_send(&msg) {
+        to_sidecar(&app, &msg);
+    }
+}
+
+/// Linux: the password typed into the overlay's check-it's-you prompt (auth.rs). It goes from the page to PAM and
+/// nowhere else (never the sidecar, never a log) and is wiped after. Only the overlay the Roamie is in may send one.
+#[tauri::command]
+fn auth_password(app: AppHandle, window: WebviewWindow, id: String, password: String) {
+    #[cfg(target_os = "linux")]
+    {
+        let secret = auth::Secret::from(password);
+        if is_overlay(window.label()) && is_sidekick(window.label()) {
+            auth::password(&app, id, secret);
+        }
+    }
+    #[cfg(not(target_os = "linux"))]
+    let _ = (app, window, id, password);
+}
+
+/// Linux: the check-it's-you prompt was closed without an answer (Esc, Cancel, the Roamie leaving).
+#[tauri::command]
+fn auth_cancel(app: AppHandle, window: WebviewWindow, id: String) {
+    #[cfg(target_os = "linux")]
+    if is_overlay(window.label()) && is_sidekick(window.label()) {
+        auth::cancel(&app, &id, "cancelled");
+    }
+    #[cfg(not(target_os = "linux"))]
+    let _ = (app, window, id);
 }
 
 /// The input bubble needs keystrokes: make the overlay key while typing, then hand focus back.
@@ -995,7 +1031,7 @@ fn starts_interaction(msg: &Value) -> bool {
     let kind = msg.get("kind").and_then(Value::as_str);
     let ty = |k: &str| msg.get(k).and_then(Value::as_str);
     match kind {
-        Some("summon" | "say" | "ask" | "list") => true,
+        Some("summon" | "say" | "ask" | "list" | "auth") => true,
         Some("voice") => ty("type") == Some("state") && ty("state") == Some("listening"),
         Some("agent") => msg.pointer("/e/type").and_then(Value::as_str) == Some("start"),
         _ => false,
@@ -1006,7 +1042,7 @@ fn starts_interaction(msg: &Value) -> bool {
 /// (The turn's start isn't one: the pill's dots are what shows while it thinks.)
 fn shows_answer(msg: &Value) -> bool {
     match msg.get("kind").and_then(Value::as_str) {
-        Some("summon" | "say" | "ask" | "list") => true,
+        Some("summon" | "say" | "ask" | "list" | "auth") => true,
         Some("agent") => match msg.pointer("/e/type").and_then(Value::as_str) {
             Some("tool") => msg.pointer("/e/anim").is_some_and(|a| !a.is_null()),
             Some("text" | "emote" | "draw" | "act_start" | "trail" | "done" | "error") => true,
@@ -1640,6 +1676,21 @@ fn handle_sidecar(app: &AppHandle, msg: Value) {
             }
             to_sidecar(app, &json!({ "type": "clipboard_done", "id": msg.get("id"), "ok": msg.get("text").is_some_and(Value::is_string) }));
         }
+        // A protected money change: the user's password or finger first (auth.rs). Linux only so far.
+        Some("auth") => {
+            let id = msg.get("id").and_then(Value::as_str).unwrap_or_default().to_owned();
+            #[cfg(target_os = "linux")]
+            auth::begin(app, id, msg.get("reason").and_then(Value::as_str).unwrap_or_default().to_owned());
+            #[cfg(not(target_os = "linux"))]
+            to_sidecar(app, &json!({ "type": "auth_result", "id": id, "ok": false, "why": "unavailable" }));
+        }
+        // The sidecar stopped waiting (its time limit): the prompt goes.
+        #[cfg(target_os = "linux")]
+        Some("auth_cancel") => {
+            if let Some(id) = msg.get("id").and_then(Value::as_str) {
+                auth::cancel(app, id, "timeout");
+            }
+        }
         // `roamies --talk` (Linux): start a take, or send the one under way.
         Some("talk_toggle") => to_voice(app, &json!({ "cmd": "toggle" })),
         // Esc while it's listening: drop the take.
@@ -1731,7 +1782,7 @@ fn main() {
         .manage(TalkChord(Mutex::new(vec!["control".into(), "option".into()])))
         .manage(VoiceModel(Mutex::new(None)))
         .manage(PermGuide(Mutex::new(None)))
-        .invoke_handler(tauri::generate_handler![buddy, ink_wait, set_hot, set_hit_rects, theme_get, dock_get, dock_state, talk_state, sidecar_send, set_typing, perm_status, perm_request, perm_guide, screen_check, open_settings, onboarding_finish, guide_close, panel_hide, esc_watch, relaunch, focus_guide, guide_aside, drag_window, pen_stroke])
+        .invoke_handler(tauri::generate_handler![buddy, ink_wait, set_hot, set_hit_rects, theme_get, dock_get, dock_state, talk_state, sidecar_send, set_typing, perm_status, perm_request, perm_guide, screen_check, open_settings, onboarding_finish, guide_close, panel_hide, esc_watch, relaunch, focus_guide, guide_aside, drag_window, pen_stroke, auth_password, auth_cancel])
         .on_menu_event(|app, e| match e.id.as_ref() {
             "quit" => app.exit(0),
             "restart" => spawn_sidecar(app),
@@ -1830,6 +1881,19 @@ mod tests {
         assert_eq!(safe_call((0, 0, 4608, 2880), (0, 0, 4608, 2880), 2.0, (46.0, 0.0)), call(46, 0, 0, 0, 0, 0));
         assert_eq!(safe_call((0, 0, 4608, 2880), (0, 0, 4608, 2880), 2.0, (0.0, 40.0)), call(0, 0, 40, 0, 0, 0));
         assert_eq!(safe_call((0, 0, 3840, 2160), (0, 64, 3840, 2000), 2.0, (20.0, 60.0)), call(32, 0, 60, 0, 0, 0), "the larger of the two");
+    }
+
+    #[test]
+    fn pages_never_speak_for_the_authentication() {
+        // Only the shell says how a check-it's-you went: a page (the overlay, the panel) that sent the sidecar an
+        // auth_result could approve a money change by itself.
+        for ty in ["auth_result", "auth_open", "auth", "auth_cancel", "authx"] {
+            assert!(!page_may_send(&json!({ "type": ty, "id": "a1", "ok": true })), "{ty}");
+        }
+        for ty in ["answer", "ui_ready", "menu", "panel_key"] {
+            assert!(page_may_send(&json!({ "type": ty })), "{ty}");
+        }
+        assert!(page_may_send(&json!({})), "no type: the sidecar ignores it");
     }
 
     #[test]

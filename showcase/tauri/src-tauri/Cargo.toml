@@ -30,6 +30,9 @@ gtk = "=0.18.2"
 x11rb = "=0.13.2"
 zbus = "=5.19.0"
 gtk-layer-shell = { version = "=0.8.2", features = ["v0_6"] }
+# Checking it's the user before a money change (auth.rs): libpam is opened at run time (dlopen), so no PAM headers or
+# library are needed to build. libc (already in Cargo.lock through Tauri) has dlopen and getpwuid_r.
+libc = "=0.2.191"
 
 [profile.release]
 lto = true

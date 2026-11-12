@@ -104,10 +104,55 @@ export function checkRead(p, home, { recursive = false } = {}) {
   return { ...verdict(SAFE), path: abs };
 }
 
+// ---------- money data ----------
+// The money store, the mail cursors and the bank definitions (<data dir>/money.db with its -wal and -shm, mail.db,
+// banks/) change only through the money tools, which ask for the user's password or finger first for anything
+// protected (authorize below). The agent's own file writes and commands never touch them; reading stays as it is.
+const MONEY_DIRS = new Set(['~/.gg/sidekick']);
+/** Another data folder whose money files are kept the same way (sidekick.mjs: ROAMIES_DATA_DIR). */
+export function protectMoney(dir) { if (dir) MONEY_DIRS.add(slash(dir)); }
+const MONEY_FILE = /^(money|mail)\.db(-wal|-shm|-journal)?$/;
+const MONEY_WHY = (p) => `${p} is Roamies' money data: it changes only through its money tools, after you confirm it's you.`;
+// 'data': a money file, the banks folder or something in it; 'above': a folder that holds them; null: neither.
+function moneyKind(abs, home) {
+  for (const a of bothOf(abs)) {
+    for (const dir of MONEY_DIRS) {
+      const d = norm(dir, home), banks = path.join(d, 'banks');
+      if ((path.dirname(a) === d && MONEY_FILE.test(path.basename(a))) || a === banks || a.startsWith(banks + '/')) return 'data';
+      if (a !== home && a !== '/' && (a === d || d.startsWith(a + '/'))) return 'above';
+    }
+  }
+  return null;
+}
+// Whether one simple command reaches the money data: a path written out anywhere in it (also quoted, in a sqlite
+// URI or after $HOME), an argument that leads there (after a cd too), a wildcard in a money folder, or a money file
+// name in a folder that can't be known ($D/money.db).
+function moneyTouch(text, home, cwd) {
+  for (const dir of MONEY_DIRS) {
+    const d = norm(dir, home), r = rel(d, home), esc = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    if ([d, r].some((f) => f && new RegExp(`${esc(f)}/(?:(?:money|mail)\\.db|banks)(?![\\w.])`).test(text))) return 'data';
+  }
+  let kind = null;
+  for (let a of words(text).slice(1)) {
+    if (a.includes('=')) a = a.split('=').slice(1).join('=');
+    if (/[$`]/.test(a) && MONEY_FILE.test(path.basename(slash(a)))) return 'data';
+    a = a.replace(/^\$\{?HOME\}?(?=\/|$)/, '~');
+    if (!a || a.startsWith('-') || /^[a-z][a-z0-9+.-]*:\/\//i.test(a) || /[$`]/.test(a)) continue;
+    const abs = norm(/^~/.test(a) || isAbs(slash(a)) ? a : path.join(cwd, slash(a)), home);
+    // A wildcard: what its folder is, and a wildcard right in a data folder may match the money files.
+    const up = path.dirname(abs);
+    const k = /[*?[]/.test(a) ? ([...MONEY_DIRS].some((x) => norm(x, home) === up) ? 'data' : moneyKind(up, home)) : moneyKind(abs, home);
+    if (k === 'data') return 'data';
+    kind ??= k;
+  }
+  return kind;
+}
+
 /** write_file. Existing files need a yes; secrets, startup files and system folders never. */
 export function checkWrite(p, home, { exists = false } = {}) {
   home = slash(home);
   const abs = norm(p, home), r = rel(abs, home), all = bothOf(abs);
+  if (moneyKind(abs, home) === 'data') return { ...verdict(BLOCK, MONEY_WHY(p)), path: abs };
   if (all.some((a) => [...SECRET, ...NO_WRITE].some((re) => re.test(rel(a, home)) || re.test(a)))) {
     return { ...verdict(BLOCK, `${p} is a protected file (keys, settings, startup scripts or an app), so I won't write to it.`), path: abs };
   }
@@ -377,6 +422,8 @@ export function classifyCommand(cmd, home, { exists } = {}) {
       else cwd = norm(/^~/.test(t) || isAbs(slash(t)) ? t : path.join(cwd, slash(t)), home);
     }
     if (v.level === BLOCK) return v;
+    // Anything but looking (or anything run inside $( ) or backticks) that reaches the money data never runs.
+    if ((v.level !== SAFE || /\$\(|`/.test(p.text)) && moneyTouch(p.text, home, cwd ?? home)) return verdict(BLOCK, MONEY_WHY('That'));
     if (v.level === ASK && level === SAFE) { level = ASK; reason = v.reason; }
   }
   // Command substitution and background jobs change things in ways the parts don't show.
@@ -451,6 +498,50 @@ export function checkLink(url) {
   if (u.protocol !== 'http:' && u.protocol !== 'https:') return verdict(BLOCK, 'Only web and email links open from a reply.');
   if (u.username || u.password) return verdict(BLOCK, 'Links with passwords in them are blocked.');
   return verdict(SAFE);
+}
+
+// ---------- checking it's the user ----------
+
+/** authorize(reason) → Promise<boolean>, for a protected money change (renaming or deleting a category, changing
+ *  or removing an expense's classification): the shell shows a prompt by the Roamie with the reason and checks the
+ *  user's computer password or fingerprint with the system's PAM (src-tauri/src/auth.rs). True only when the shell
+ *  says this request (its id) succeeded; false when it was cancelled, failed, took longer than timeoutMs, the shell
+ *  never said it showed the prompt within ackMs, or on a system where it isn't available yet (Linux only so far).
+ *  One prompt at a time: a request while another is open is refused (false) at once. The password never comes
+ *  here. authorize.last says how the last one ended ('ok', 'cancelled', 'failed', 'timeout', 'busy', 'unavailable',
+ *  'no_shell'); authorize.heard(m) takes the shell's auth_open and auth_result messages. The log gets the outcome
+ *  and the reason's first few words only. */
+export function createAuthorize({ send, platform = process.platform, timeoutMs = 60_000, ackMs = 5_000, log = () => {}, newId = () => `auth-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}` }) {
+  let open = null;
+  const label = (reason) => String(reason ?? '').split(/\s+/).filter(Boolean).slice(0, 3).join(' ').slice(0, 32);
+  const authorize = (reason) => {
+    const t0 = Date.now(), what = label(reason);
+    const done = (outcome) => { authorize.last = outcome; log('auth', { label: what, outcome, ms: Date.now() - t0 }); return outcome === 'ok'; };
+    if (platform !== 'linux') return Promise.resolve(done('unavailable'));
+    if (open) return Promise.resolve(done('busy'));
+    const id = newId();
+    return new Promise((resolve) => {
+      const me = { id, shown: false };
+      me.finish = (outcome, cancel) => {
+        if (open !== me) return;
+        open = null;
+        clearTimeout(me.ack); clearTimeout(me.limit);
+        if (cancel) send({ type: 'auth_cancel', id });
+        resolve(done(outcome));
+      };
+      me.ack = setTimeout(() => { if (!me.shown) me.finish('no_shell', true); }, ackMs);
+      me.limit = setTimeout(() => me.finish('timeout', true), timeoutMs);
+      open = me;
+      send({ type: 'auth', id, reason: String(reason ?? '').slice(0, 300) });
+    });
+  };
+  authorize.last = null;
+  authorize.heard = (m) => {
+    if (!open || m?.id !== open.id) return;
+    if (m.type === 'auth_open') open.shown = true;
+    else if (m.type === 'auth_result') open.finish(m.ok === true ? 'ok' : typeof m.why === 'string' && m.why && m.why !== 'ok' ? m.why.slice(0, 20) : 'failed');
+  };
+  return authorize;
 }
 
 /** A yes from the user, typed or spoken. */

@@ -61,6 +61,8 @@
       for (const r of Roamie.inkRects?.() ?? []) grown(r);
       const card = Roamie.panelRect?.();
       if (card) grown(card);
+      const auth = Roamie.authRect?.();
+      if (auth) grown(auth);
       // Sampled a little past the canvas: hit areas can reach beyond what's drawn.
       const box = Roamie.hitBox();
       if (box) rects.push(...Roamie.hitRects(Roamie.hitTest, [box[0] - 48, box[1] - 48, box[2] + 96, box[3] + 96]));
@@ -120,7 +122,7 @@
   };
   const finishAsk = (text) => {
     if (!ask) return;
-    const { id, h, label, away } = ask;
+    const { id, h, label, away, auth, ended } = ask;
     ask = null;
     if (label != null) field.setAttribute('aria-label', label);
     field.blur(); field.value = '';
@@ -130,6 +132,25 @@
     // A layer surface: its whole-overlay click area goes with the keyboard, now and not at the next look.
     if (LAYER) hitSync();
     if (id) send({ type: 'answer', id, text });
+    // A check-it's-you prompt closed before the shell said how it went: it is cancelled there.
+    if (auth && !ended) invoke('auth_cancel', { id: auth }).catch(() => {});
+  };
+  // A protected money change: the user's password or finger, checked by the shell (src-tauri/src/auth.rs, PAM). The
+  // prompt is a card by the Roamie (agent-auth.js) that takes the keyboard as a typed question does (and gives it
+  // back the same ways). The password goes from the hidden field straight to the shell (auth_password), never to the
+  // sidecar, and the field is emptied at once; the card is told only how many characters there are.
+  const openAuth = (m) => {
+    const a = getAgent(), card = Roamie.authCard, authId = typeof m.id === 'string' ? m.id : '';
+    if (!a || !card || !authId) { if (authId) invoke('auth_cancel', { id: authId }).catch(() => {}); return; }
+    if (ask) finishAsk(null);
+    endTalk();
+    a.show({ summoned: true });
+    field.value = ''; field.type = 'password';
+    const h = card.open({ reason: String(m.reason ?? ''), finger: !!m.finger, near: () => getAgent()?.pos, onPress: focusField, onCancel: () => { if (ask?.h === h) finishAsk(null); } });
+    ask = { id: null, auth: authId, h, choices: null, sel: -1, label: field.getAttribute('aria-label') };
+    field.setAttribute('aria-label', `Your computer password, to confirm: ${String(m.reason ?? '').slice(0, 200)}`);
+    Promise.resolve(h.closed).then(() => { if (ask?.h === h) finishAsk(null); });
+    focusField();
   };
   const openAsk = (m) => {
     const a = getAgent();
@@ -168,6 +189,16 @@
         ask.sel = ask.sel < 0 ? (back ? n - 1 : 0) : (ask.sel + (back ? n - 1 : 1)) % n;
         ask.h.select(ask.sel);
       } else if ((key === 'enter' || key === ' ') && ask.sel >= 0) finishAsk(ask.sel === 0 ? 'yes' : null);
+      return;
+    }
+    if (ask.auth) {
+      if (e.key === 'Enter' && !e.isComposing) {
+        e.preventDefault();
+        const password = field.value;
+        field.value = ''; syncField();
+        if (password && !ask.ended) invoke('auth_password', { id: ask.auth, password }).catch(() => {});
+      } else if (e.key === 'Escape') { e.preventDefault(); finishAsk(null); }
+      else setTimeout(syncField, 0);
       return;
     }
     setTimeout(syncField, 0); // arrows, Home and End move the caret without an input event
@@ -561,6 +592,15 @@
     }
     if (m.kind === 'say') { if (!ask) getAgent().say(m.text, { mood: m.mood ?? null }); }
     else if (m.kind === 'ask') openAsk(m);
+    else if (m.kind === 'auth') openAuth(m);
+    else if (m.kind === 'auth_state') { if (ask?.auth && ask.auth === m.id) ask.h.state(m); }
+    else if (m.kind === 'auth_end') {
+      // The shell is done with it: accepted shows green for a moment, as the lock does, then it goes.
+      if (!ask?.auth || ask.auth !== m.id) return;
+      const h = ask.h;
+      ask.ended = true; h.end(!!m.ok);
+      setTimeout(() => { if (ask?.h === h) finishAsk(null); }, m.ok ? 470 : 0);
+    }
     else if (m.kind === 'cancel_ask') { if (ask?.id === m.id) { ask.id = null; finishAsk(null); } }
     else if (m.kind === 'agent') onAgent(m.e);
     else if (m.kind === 'voice') { onVoice(m); talkSync(); }

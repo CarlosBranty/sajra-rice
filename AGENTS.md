@@ -51,12 +51,27 @@ without changing the saved setting.
 
 Money (`sidecar/money.mjs`, `sidecar/money/`): expenses read from bank notification mails, kept in
 `<data dir>/money.db` (`node:sqlite`, schema migrations in `money/store.mjs`); questions run as one read-only SELECT
-in a child process with row and time limits (`money/query.mjs`); the agent asks through two tools, `spending` (a month's
-summaries) and `query_expenses` (that SELECT), in `money/tools.mjs`. Banks are data, one JSON per bank in `sidecar/banks/`
+in a child process with row and time limits (`money/query.mjs`). The agent's tools (`money/tools.mjs`) read
+(`spending`, `balance`, `query_expenses`, `categories`, `next_pending_expenses`) and change: categories, classifying
+(learns merchant → category rules), expenses and income added by hand (source `manual`; kind `income`), own accounts
+(a recipient that is the user: their transfers, past and future, become `own_transfer`, the old kind kept in
+`own_from` so unmarking restores it). What undoes a decision of the user's (rename or delete a category, change or
+remove a classification, delete an entry, unmark, mark over classified transfers) first waits for
+`authorize(reason)` and is applied only if, planned again inside the transaction, it is still what was confirmed.
+Income is `transfer_in` and `income`; balance = income − spending. Banks are data, one JSON per bank in `sidecar/banks/`
 (bundled in), and users add or replace them with the same JSON in `<data dir>/banks/` (`otherLabels`: the layout's
 labels that are not read, so an empty value never runs into the next row). Own-account transfers and refused purchases
 (`own_transfer`, `rejected`) are stored as `ignored`; summaries leave out every `NOT_SPENDING` kind. Test fixtures are
 synthetic: copy a real mail's markup, never its names, account numbers or amounts.
+Protected money changes (renaming or deleting a category, changing or removing a classification, deleting a manual
+entry, unmarking an own account) call `authorize(reason)` (`sidecar/safety.mjs` `createAuthorize`). On Linux the shell
+(`src-tauri/src/auth.rs`) shows a prompt by the Roamie (`roamies/agent-auth.js`, host.js) and checks the user's password
+and fingerprint in parallel with PAM, like the glyph lock: `pam_faillock` + `pam_unix`, and `pam_fprintd`. libpam is
+opened at run time; the configs are compiled in and written for each attempt to a 0700 folder under
+`$XDG_RUNTIME_DIR/roamies/` that is removed after (`pam_start_confdir`, Linux-PAM ≥ 1.4; it fails closed without it).
+The password goes from the page to the shell (`auth_password`), never to the sidecar or logs. Only the shell reports
+`auth_result`: `sidecar_send` drops `auth*` from pages. Elsewhere `authorize` returns false. `safety.mjs` blocks agent
+writes and commands that touch `money.db`, `mail.db` or `<data dir>/banks/`.
 Mail (`sidecar/mail/`): bank mails over IMAP with app passwords (Gmail, Yahoo; `imapflow`, `mailparser`), strictly
 read-only: EXAMINE, `BODY.PEEK[]`, a server-side SEARCH for the definitions' exact senders inside a 90-day or UID
 window (cursors with UIDVALIDITY in `<data dir>/mail.db`), never STORE, COPY, MOVE or EXPUNGE. Only the receiving

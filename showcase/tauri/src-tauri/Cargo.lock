@@ -2992,6 +2992,7 @@ dependencies = [
  "global-hotkey",
  "gtk",
  "gtk-layer-shell",
+ "libc",
  "objc2",
  "objc2-service-management",
  "serde_json",

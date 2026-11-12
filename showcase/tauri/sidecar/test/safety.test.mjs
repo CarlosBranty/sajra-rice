@@ -356,3 +356,41 @@ console.log('safety loophole tests: passed');
   assert.notEqual(riskyKind('Delete'), riskyKind('Send'));
   console.log('risky kind tests: passed');
 }
+
+// Money data (<data dir>/money.db with its -wal and -shm, mail.db and banks/): it changes only through the money
+// tools, which ask for the user's password or finger first. The agent's own writes and commands never touch it;
+// reading stays as it was (the query tools read it anyway).
+{
+  const { protectMoney } = await import('../safety.mjs');
+  const bad = [];
+  const want = (label, got, level) => { if (got.level !== level) bad.push(`${label} → ${got.level} (${got.reason}), wanted ${level}`); };
+  for (const [c, level] of [
+    ['sqlite3 ~/.gg/sidekick/money.db "DELETE FROM expenses"', BLOCK], ['sqlite3 ~/.gg/sidekick/money.db .dump', BLOCK],
+    ['rm ~/.gg/sidekick/money.db', BLOCK], ['rm ~/.gg/sidekick/money.db-wal', BLOCK], ['rm -f ~/.gg/sidekick/money.db-shm', BLOCK],
+    ['rm ~/.gg/sidekick/mail.db', BLOCK], ['truncate -s0 ~/.gg/sidekick/mail.db', BLOCK], ['mv ~/.gg/sidekick/money.db /tmp/m.db', BLOCK],
+    ['cp /tmp/old.db ~/.gg/sidekick/money.db', BLOCK], ['echo x > ~/.gg/sidekick/money.db', BLOCK], ['echo x >> /Users/ken/.gg/sidekick/mail.db', BLOCK],
+    ['cd ~/.gg/sidekick && rm money.db', BLOCK], ["cd ~/.gg/sidekick && sqlite3 money.db 'UPDATE expenses SET category_id = 1'", BLOCK],
+    ['sqlite3 $HOME/.gg/sidekick/money.db "DROP TABLE expenses"', BLOCK], ["sqlite3 'file:/Users/ken/.gg/sidekick/money.db?mode=rw' 'DELETE FROM rules'", BLOCK],
+    [`python3 -c "import sqlite3; sqlite3.connect('/Users/ken/.gg/sidekick/money.db').execute('delete from expenses')"`, BLOCK],
+    ['D=~/.gg/sidekick; sqlite3 $D/money.db "DELETE FROM expenses"', BLOCK], ['rm ~/.gg/sidekick/*.db', BLOCK], ['rm ~/.gg/sidekick/m*', BLOCK],
+    ['rm -rf ~/.gg/sidekick/banks', BLOCK], ['cp evil.json ~/.gg/sidekick/banks/bcp.json', BLOCK], ['cp evil.json ~/.gg/sidekick/banks/', BLOCK],
+    ['rm -rf ~/.gg', BLOCK], ['rm -rf ~/.gg/sidekick', BLOCK], ['mv ~/.gg/sidekick ~/old', BLOCK], ['find ~/.gg -name "*.db" -delete', BLOCK],
+    ['ls $(rm ~/.gg/sidekick/money.db)', BLOCK],
+    // Looking stays as it was.
+    ['ls ~/.gg/sidekick', SAFE], ['ls ~/.gg/sidekick/banks', SAFE], ['cat ~/.gg/sidekick/banks/bcp.json', SAFE], ['du -sh ~/.gg/sidekick/money.db', SAFE],
+    // Someone else's money.db is theirs.
+    ['sqlite3 ~/projects/shop/money.db .tables', ASK], ['rm ~/money-notes.txt', ASK],
+  ]) want(`command ${c}`, cmd(c), level);
+  for (const [p, level] of [
+    ['~/.gg/sidekick/money.db', BLOCK], ['~/.gg/sidekick/money.db-wal', BLOCK], ['~/.gg/sidekick/mail.db-shm', BLOCK], ['~/.gg/sidekick/banks/new.json', BLOCK],
+    ['~/projects/shop/money.db', SAFE],
+  ]) want(`write ${p}`, checkWrite(p, HOME), level);
+  assert.match(checkWrite('~/.gg/sidekick/money.db', HOME).reason, /money/i, 'says why');
+  want('read ~/.gg/sidekick/money.db', checkRead('~/.gg/sidekick/money.db', HOME), SAFE);
+  // Another data folder (ROAMIES_DATA_DIR): the same rules there.
+  protectMoney('/Users/ken/data/sidekick');
+  for (const [p, level] of [['/Users/ken/data/sidekick/money.db', BLOCK], ['/Users/ken/data/sidekick/banks/x.json', BLOCK], ['/Users/ken/data/sidekick/notes.txt', SAFE]]) want(`write ${p}`, checkWrite(p, HOME), level);
+  for (const [c, level] of [['rm /Users/ken/data/sidekick/mail.db-wal', BLOCK], ['sqlite3 ~/data/sidekick/money.db "DELETE FROM expenses"', BLOCK], ['rm ~/data/sidekick/notes.txt', ASK]]) want(`command ${c}`, cmd(c), level);
+  assert.deepEqual(bad, []);
+  console.log('money data tests: passed');
+}

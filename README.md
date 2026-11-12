@@ -276,7 +276,9 @@ charge. Add a mail account on the panel's **Money** page: Gmail or Yahoo, with a
   number, in `~/.gg/sidekick/money.db` (on Windows `%USERPROFILE%\.gg\sidekick\money.db`); where reading stopped, in
   `mail.db` beside it. Mail bodies are not kept; a mail it couldn't read is kept as its sender, subject and date, and
   read again (still read-only) when Roamies learns new bank mail layouts. Transfers between your own accounts and
-  purchases the bank refused are kept too, but never count as spending. The
+  purchases the bank refused are kept too, but never count as spending. Renaming or deleting a category, or changing a
+  classification, asks for your computer password or fingerprint first (Linux; checked by the system, never stored).
+  The agent's own file edits and commands can't touch `money.db`, `mail.db` or the bank definitions. The
   app password is only in your Keychain, Windows (encrypted for your account) or your keyring; the settings keep the
   provider and address. The mail goes from your provider to this computer only.
 - **Removing everything:** remove each account on the Money page (that deletes its app password from the keyring),

@@ -2,11 +2,11 @@
 // Talks to the Tauri shell over stdio, one JSON object per line. stdout is the protocol, so all
 // logging goes to stderr. Auth is GG Coder's ~/.gg/auth.json, shared with the app and CLI.
 //
-// in:  {type:'menu', id} {type:'answer', id, text} {type:'ui_ready'}
-// out: {type:'menu', items} {type:'ui', msg} {type:'overlays', ids}
+// in:  {type:'menu', id} {type:'answer', id, text} {type:'ui_ready'} {type:'auth_open'|'auth_result', id, ok, why}
+// out: {type:'menu', items} {type:'ui', msg} {type:'overlays', ids} {type:'auth'|'auth_cancel', id, reason}
 import { Agent } from '@kenkaiiii/gg-agent';
 import { ClaudeCodeAgent, closeSpare } from './claudecode.mjs';
-import { SAFE, checkDrawAction, checkLink, redactArgs } from './safety.mjs';
+import { SAFE, checkDrawAction, checkLink, createAuthorize, protectMoney, redactArgs } from './safety.mjs';
 import { agentEvents, stallWatch } from './agentstream.mjs';
 import {
   AUTH_PROVIDERS, AuthStorage, OPENAI_CHATGPT_KEY, apiKeyStorageKeys, claudeCodeEnv, dualAuthProvider, getAuthStorageKeys, getContextWindow, getDefaultModel, getModel,
@@ -770,8 +770,13 @@ const mail = createMail({
   settings: () => config, save: (patch) => { Object.assign(config, patch); saveConfig(); },
   log: logLine, onChange: () => panel(),
 });
-// Questions about spending: the agent reads the same store, read-only.
-tools.push(...moneyTools({ money: () => mail.money() }));
+// Questions about spending: the agent reads the same store, read-only. Protected changes (renaming or deleting a
+// category, changing or removing a classification) wait for the user's password or finger: authorize asks the shell,
+// which shows the prompt and checks it with PAM (safety.mjs createAuthorize, src-tauri/src/auth.rs); the password
+// never comes here. The agent's own writes and commands never touch the money files (safety.mjs protectMoney).
+const authorize = createAuthorize({ send, log: logLine });
+protectMoney(DIR);
+tools.push(...moneyTools({ money: () => mail.money(), authorize }));
 
 async function pruneLogs() {
   const cutoff = Date.now() - 7 * 864e5;
@@ -1827,6 +1832,8 @@ createInterface({ input: process.stdin }).on('line', (line) => {
   }
   else if (m.type === 'panel_wake' && LINUX) setWakePhrase(m.phrase);
   else if (m.type === 'answer') { pending.get(m.id)?.(m.text ?? null); pending.delete(m.id); }
+  // Only the shell sends these (pages can't: main.rs page_may_send): the prompt is up, and how it went.
+  else if (m.type === 'auth_open' || m.type === 'auth_result') authorize.heard(m);
   else if (m.type === 'ui_ready') {
     retired.then((notes) => { if (notes.length) { retired = Promise.resolve([]); say(`${notes.join(' ')} Do it on the Model page in ${PANEL}.`, 'concerned'); } });
     ui({ kind: 'sound', on: config.sound });

@@ -60,6 +60,10 @@ Each provider's own privacy policy applies to what is sent to it.
   listed by sender and subject so you can check them; their contents are not kept.
 - Nothing from your mail is sent to the AI model unless you ask Roamies about your spending; then it sees the expenses
   it needs to answer, not the mails.
+- Renaming or deleting a category, or changing or removing an expense's classification, first asks for your computer
+  password or your fingerprint (Linux). Your system's own PAM checks it on your computer, as your lock screen does;
+  the password goes from the prompt straight to that check and is wiped after. It is never stored, sent anywhere
+  (the AI model included) or logged; the log only notes that a check was asked and how it went.
 
 ## What's stored on your computer
 
