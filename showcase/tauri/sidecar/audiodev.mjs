@@ -4,6 +4,11 @@
 // moved to the speaker (linux.rs). Parsing is pure (test/audiodev.test.mjs).
 import { execFile } from 'node:child_process';
 
+/** The microphone boosts the Voice page offers, in percent (100: as the microphone comes; voice-win audio.rs). */
+export const MIC_GAINS = [100, 150, 200, 300, 400];
+/** The saved boost, or 100 for anything that isn't one of them. */
+export const micGain = (config) => (MIC_GAINS.includes(config?.micGain) ? config.micGain : 100);
+
 /** A device name as the sound server writes them, or '' (the default) for anything else. */
 export const deviceName = (v) => (typeof v === 'string' && /^[\w.:@+-]{1,200}$/.test(v) ? v : '');
 

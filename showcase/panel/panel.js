@@ -604,7 +604,10 @@
     const a = state.audio, list = (devs, cur) => [{ items: [['', 'System default'], ...devs.map((d) => [d.name, d.label]),
       ...(cur && !devs.some((d) => d.name === cur) ? [[cur, 'Not connected now']] : [])] }];
     const devices = a ? [
-      group('Microphone', 'What I listen with.', null, el('div', { className: 'setting' }, dropdown('Microphone', list(a.mics, a.mic), a.mic, (x) => act(`mic:${x}`), 'mic'))),
+      group('Microphone', 'What I listen with.', null, el('div', { className: 'setting' }, dropdown('Microphone', list(a.mics, a.mic), a.mic, (x) => act(`mic:${x}`), 'mic')),
+        // Louder for me only: the microphone's level for other apps stays as it is.
+        a.gains ? [el('p', { className: 'sub', textContent: 'Boost, if I hear you only up close' }),
+          picks('Microphone boost', a.gains.map((g) => [g, g === 100 ? 'Off' : `${g}%`]), a.gain, (x) => act(`micgain:${x}`), 'micgain')] : null),
       group('Speaker', 'Where my voice plays.', null, el('div', { className: 'setting' }, dropdown('Speaker', list(a.speakers, a.speaker), a.speaker, (x) => act(`speaker:${x}`), 'speaker'))),
     ] : [];
     return [head, ...(on === 'talking' ? talking : on === 'sounds' ? sounds : on === 'devices' ? devices : replies)];
@@ -1071,7 +1074,7 @@
       // Linux's groups too, so every group of the Voice page can be seen here.
       duck: { on: true, level: 30, levels: [10, 20, 30, 50] }, wake: { on: true, phrase: 'oye jarvis' }, pen: { on: true },
       audio: { mics: [{ name: 'mic.internal', label: 'Digital Microphone' }, { name: 'mic.usb', label: 'USB Audio CODEC Analog Stereo' }],
-        speakers: [{ name: 'out.speaker', label: 'Speaker' }, { name: 'out.hdmi1', label: 'HDMI / DisplayPort 1 Output (Stereo)' }], mic: 'mic.usb', speaker: '' },
+        speakers: [{ name: 'out.speaker', label: 'Speaker' }, { name: 'out.hdmi1', label: 'HDMI / DisplayPort 1 Output (Stereo)' }], mic: 'mic.usb', speaker: '', gain: 200, gains: [100, 150, 200, 300, 400] },
       sound: true, actions: false, login: { on: true },
       update: { available: new URLSearchParams(location.search).has('update') ? '0.9.1' : null, installing: false, checking: false, result: null },
       intro: false,

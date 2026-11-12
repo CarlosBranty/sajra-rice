@@ -1709,6 +1709,7 @@ fn handle_sidecar(app: &AppHandle, msg: Value) {
             #[cfg(target_os = "linux")]
             {
                 voice::set_mic(app, voice::device_of(&msg, "mic"));
+                voice::set_gain(app, voice::gain_of(&msg));
                 linux::set_speaker(voice::device_of(&msg, "speaker"));
             }
             if msg.get("enabled").and_then(Value::as_bool) == Some(true) {

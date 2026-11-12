@@ -1373,6 +1373,7 @@ impl Voice {
                     let now = self.now();
                     self.set_speaking(msg.get("on").and_then(Value::as_bool) == Some(true), now);
                 }
+                Some("gain") => audio::set_gain(msg.get("value").and_then(Value::as_f64).unwrap_or(1.0)),
                 Some("chord") => {
                     let mods: Vec<String> = msg.get("mods").and_then(Value::as_array).map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_owned)).collect()).unwrap_or_default();
                     self.set_chord(&mods);

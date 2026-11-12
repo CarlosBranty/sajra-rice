@@ -2,7 +2,7 @@
 // on PipeWire). Run: npm test
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { deviceName, listDevices, parseDevices } from '../audiodev.mjs';
+import { MIC_GAINS, deviceName, listDevices, micGain, parseDevices } from '../audiodev.mjs';
 
 const SOURCES = JSON.stringify([
   { index: 37, name: 'effect_input.dsp.monitor', description: 'Monitor of Speaker DSP', monitor_of_sink: null },
@@ -43,4 +43,11 @@ test('the list comes from pactl, or null with no sound server', async () => {
   assert.equal(got.mics.length, 2);
   assert.equal(got.speakers.length, 2);
   assert.equal(await listDevices(async () => null), null);
+});
+
+test('the microphone boost is one of the offered percents, else none', () => {
+  assert.deepEqual(MIC_GAINS, [100, 150, 200, 300, 400]);
+  assert.equal(micGain({ micGain: 300 }), 300);
+  for (const odd of [undefined, 0, 250, 1000, '200', null]) assert.equal(micGain({ micGain: odd }), 100, String(odd));
+  assert.equal(micGain(undefined), 100);
 });

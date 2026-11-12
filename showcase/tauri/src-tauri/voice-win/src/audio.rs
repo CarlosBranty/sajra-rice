@@ -6,7 +6,7 @@ use crate::{Ev, RATE};
 #[cfg(any(windows, target_os = "linux"))]
 use crate::log;
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex};
 
@@ -246,6 +246,26 @@ pub fn has_input() -> bool {
 }
 
 #[cfg(any(windows, target_os = "linux"))]
+/// How much louder Roamies hears the microphone (the Voice page's boost): 1 is as it comes, up to MAX_GAIN. Only what
+/// this helper hears changes, not the microphone's level for other apps. Changed while it runs (the `gain` command).
+static MIC_GAIN: AtomicU32 = AtomicU32::new(0x3f80_0000); // 1.0
+pub const MAX_GAIN: f32 = 4.0;
+
+/// Sets the boost; anything not a number from 1 to MAX_GAIN is taken as the nearest of those (NaN: 1).
+pub fn set_gain(g: f64) {
+    let g = if g.is_finite() { (g as f32).clamp(1.0, MAX_GAIN) } else { 1.0 };
+    MIC_GAIN.store(g.to_bits(), Ordering::Relaxed);
+}
+
+pub fn gain() -> f32 {
+    f32::from_bits(MIC_GAIN.load(Ordering::Relaxed))
+}
+
+/// A sample made louder, kept within full scale (a loud voice clips rather than wraps).
+pub fn amplify(x: f32, g: f32) -> f32 {
+    (x * g).clamp(-1.0, 1.0)
+}
+
 pub fn open_mic(mut sink: Sink) -> Result<Source, MicError> {
     use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
     use cpal::{FromSample, SampleFormat, SizedSample, I24, U24};
@@ -260,7 +280,8 @@ pub fn open_mic(mut sink: Sink) -> Result<Source, MicError> {
             cfg,
             move |data: &[T], _| {
                 tmp.clear();
-                tmp.extend(data.iter().map(|&s| s.to_sample::<f32>()));
+                let g = gain();
+                tmp.extend(data.iter().map(|&s| amplify(s.to_sample::<f32>(), g)));
                 sink.feed(&tmp);
             },
             move |e| {
@@ -307,6 +328,22 @@ pub fn open_mic(_sink: Sink) -> Result<Source, MicError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_boost_makes_the_microphone_louder_and_clips_at_full_scale() {
+        assert!((amplify(0.1, 3.0) - 0.3).abs() < 1e-6);
+        assert_eq!(amplify(0.5, 3.0), 1.0, "past full scale: clipped");
+        assert_eq!(amplify(-0.5, 3.0), -1.0);
+        assert_eq!(amplify(0.25, 1.0), 0.25, "1: as it comes");
+        set_gain(2.0);
+        assert_eq!(gain(), 2.0);
+        set_gain(9.0);
+        assert_eq!(gain(), MAX_GAIN, "never more than the most");
+        set_gain(0.2);
+        assert_eq!(gain(), 1.0, "never quieter than it comes");
+        set_gain(f64::NAN);
+        assert_eq!(gain(), 1.0);
+    }
 
     #[test]
     fn resamples_48k_to_16k_in_any_chunking() {

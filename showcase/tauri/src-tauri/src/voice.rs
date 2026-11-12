@@ -82,6 +82,29 @@ pub(crate) fn set_mic(app: &AppHandle, mic: String) {
     stop_voice(app);
 }
 
+/// The microphone boost (Linux, the Voice page), in percent: 100 is as the microphone comes.
+#[cfg(target_os = "linux")]
+static MIC_GAIN: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(100);
+
+/// The boost in voice_config: a percent from 100 to 400; anything else is 100.
+#[cfg(target_os = "linux")]
+pub(crate) fn gain_of(msg: &Value) -> u32 {
+    msg.get("micGain").and_then(Value::as_u64).filter(|g| (100..=400).contains(g)).unwrap_or(100) as u32
+}
+
+#[cfg(target_os = "linux")]
+fn gain_cmd(percent: u32) -> Value {
+    json!({ "cmd": "gain", "value": percent as f64 / 100.0 })
+}
+
+/// The sidecar's boost: kept for the helpers that start later, and told to the one running when it changed.
+#[cfg(target_os = "linux")]
+pub(crate) fn set_gain(app: &AppHandle, percent: u32) {
+    if MIC_GAIN.swap(percent, Ordering::Relaxed) != percent {
+        to_voice(app, &gain_cmd(percent));
+    }
+}
+
 /// The sidecar's wake word setting: kept for the helpers that start later, and told to the one running when it
 /// changed.
 #[cfg(target_os = "linux")]
@@ -158,6 +181,11 @@ pub(crate) fn start_voice(app: &AppHandle) {
         let cmds = wake_cmds(&WAKE.lock().unwrap(), true);
         for cmd in cmds {
             to_voice(app, &cmd);
+        }
+        // It starts with no boost.
+        let gain = MIC_GAIN.load(Ordering::Relaxed);
+        if gain != 100 {
+            to_voice(app, &gain_cmd(gain));
         }
     }
     let app = app.clone();
@@ -447,6 +475,16 @@ mod tests {
         assert_eq!(device_of(&json!({ "enabled": true }), "mic"), "", "an older sidecar says nothing: the default");
         assert_eq!(mic_env(""), Vec::<(&str, String)>::new(), "the default: the environment as it is");
         assert_eq!(mic_env(usb), vec![("PIPEWIRE_NODE", usb.to_string()), ("PULSE_SOURCE", usb.to_string())]);
+    }
+
+    #[test]
+    fn the_boost_is_a_percent_from_100_to_400_and_reaches_the_helper_as_a_factor() {
+        assert_eq!(gain_of(&json!({ "micGain": 250 })), 250);
+        for odd in [json!(99), json!(401), json!(-5), json!("200"), json!(2.5), json!(null)] {
+            assert_eq!(gain_of(&json!({ "micGain": odd })), 100, "{odd}: none");
+        }
+        assert_eq!(gain_of(&json!({ "enabled": true })), 100, "an older sidecar says nothing: none");
+        assert_eq!(gain_cmd(250), json!({ "cmd": "gain", "value": 2.5 }));
     }
 
     #[test]
