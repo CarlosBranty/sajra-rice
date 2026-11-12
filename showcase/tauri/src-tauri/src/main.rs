@@ -7,6 +7,8 @@
 mod auth;
 #[cfg(target_os = "linux")]
 mod linux;
+#[cfg(target_os = "linux")]
+mod panel_socket;
 mod sidecar;
 #[cfg(target_os = "macos")]
 mod snapshot;
@@ -124,6 +126,9 @@ fn to_overlays(app: &AppHandle, msg: &Value) {
 }
 
 fn to_panel(app: &AppHandle, msg: &Value) {
+    // Linux: a native panel connected to the socket gets every message too, whether the web panel exists or not.
+    #[cfg(target_os = "linux")]
+    panel_socket::SERVER.send(msg);
     if let Some(w) = app.get_webview_window(PANEL_LABEL) {
         let _ = w.eval(format!("window.__panel&&__panel({msg})"));
     }
@@ -780,6 +785,25 @@ pub(crate) fn hide_panel(app: &AppHandle, why: &'static str) {
 /// Opens the panel by the icon (or closes it if it's open). `toggle`: false from the menu's Open Panel, which
 /// only opens. The icon's rect comes with a click; from the menu, it's asked for.
 fn show_panel(app: &AppHandle, rect: Option<tauri::Rect>, toggle: bool) {
+    // Linux: with a native panel connected (panel_socket.rs), it opens (or a toggle closes) that one instead.
+    #[cfg(target_os = "linux")]
+    {
+        use panel_socket::{route, web_forced, Route, SERVER};
+        match route(SERVER.connected(), web_forced(), SERVER.is_open(), toggle) {
+            Route::Web => {}
+            Route::Open => {
+                SERVER.set_open(true);
+                SERVER.send(&json!({ "kind": "open" }));
+                return;
+            }
+            Route::Close => {
+                SERVER.set_open(false);
+                SERVER.send(&json!({ "kind": "close" }));
+                to_sidecar(app, &json!({ "type": "panel_closed", "why": "icon" }));
+                return;
+            }
+        }
+    }
     let existing = app.get_webview_window(PANEL_LABEL);
     if let Some(w) = &existing {
         if w.is_visible().unwrap_or(false) {
@@ -1866,6 +1890,8 @@ fn main() {
             // Linux: volumes a crash left lowered go back up, before anything can lower them again.
             #[cfg(target_os = "linux")]
             linux::duck_start();
+            #[cfg(target_os = "linux")]
+            panel_socket::start(app.handle());
             build_overlays(app.handle())?;
             pump_cursor(app.handle().clone());
             #[cfg(target_os = "macos")]
@@ -1883,6 +1909,7 @@ fn main() {
             #[cfg(target_os = "linux")]
             if matches!(e, tauri::RunEvent::Exit) {
                 linux::duck_quit();
+                panel_socket::stop();
             }
         });
 }

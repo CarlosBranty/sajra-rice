@@ -114,6 +114,15 @@ through `classifyCommand` like run_command (refused, or asked first); password m
 A yes/no question (Allow / Don't allow) can be answered by voice: while one is open a take doesn't interrupt the
 request or close the bubble (host.js), and its words go to `answerByVoice` (sidekick.mjs, `speech.mjs` `spokenChoice`:
 "sí", "dale", "permite"… allow; "no", "cancela"… decline; anything else leaves the question open).
+Native panel (Linux, `src-tauri/src/panel_socket.rs`): a client such as the glyph dotfiles' Quickshell panel connects to
+`$XDG_RUNTIME_DIR/roamies/panel.sock` (in auth.rs's private 0700 folder, refused if it isn't private; the socket 0600, a
+stale one removed at start). One JSON object per line both ways (other lines ignored; a line over 1 MiB drops the
+connection), one client at a time (a new one replaces the old). The shell sends it every `to_panel` message verbatim
+(whether the web panel exists or not) plus `{"kind":"open"}` / `{"kind":"close"}`; the client sends what the web panel
+passes to `sidecar_send`, through the same `page_may_send` gate, plus `{"type":"panel_hide"}` (it closed; the sidecar
+gets `panel_closed`) and `{"type":"hello"}`. It sends `panel_open` itself when it shows, as the shell does for the web
+panel. While one is connected every way of opening the panel (tray, `hanami --panel`, `panel_show`, a plain second
+launch) opens it instead, and a tray click while it's open closes it; `ROAMIES_WEB_PANEL=1` keeps the web panel.
 Dictation (Linux): `hanami --dictate` on a key's press and `hanami --dictate-end` on its release (two compositor
 binds, `{ release = true }` on the second) hold a take in the running voice helper (`hold` and `release` commands;
 pauses don't end it, MAX_HELD does if the release never comes) whose words are typed where the keyboard is with
