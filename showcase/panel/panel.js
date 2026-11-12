@@ -101,7 +101,7 @@
         on: { click: () => { ui.dd = open ? null : k; render(open ? k : `${k}:opt`); } },
       }, el('span', { className: 'ddval', textContent: cur?.[1] ?? placeholder })),
       open ? el('div', { className: 'ddlist', role: 'listbox', 'aria-label': label },
-        groups.map((g) => (g.label ? [el('p', { className: 'ddgroup', textContent: g.label }), ...g.items.map(opt)] : g.items.map(opt)))) : null);
+        groups.flatMap((g) => [g.label ? el('p', { className: 'ddgroup', textContent: g.label }) : null, ...g.items.map(opt)])) : null);
   };
   // A click anywhere outside the open dropdown closes it.
   document.addEventListener('pointerdown', (e) => { if (ui.dd && !e.target.closest?.('.dd.open')) { ui.dd = null; render(); } }, true);
@@ -1120,7 +1120,7 @@
     }
     if (q.has('checking')) s.update.checking = true;
     if (q.has('uptodate')) s.update.result = { ok: true, at: Date.now() + 60e3 };
-    if (q.get('tab')) setTimeout(() => { if (q.get('mtab')) ui.mtab = q.get('mtab'); if (q.get('vtab')) ui.vtab = q.get('vtab'); if (q.get('atab')) ui.atab = q.get('atab'); if (q.get('ytab')) ui.ytab = q.get('ytab'); if (q.get('mprov')) ui.mprov = q.get('mprov'); show(q.get('tab')); }, 0);
+    if (q.get('tab')) setTimeout(() => { if (q.get('mtab')) ui.mtab = q.get('mtab'); if (q.get('vtab')) ui.vtab = q.get('vtab'); if (q.get('atab')) ui.atab = q.get('atab'); if (q.get('ytab')) ui.ytab = q.get('ytab'); if (q.get('mprov')) ui.mprov = q.get('mprov'); if (q.get('dd')) ui.dd = q.get('dd'); show(q.get('tab')); }, 0);
     setTimeout(() => window.__panel({ kind: 'state', state: s }), 0);
     return async (cmd, args) => {
       if (cmd === 'theme_get') return desk;
