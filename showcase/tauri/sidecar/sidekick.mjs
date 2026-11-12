@@ -43,6 +43,7 @@ import { moneyTools } from './money/tools.mjs';
 import { usageTools } from './usage.mjs';
 import { MIC_GAINS, deviceName, listDevices, micGain } from './audiodev.mjs';
 import { shortcutTools } from './shortcuts.mjs';
+import { desktopTools } from './desktop.mjs';
 import { createActivity } from './activity.mjs';
 import { bindCommands, canCircle, canSnap, circleWords, hasHands, hasHotkeys, hasVoice, linuxSession, micTrouble, mousePen, needsVoiceModel, platformLine, promptWords, seesPointer, stepWaits, onHyprland } from './platform.mjs';
 import { keyCards, keyKinds, signInCards } from './providers.mjs';
@@ -816,7 +817,8 @@ const answeringRoute = () => {
 };
 tools.push(...usageTools({ file: USAGE_FILE, route: answeringRoute }));
 // Hyprland with a Lua config (the glyph dotfiles): the user's own shortcuts, read from keybinds.lua and used by voice.
-if (onHyprland(process.platform)) tools.push(...shortcutTools());
+// and the screens, workspaces and windows, acting in any of them without the user going there (desktop.mjs).
+if (onHyprland(process.platform)) tools.push(...shortcutTools(), ...desktopTools({ ask }));
 function logUsage(rec) {
   const day = new Date().toDateString();
   if (usageToday.day !== day) Object.assign(usageToday, { day, requests: 0, tokens: 0 });

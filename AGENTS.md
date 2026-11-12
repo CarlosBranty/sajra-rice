@@ -92,6 +92,13 @@ opened at run time; the configs are compiled in and written for each attempt to 
 The password goes from the page to the shell (`auth_password`), never to the sidecar or logs. Only the shell reports
 `auth_result`: `sidecar_send` drops `auth*` from pages. Elsewhere `authorize` returns false. `safety.mjs` blocks agent
 writes and commands that touch `money.db`, `mail.db` or `<data dir>/banks/`.
+Desktop (`sidecar/desktop.mjs`, Hyprland): `desktop_windows` lists the screens (the laptop's told apart, numbered left
+to right), the workspace each shows and every window with its address; `window_keys` sends a key combination to one
+window in the background (`hl.dsp.send_shortcut`); `window_type` types into a kitty in the background through its
+remote control (`allow_remote_control socket-only`, `listen_on unix:${XDG_RUNTIME_DIR}/kitty-{kitty_pid}` in kitty.conf;
+text over stdin) and into any other window by focusing it for a moment, then putting back that screen's workspace and
+the user's window; `terminal_output` reads a kitty's screen or last command's output. Text with Enter in a terminal goes
+through `classifyCommand` like run_command (refused, or asked first); password managers and prompts are never typed into.
 Dictation (Linux): `roamies --dictate` on a key's press and `roamies --dictate-end` on its release (two compositor
 binds, `{ release = true }` on the second) hold a take in the running voice helper (`hold` and `release` commands;
 pauses don't end it, MAX_HELD does if the release never comes) whose words are typed where the keyboard is with
