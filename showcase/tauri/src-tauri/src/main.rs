@@ -1744,7 +1744,7 @@ fn handle_sidecar(app: &AppHandle, msg: Value) {
 /// Linux `--snap` (Ask About an Area). They're for binding to keys in the desktop's keyboard settings, the one kind
 /// of global shortcut Wayland lets every app have. None: a plain launch.
 fn cli_action(args: &[String]) -> Option<&'static str> {
-    const ACTIONS: &[&str] = if cfg!(target_os = "linux") { &["summon", "list", "talk", "ask", "panel", "snap", "dictate"] } else { &["summon", "list", "talk", "ask", "panel"] };
+    const ACTIONS: &[&str] = if cfg!(target_os = "linux") { &["summon", "list", "talk", "ask", "panel", "snap", "dictate", "dictate-end"] } else { &["summon", "list", "talk", "ask", "panel"] };
     args.iter().skip(1).find_map(|a| ACTIONS.iter().copied().find(|f| a.strip_prefix("--") == Some(*f)))
 }
 
@@ -1762,6 +1762,8 @@ fn second_launch(app: &AppHandle, args: &[String]) {
         // Linux: dictation types the words where the keyboard is (voice.rs dictate); nothing of the agent's.
         #[cfg(target_os = "linux")]
         Some("dictate") => voice::dictate(app),
+        #[cfg(target_os = "linux")]
+        Some("dictate-end") => voice::dictate_end(app),
         // The sidecar's to do: it knows whether voice is on and ready, and owns the ask bubble and the list.
         Some(action) => to_sidecar(app, &json!({ "type": "cli", "action": action })),
         None if cfg!(target_os = "linux") => show_panel(app, None, false),
@@ -1879,6 +1881,7 @@ mod tests {
         // Ask About an Area: on Linux a flag too (Wayland has no other way to start it); elsewhere a plain launch, as before.
         assert_eq!(cli_action(&args(&["roamies", "--snap"])), if cfg!(target_os = "linux") { Some("snap") } else { None });
         assert_eq!(cli_action(&args(&["roamies", "--dictate"])), if cfg!(target_os = "linux") { Some("dictate") } else { None }, "dictation: Linux only");
+        assert_eq!(cli_action(&args(&["roamies", "--dictate-end"])), if cfg!(target_os = "linux") { Some("dictate-end") } else { None }, "its release");
     }
 
     #[test]

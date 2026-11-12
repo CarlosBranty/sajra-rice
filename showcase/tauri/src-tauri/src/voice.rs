@@ -44,9 +44,10 @@ fn wake_cmds(wake: &(Option<String>, bool), fresh: bool) -> Vec<Value> {
     }
 }
 
-/// Dictation (Linux, `roamies --dictate`): the next take's words are typed where the keyboard is, in whatever app
-/// has it (wtype), instead of going to the agent. Nothing extra runs for it: the voice helper and its model already
-/// listen for the talk shortcut. A second press ends the take, as with `--talk`; so does a pause.
+/// Dictation (Linux): `roamies --dictate` on a key's press and `roamies --dictate-end` on its release (two binds in
+/// the compositor, which sees the keys where no app can): the words said while the key is held are typed where the
+/// keyboard is, in whatever app has it (wtype), instead of going to the agent. Pauses don't end it. Nothing extra
+/// runs for it: the voice helper and its model already listen for the talk shortcut.
 #[cfg(target_os = "linux")]
 static DICTATE: AtomicBool = AtomicBool::new(false);
 
@@ -58,7 +59,13 @@ pub(crate) fn dictate(app: &AppHandle) {
         return;
     }
     DICTATE.store(true, Ordering::Relaxed);
-    to_voice(app, &json!({ "cmd": "toggle" }));
+    to_voice(app, &json!({ "cmd": "hold" }));
+}
+
+/// The dictation key was let go: what was said is read and typed.
+#[cfg(target_os = "linux")]
+pub(crate) fn dictate_end(app: &AppHandle) {
+    to_voice(app, &json!({ "cmd": "release" }));
 }
 
 /// What dictation types for a take's words: them and a space, so the next dictation doesn't run into them; nothing

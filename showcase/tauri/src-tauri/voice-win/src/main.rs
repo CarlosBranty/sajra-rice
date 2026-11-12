@@ -503,6 +503,9 @@ fn read_covers(read_upto: f64, voice_at: f64) -> bool {
 const STALL_ENDS: f64 = 3.0;
 const NOTHING_ENDS: f64 = 12.0;
 const MAX_SESSION: f64 = 60.0;
+// A take held by commands (`hold` … `release`: a key's press and release bound in the compositor, where the keys
+// can't be watched; dictation) ends only on the release, or after this long if the release never comes.
+const MAX_HELD: f64 = 180.0;
 // Keep the mic open a moment after release so a word said while letting go isn't clipped.
 const TAIL: f64 = 0.3;
 const FINAL_TIMEOUT: f64 = 30.0;
@@ -513,6 +516,8 @@ const SPEECH_LEVEL: f64 = 0.15;
 
 struct Voice {
     phase: Phase,
+    /// The take in Holding was started by the `hold` command: only `release` (or MAX_HELD) ends it, never the keys.
+    held_by_cmd: bool,
     chord: u8,
     chord_at: f64,
     listen_at: f64,
@@ -566,6 +571,7 @@ impl Voice {
     fn new(engine: Option<Sender<Job>>, test_audio: Option<PathBuf>, tx: Sender<Ev>) -> Voice {
         Voice {
             phase: Phase::Idle,
+            held_by_cmd: false,
             chord: keys::mask(&["control".into(), "option".into()]).expect("default chord"),
             chord_at: 0.0,
             listen_at: 0.0,
@@ -683,6 +689,13 @@ impl Voice {
                 } else if down && now - self.chord_at >= TAP_LIMIT {
                     self.phase = Phase::Holding;
                     self.show_listening("hold", now);
+                }
+            }
+            Phase::Holding if self.held_by_cmd => {
+                if now - self.listen_at > MAX_HELD {
+                    self.held_by_cmd = false;
+                    self.end("max length", now);
+                    self.finish(TAIL);
                 }
             }
             Phase::Holding => {
@@ -1028,6 +1041,31 @@ impl Voice {
         self.show_listening("handsfree", now);
     }
 
+    /// {"cmd":"hold"}: a take that lasts while a key is held, where the keys can't be watched (the compositor runs a
+    /// command on the press and another on the release). Pauses don't end it; `release` does.
+    fn hold(&mut self) {
+        if self.phase != Phase::Idle {
+            return;
+        }
+        let now = self.now();
+        self.arm(now);
+        self.phase = Phase::Holding;
+        self.held_by_cmd = true;
+        self.blocked = true;
+        self.show_listening("hold", now);
+    }
+
+    /// {"cmd":"release"}: the key of a held take was let go, and what was said goes.
+    fn release(&mut self) {
+        if self.phase != Phase::Holding || !self.held_by_cmd {
+            return;
+        }
+        self.held_by_cmd = false;
+        let now = self.now();
+        self.end("released", now);
+        self.finish(TAIL);
+    }
+
     /// The talk shortcut where the keys can't be watched (`roamies --talk`): the first one starts listening
     /// hands-free, the next one sends what was said (so does a pause).
     fn toggle(&mut self) {
@@ -1368,6 +1406,8 @@ impl Voice {
                 Some("cancel") => self.external_cancel(),
                 Some("listen") => self.listen_now(),
                 Some("toggle") => self.toggle(),
+                Some("hold") => self.hold(),
+                Some("release") => self.release(),
                 Some("wake") => self.set_wake(msg.get("on").and_then(Value::as_bool) == Some(true), msg.get("phrase").and_then(Value::as_str).unwrap_or("")),
                 Some("speaking") => {
                     let now = self.now();
@@ -2026,6 +2066,40 @@ mod tests {
         for wav in [wav, wav_q] {
             let _ = std::fs::remove_file(wav);
         }
+    }
+
+    #[test]
+    fn a_held_take_lasts_through_pauses_until_it_is_released() {
+        let (mut v, jobs, wav) = voice();
+        v.release();
+        assert_eq!(v.phase, Phase::Idle, "a release with nothing held does nothing");
+        v.hold();
+        assert_eq!(said(), vec![json!({ "type": "state", "state": "listening", "mode": "hold" })]);
+        v.on_level(0.5);
+        v.on_text(v.take, "first part".into(), false);
+        let start = v.listen_at;
+        // Long pauses, and keys that can't be seen held: none of it ends a held take.
+        for t in [2.0, 5.0, 20.0, MAX_SESSION + 5.0] {
+            v.tick_keys(start + t);
+            assert_eq!(v.phase, Phase::Holding, "{t}s in");
+        }
+        v.release();
+        assert_eq!(v.phase, Phase::Finishing);
+        v.tail_until = Some(0.0);
+        v.tick();
+        let job = jobs.try_recv().expect("a closing read");
+        assert!(job.last && job.take == v.take);
+        v.on_text(job.take, "first part and the rest".into(), true);
+        let out = said();
+        assert!(out.iter().any(|e| e["type"] == "final" && e["text"] == "first part and the rest"), "{out:?}");
+        assert_eq!(out.last(), Some(&json!({ "type": "state", "state": "idle" })));
+
+        // One never released ends by itself.
+        v.hold();
+        let start = v.listen_at;
+        v.tick_keys(start + MAX_HELD + 1.0);
+        assert_eq!(v.phase, Phase::Finishing, "never released: it ends at the cap");
+        let _ = std::fs::remove_file(wav);
     }
 
     #[test]
