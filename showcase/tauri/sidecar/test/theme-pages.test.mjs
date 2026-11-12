@@ -212,7 +212,9 @@ await rule('on Classic both pages are drawn in the colours they had', () => {
   // :root put in for the variables they already used).
   const HAD = {
     onboarding: { '#000000': 1, '#032722': 1, '#04191b': 1, '#051214': 2, '#061719': 1, '#071a1c': 2, '#0a2a28': 2, '#0b1f21': 1, '#0b2224': 1, '#0b2526': 1, '#0c2a2c': 2, '#0d2e2e': 1, '#0e3a36': 2, '#14302f': 2, '#1c3634': 2, '#1d4a48': 4, '#1e3f3d': 2, '#24675f': 1, '#2b4a48': 1, '#2f6d66': 1, '#2f7c74': 8, '#2fae9b': 1, '#4fbfa9': 5, '#5ce6c9': 1, '#78ffe2': 32, '#7f9f9a': 1, '#8ab8b0': 10, '#a8ffed': 2, '#b4d8d1': 11, '#d6fff6': 1, '#e8fffa': 13, '#ffb4a8': 2, '#ffffff': 3, 'rgba(120,255,226,0.14)': 1, 'rgba(120,255,226,0.26)': 1, 'rgba(120,255,226,0.34)': 1, 'rgba(120,255,226,0.35)': 2, 'rgba(120,255,226,0.55)': 1, 'rgba(120,255,226,0.6)': 2, 'rgba(120,255,226,0.7)': 1, 'rgba(120,255,226,0.75)': 2, 'rgba(120,255,226,0.8)': 2, 'rgba(120,255,226,0.9)': 1, 'rgba(3,39,34,0.6)': 1, 'rgba(40,170,150,0.16)': 1, 'rgba(80,210,190,0.09)': 1 },
-    panel: { '#000000': 4, '#032722': 1, '#051214': 1, '#071a1c': 3, '#08201f': 1, '#0a2a28': 2, '#1d4a48': 6, '#1e3f3d': 1, '#2f7c74': 3, '#5ce6c9': 1, '#78ffe2': 8, '#8ab8b0': 14, '#b4d8d1': 10, '#e8fffa': 12, '#ff8a78': 1, '#ffb4a8': 7, 'rgba(120,255,226,0.05)': 1, 'rgba(120,255,226,0.1)': 2, 'rgba(80,210,190,0.07)': 1 },
+    // panel: the in-page dropdown (panel.js dropdown) draws its list in the panel's own colours: background, border,
+    // text, the accent on the pick and its hover.
+    panel: { '#000000': 4, '#032722': 1, '#051214': 1, '#071a1c': 4, '#08201f': 1, '#0a2a28': 2, '#1d4a48': 6, '#1e3f3d': 1, '#2f7c74': 3, '#5ce6c9': 1, '#78ffe2': 9, '#8ab8b0': 14, '#b4d8d1': 13, '#e8fffa': 14, '#ff8a78': 1, '#ffb4a8': 7, 'rgba(120,255,226,0.05)': 1, 'rgba(120,255,226,0.1)': 3, 'rgba(80,210,190,0.07)': 1 },
   };
   const vars = root('onboarding'), classic = TH.cssVars(TH.schemes.classic);
   for (const [name, list] of Object.entries(DECLS)) {

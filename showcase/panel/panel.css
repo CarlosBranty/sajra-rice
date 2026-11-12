@@ -241,6 +241,26 @@ html, body { height: 100%; background: transparent; }
   background: var(--ink-2); -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' shape-rendering='crispEdges'%3E%3Cpath d='M0 0h2v2H0zM2 2h2v2H2zM4 4h2v2H4zM6 2h2v2H6zM8 0h2v2H8z'/%3E%3C/svg%3E") no-repeat; mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' shape-rendering='crispEdges'%3E%3Cpath d='M0 0h2v2H0zM2 2h2v2H2zM4 4h2v2H4zM6 2h2v2H6zM8 0h2v2H8z'/%3E%3C/svg%3E") no-repeat;
 }
 .body select option { background: var(--panel); color: var(--ink); }
+/* The in-page dropdown (panel.js dropdown): the field is a button, its list opens under it over what follows. */
+.dd { position: relative; display: flex; flex: 1 1 auto; min-width: 0; }
+.body .ddbtn {
+  display: flex; align-items: center; min-width: 0; flex: 1; position: relative; text-align: left; cursor: pointer;
+  font-size: var(--t-small); padding: 8px 30px 8px 10px; line-height: 1.25; color: var(--ink);
+  font-family: var(--mono); font-weight: 500; font-stretch: 87.5%; background: none; border: 0;
+}
+.ddval { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ddlist {
+  position: absolute; z-index: 20; top: calc(100% + 4px); left: 0; right: 0; max-height: 240px; overflow-y: auto;
+  background: var(--panel); border: 1px solid var(--ink-2); padding: 4px; display: flex; flex-direction: column;
+}
+.ddgroup { margin: 6px 6px 2px; font-size: var(--t-small); color: var(--ink-2); }
+.ddopt {
+  text-align: left; border: 0; background: none; color: var(--ink); padding: 6px 8px; cursor: pointer;
+  font-family: var(--mono); font-size: var(--t-small); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.ddopt[aria-selected="true"] { box-shadow: inset 2px 0 0 var(--accent); }
+.ddopt:hover, .ddopt:focus-visible { background: rgba(var(--accent-rgb), 0.1); outline: none; }
+.ddopt:disabled { color: var(--ink-2); cursor: default; }
 .body select:focus-visible { outline: none; }
 .keyform { display: flex; gap: 6px; }
 .keyform[hidden] { display: none; }

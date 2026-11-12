@@ -74,6 +74,38 @@
       on: { click: () => v !== value && pick(v) },
     }, el('span', { className: 'px cap', textContent: text }), tips?.[v] ? el('span', { className: 'sr-only', id: `tip-${k}-${v}`, textContent: tips[v] }) : null)));
 
+  // A dropdown drawn in the page. Not a <select>: its list is a popup window of its own, which takes the keyboard from
+  // the panel, and on Linux the panel closes when it loses the keyboard (main.rs), so every pick closed it.
+  // groups: [{ label?, items: [[value, text, disabled?]] }]; one open at a time (ui.dd).
+  const dropdown = (label, groups, value, pick, k, placeholder = 'Pick one') => {
+    const all = groups.flatMap((g) => g.items);
+    const open = ui.dd === k, cur = all.find(([v]) => v === value);
+    const close = (focus = true) => { ui.dd = null; render(focus ? k : undefined); };
+    const move = (e, by) => {
+      const opts = [...e.currentTarget.closest('.dd').querySelectorAll('[role="option"]:not([disabled])')];
+      const i = opts.indexOf(document.activeElement);
+      opts[Math.max(0, Math.min(opts.length - 1, (i < 0 ? opts.findIndex((o) => o.getAttribute('aria-selected') === 'true') : i) + by))]?.focus();
+    };
+    const keys = (e) => {
+      if (e.key === 'Escape' && open) { e.preventDefault(); e.stopPropagation(); close(); }
+      else if (e.key === 'ArrowDown' || e.key === 'ArrowUp') { e.preventDefault(); if (!open) { ui.dd = k; render(`${k}:opt`); } else move(e, e.key === 'ArrowDown' ? 1 : -1); }
+    };
+    const opt = ([v, text, off]) => el('button', {
+      className: 'ddopt', type: 'button', role: 'option', 'aria-selected': String(v === value), disabled: !!off,
+      'data-k': v === value ? `${k}:opt` : null, title: text,
+      on: { click: () => { ui.dd = null; if (v !== value) pick(v); render(k); } },
+    }, text);
+    return el('div', { className: `dd${open ? ' open' : ''}`, on: { keydown: keys } },
+      el('button', {
+        className: 'px field select ddbtn', type: 'button', 'aria-haspopup': 'listbox', 'aria-expanded': String(open), 'aria-label': `${label}: ${cur?.[1] ?? placeholder}`, 'data-k': k,
+        on: { click: () => { ui.dd = open ? null : k; render(open ? k : `${k}:opt`); } },
+      }, el('span', { className: 'ddval', textContent: cur?.[1] ?? placeholder })),
+      open ? el('div', { className: 'ddlist', role: 'listbox', 'aria-label': label },
+        groups.map((g) => (g.label ? [el('p', { className: 'ddgroup', textContent: g.label }), ...g.items.map(opt)] : g.items.map(opt)))) : null);
+  };
+  // A click anywhere outside the open dropdown closes it.
+  document.addEventListener('pointerdown', (e) => { if (ui.dd && !e.target.closest?.('.dd.open')) { ui.dd = null; render(); } }, true);
+
   // ---- tooltip: one box, by whatever has a data-tip under the pointer or keyboard focus ----
   // It can be hovered (it sits right against its control), Esc closes it, and it never covers its control.
   let tipFor = null, tipTimer = 0;
@@ -431,10 +463,7 @@
   function modelPage() {
     const on = state.providers.filter((p) => p.on);
     const model = state.model ? `${state.model.provider}:${state.model.id}` : '';
-    const select = on.length ? el('span', { className: 'px field select' },
-      el('select', { 'aria-label': 'Model', 'data-k': 'model', on: { change: (e) => act(`model:${e.target.value}`) } },
-        model ? null : el('option', { value: '', textContent: 'Pick a model', disabled: true, selected: true }),
-        on.map((p) => el('optgroup', { label: p.label }, p.models.map((m) => el('option', { value: `${p.id}:${m.id}`, textContent: m.name, selected: `${p.id}:${m.id}` === model })))))) : null;
+    const select = on.length ? dropdown('Model', on.map((p) => ({ label: p.label, items: p.models.map((m) => [`${p.id}:${m.id}`, m.name]) })), model, (v) => act(`model:${v}`), 'model', 'Pick a model') : null;
     const accounts = state.providers.filter((p) => p.on || p.method);
     const { box, nav } = paged('accounts', accounts, (p) => el('li', { className: `acct${ui.key === p.id ? ' open' : ''}` },
       el('div', { className: 'setting' },
@@ -592,9 +621,7 @@
   // Before a protected change (the sidecar asks for the password or fingerprint): where the prompt shows.
   const askFirst = () => note('Confirm it is you: the prompt is by your Roamie.');
   const clearSel = () => { ui.msel.clear(); ui.mnew = false; };
-  const choose = (label, list, value, pick, k) => el('span', { className: 'px field select' },
-    el('select', { 'aria-label': label, 'data-k': k, on: { change: (e) => pick(e.target.value) } },
-      list.map(([v, text, off]) => el('option', { value: v, textContent: text, selected: v === value, disabled: off }))));
+  const choose = (label, list, value, pick, k) => dropdown(label, [{ items: list }], value, pick, k);
   let findTimer = 0;
 
   function moneyPage() {
