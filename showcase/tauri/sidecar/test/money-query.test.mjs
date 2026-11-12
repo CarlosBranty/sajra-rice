@@ -4,7 +4,8 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { checkSelect } from '../money/query.mjs';
+import { spawn } from 'node:child_process';
+import { QUERY_CHILD, checkSelect } from '../money/query.mjs';
 import { openMoney } from '../money.mjs';
 
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'roamies-money-query-'));
@@ -90,6 +91,20 @@ assert.deepEqual(m.balance('2026-09'), []);
 assert.deepEqual(m.compareMonths('2026-11').current, [{ currency: 'PEN', total: 8500, count: 3 }, { currency: 'USD', total: 999, count: 1 }], 'income is not spending');
 assert.throws(() => m.balance('noviembre'), /month/);
 assert.throws(() => m.totalsByCategory('noviembre'), /month/);
+
+// The query process stops by itself at its time limit, even when nobody is left to stop it (the app quit or was
+// restarted while a query ran: it once kept a core busy for half a day).
+{
+  const dbFile = path.join(TMP, 'money.db');
+  const child = spawn(process.execPath, ['--disable-warning=ExperimentalWarning', '-e', QUERY_CHILD], { stdio: ['pipe', 'pipe', 'ignore'] });
+  const t0 = Date.now();
+  const gone = new Promise((r) => child.on('exit', r));
+  child.stdin.end(JSON.stringify({ file: dbFile, sql: 'WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM c) SELECT count(*) FROM c', maxRows: 1, timeoutMs: 300 }));
+  const stopped = await Promise.race([gone.then(() => true), new Promise((r) => setTimeout(() => r(false), 3000))]);
+  if (!stopped) child.kill('SIGKILL');
+  assert.ok(stopped, 'the query process ended on its own');
+  assert.ok(Date.now() - t0 < 2000, `ended near its limit (${Date.now() - t0} ms)`);
+}
 
 m.close();
 console.log('money-query: ok');

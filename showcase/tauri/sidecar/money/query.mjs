@@ -1,6 +1,6 @@
 // Questions about spending, answered exactly. `runQuery` runs one SELECT in a separate Node process on a read-only
 // connection whose authorizer allows reading and nothing else (no writes, ATTACH or PRAGMA), with a row cap and a
-// time limit (the process is killed: SQLite cannot be interrupted from another thread here). The summaries are fixed
+// time limit (the process ends: SQLite cannot be interrupted from another thread here). The summaries are fixed
 // queries over the same rules: spending is every kind but NOT_SPENDING (money received, moved between the user's own
 // accounts, purchases refused), income is INCOME_KINDS (received by mail, added by hand), ignored rows left out of
 // both, per currency.
@@ -18,30 +18,41 @@ export function checkSelect(sql) {
   return null;
 }
 
-// Runs in the child: reads { file, sql, maxRows } from stdin, writes { ok, columns, rows, truncated } or { ok, error }.
-const CHILD = `
+// Runs in the child: reads { file, sql, maxRows, timeoutMs } from stdin, writes { ok, columns, rows, truncated } or
+// { ok, error }. The query runs on a worker thread, so the child's own thread stays free to end the whole process at
+// the time limit: the parent kills it then too, but a parent that quit or was restarted meanwhile no longer can.
+const WORKER = `
 const { DatabaseSync, constants: C } = require('node:sqlite');
+const { parentPort, workerData: { file, sql, maxRows } } = require('node:worker_threads');
+try {
+  const db = new DatabaseSync(file, { readOnly: true });
+  const allowed = new Set([C.SQLITE_SELECT, C.SQLITE_READ, C.SQLITE_FUNCTION, C.SQLITE_RECURSIVE]);
+  db.setAuthorizer((action) => (allowed.has(action) ? C.SQLITE_OK : C.SQLITE_DENY));
+  const stmt = db.prepare(sql);
+  const trim = (s) => s.trim().replace(/;\\s*$/, '').trim();
+  if (trim(stmt.sourceSQL) !== trim(sql)) throw new Error('only one statement is allowed');
+  const rows = [];
+  let truncated = false;
+  for (const row of stmt.iterate()) {
+    if (rows.length >= maxRows) { truncated = true; break; }
+    rows.push({ ...row });
+  }
+  parentPort.postMessage({ ok: true, columns: stmt.columns().map((c) => c.name), rows, truncated });
+} catch (e) {
+  parentPort.postMessage({ ok: false, error: e.message });
+}`;
+export const QUERY_CHILD = `
+const { Worker } = require('node:worker_threads');
 let input = '';
 process.stdin.setEncoding('utf8').on('data', (d) => { input += d; }).on('end', () => {
-  const out = (o) => process.stdout.write(JSON.stringify(o));
-  try {
-    const { file, sql, maxRows } = JSON.parse(input);
-    const db = new DatabaseSync(file, { readOnly: true });
-    const allowed = new Set([C.SQLITE_SELECT, C.SQLITE_READ, C.SQLITE_FUNCTION, C.SQLITE_RECURSIVE]);
-    db.setAuthorizer((action) => (allowed.has(action) ? C.SQLITE_OK : C.SQLITE_DENY));
-    const stmt = db.prepare(sql);
-    const trim = (s) => s.trim().replace(/;\\s*$/, '').trim();
-    if (trim(stmt.sourceSQL) !== trim(sql)) throw new Error('only one statement is allowed');
-    const rows = [];
-    let truncated = false;
-    for (const row of stmt.iterate()) {
-      if (rows.length >= maxRows) { truncated = true; break; }
-      rows.push(row);
-    }
-    out({ ok: true, columns: stmt.columns().map((c) => c.name), rows, truncated });
-  } catch (e) {
-    out({ ok: false, error: e.message });
-  }
+  const out = (o) => process.stdout.write(JSON.stringify(o), () => process.exit(0));
+  let job;
+  try { job = JSON.parse(input); } catch (e) { out({ ok: false, error: e.message }); return; }
+  // process.exit would wait for the worker, which a running query never lets go: the process ends itself outright.
+  setTimeout(() => process.kill(process.pid, 'SIGKILL'), Math.max(100, Number(job.timeoutMs) || 3000) + 250).unref();
+  const w = new Worker(${JSON.stringify(WORKER)}, { eval: true, workerData: { file: job.file, sql: job.sql, maxRows: job.maxRows } });
+  w.on('message', out);
+  w.on('error', (e) => out({ ok: false, error: e.message }));
 });`;
 
 const MAX_OUTPUT = 4 * 1024 * 1024;
@@ -52,7 +63,7 @@ export function runQuery(file, sql, { maxRows = 200, timeoutMs = 3000 } = {}) {
   if (why) return Promise.reject(new Error(why));
   maxRows = Math.max(1, Math.min(Number(maxRows) || 200, 1000));
   return new Promise((resolve, reject) => {
-    const child = spawn(process.execPath, ['--disable-warning=ExperimentalWarning', '-e', CHILD], { stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
+    const child = spawn(process.execPath, ['--disable-warning=ExperimentalWarning', '-e', QUERY_CHILD], { stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
     let out = '', err = '', done = false;
     const finish = (fn, value) => { if (!done) { done = true; clearTimeout(timer); fn(value); } };
     const timer = setTimeout(() => {
@@ -71,7 +82,7 @@ export function runQuery(file, sql, { maxRows = 200, timeoutMs = 3000 } = {}) {
       if (r.ok) finish(resolve, { columns: r.columns, rows: r.rows, truncated: r.truncated });
       else finish(reject, new Error(r.error));
     });
-    child.stdin.end(JSON.stringify({ file, sql, maxRows }));
+    child.stdin.end(JSON.stringify({ file, sql, maxRows, timeoutMs }));
   });
 }
 
