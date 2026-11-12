@@ -97,6 +97,8 @@ export function createMail({ secrets, settings, save, openMoney, dir, server = n
     runNow: () => tick(true),
     /** Expenses waiting for the user after the last run. */
     pending: () => pending,
+    /** The money store, opened on first use (the agent's money tools share it with the reader). */
+    money: () => store().money,
     /** For the panel: each account and how its last check went. */
     list: () => accounts().map((a) => ({ ...a, label: PROVIDERS[a.provider].label, status: status.get(a.id) ? { state: status.get(a.id).state, text: status.get(a.id).text, at: status.get(a.id).at ?? null } : null })),
     every: () => every() / 60_000,

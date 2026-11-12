@@ -38,6 +38,7 @@ import { DEFAULT_VOICE, FISH_CHOICES } from './fish.mjs';
 import { createSecrets, retryLoad } from './secrets.mjs';
 import { EVERY as MAIL_EVERY, createMail } from './mail/service.mjs';
 import { openMoney } from './money.mjs';
+import { moneyTools } from './money/tools.mjs';
 import { createActivity } from './activity.mjs';
 import { bindCommands, canCircle, canSnap, circleWords, hasHands, hasHotkeys, hasVoice, linuxSession, micTrouble, mousePen, needsVoiceModel, platformLine, promptWords, seesPointer, stepWaits } from './platform.mjs';
 import { keyCards, keyKinds, signInCards } from './providers.mjs';
@@ -769,6 +770,8 @@ const mail = createMail({
   settings: () => config, save: (patch) => { Object.assign(config, patch); saveConfig(); },
   log: logLine, onChange: () => panel(),
 });
+// Questions about spending: the agent reads the same store, read-only.
+tools.push(...moneyTools({ money: () => mail.money() }));
 
 async function pruneLogs() {
   const cutoff = Date.now() - 7 * 864e5;

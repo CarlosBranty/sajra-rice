@@ -51,7 +51,8 @@ without changing the saved setting.
 
 Money (`sidecar/money.mjs`, `sidecar/money/`): expenses read from bank notification mails, kept in
 `<data dir>/money.db` (`node:sqlite`, schema migrations in `money/store.mjs`); questions run as one read-only SELECT
-in a child process with row and time limits (`money/query.mjs`). Banks are data, one JSON per bank in `sidecar/banks/`
+in a child process with row and time limits (`money/query.mjs`); the agent asks through two tools, `spending` (a month's
+summaries) and `query_expenses` (that SELECT), in `money/tools.mjs`. Banks are data, one JSON per bank in `sidecar/banks/`
 (bundled in), and users add or replace them with the same JSON in `<data dir>/banks/` (`otherLabels`: the layout's
 labels that are not read, so an empty value never runs into the next row). Own-account transfers and refused purchases
 (`own_transfer`, `rejected`) are stored as `ignored`; summaries leave out every `NOT_SPENDING` kind. Test fixtures are
