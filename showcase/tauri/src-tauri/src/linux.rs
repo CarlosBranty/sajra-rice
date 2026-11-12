@@ -2500,6 +2500,9 @@ mod tests {
         served.join().unwrap();
 
         assert_eq!(compositor_offers(&scratch("wl-none").join("wayland-9"), LAYER), None, "no socket there");
+        for name in ["wl-offers", "wl-lacks", "wl-hangs-up", "wl-nonsense", "wl-none"] {
+            let _ = std::fs::remove_dir_all(scratch(name));
+        }
     }
 
     #[test]
