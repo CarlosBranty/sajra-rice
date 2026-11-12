@@ -8,10 +8,14 @@ import bcp from '../banks/bcp.json' with { type: 'json' };
 import falabella from '../banks/falabella.json' with { type: 'json' };
 
 export const KINDS = ['purchase', 'transfer_out', 'transfer_in', 'yape_out', 'withdrawal', 'payment', 'own_transfer', 'rejected'];
-// Never spending: money received, money moved between the user's own accounts, and purchases the bank refused.
-// The last two are stored as 'ignored' (kept as a record, never offered for classification).
-export const NOT_SPENDING = ['transfer_in', 'own_transfer', 'rejected'];
+// Never spending: money received (by mail, or income the user added by hand: the kind 'income', never in a mail
+// definition), money moved between the user's own accounts, and purchases the bank refused. The middle two are stored
+// as 'ignored' (kept as a record, never offered for classification). Income is INCOME_KINDS not 'ignored'.
+export const NOT_SPENDING = ['transfer_in', 'own_transfer', 'rejected', 'income'];
 export const IGNORED_KINDS = ['own_transfer', 'rejected'];
+export const INCOME_KINDS = ['transfer_in', 'income'];
+// The kinds that move money to or from a recipient the user can mark as their own account (→ own_transfer).
+export const OWN_KINDS = ['transfer_out', 'yape_out', 'transfer_in'];
 // amount and date are always required; the rest only when the definition says so (all fields are required
 // unless marked "optional": true).
 export const FIELDS = ['amount', 'fee', 'date', 'time', 'merchant', 'account', 'operation', 'note'];

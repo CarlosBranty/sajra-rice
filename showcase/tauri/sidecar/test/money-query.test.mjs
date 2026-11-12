@@ -78,6 +78,17 @@ assert.deepEqual(m.compareMonths('2026-11'), {
   before: [{ currency: 'PEN', total: 15000, count: 2 }],
 });
 assert.equal(m.compareMonths('2026-01').previous, '2025-12');
+
+// Balance: income (money received by mail, and income added by hand) minus spending, per currency, with the parts.
+add({ occurredAt: '2026-11-10T09:00:00-05:00', amount: 350000, merchant: 'Sueldo', merchantKey: 'sueldo', operation: null, messageId: null, source: 'manual', kind: 'income', status: 'classified' });
+assert.deepEqual(m.balance('2026-11'), [
+  { currency: 'PEN', income: 400000, income_count: 2, spending: 8500, spending_count: 3, balance: 391500 },
+  { currency: 'USD', income: 0, income_count: 0, spending: 999, spending_count: 1, balance: -999 },
+]);
+assert.deepEqual(m.balance('2026-10'), [{ currency: 'PEN', income: 0, income_count: 0, spending: 15000, spending_count: 2, balance: -15000 }]);
+assert.deepEqual(m.balance('2026-09'), []);
+assert.deepEqual(m.compareMonths('2026-11').current, [{ currency: 'PEN', total: 8500, count: 3 }, { currency: 'USD', total: 999, count: 1 }], 'income is not spending');
+assert.throws(() => m.balance('noviembre'), /month/);
 assert.throws(() => m.totalsByCategory('noviembre'), /month/);
 
 m.close();

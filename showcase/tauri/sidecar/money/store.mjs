@@ -4,13 +4,14 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
-import { IGNORED_KINDS } from './banks.mjs';
+import { IGNORED_KINDS, NOT_SPENDING, OWN_KINDS } from './banks.mjs';
 import { maskAccount, merchantKey } from './parse.mjs';
 
 export const DEFAULT_CATEGORIES = ['Comida', 'Supermercado', 'Transporte', 'Viajes', 'Servicios', 'Salud', 'Entretenimiento', 'Compras', 'Educación', 'Transferencias', 'Otros'];
 
-// The expenses table with the kinds a schema version allows, and the indexes and triggers that hang on it.
-const expensesTable = (name, kinds) => `
+// The expenses table with the kinds a schema version allows (and the columns it adds), and the indexes and triggers
+// that hang on it.
+const expensesTable = (name, kinds, extra = '') => `
       CREATE TABLE ${name} (
         id INTEGER PRIMARY KEY,
         source TEXT NOT NULL,
@@ -30,7 +31,7 @@ const expensesTable = (name, kinds) => `
         note TEXT,
         previous_amount INTEGER,
         created_at TEXT NOT NULL,
-        updated_at TEXT
+        updated_at TEXT${extra}
       );`;
 const EXPENSES_INDEXES = `
       CREATE UNIQUE INDEX expenses_operation ON expenses(source, operation) WHERE operation IS NOT NULL;
@@ -93,10 +94,30 @@ export const MIGRATIONS = [
       ALTER TABLE unparsed ADD COLUMN definitions TEXT;
     `);
   },
+  // 3: the kind income (added by hand); own_from, the kind a transfer had before its recipient was marked as the user's
+  // own account (it is then own_transfer and ignored; unmarking puts the kind back); the own accounts. Copied as in 2.
+  (db) => {
+    db.exec(`
+      ${expensesTable('expenses_v3', ['purchase', 'transfer_out', 'transfer_in', 'yape_out', 'withdrawal', 'payment', 'own_transfer', 'rejected', 'income'],
+        `,
+        own_from TEXT CHECK (own_from IN ('transfer_out', 'yape_out', 'transfer_in'))`)}
+      INSERT INTO expenses_v3 SELECT *, NULL FROM expenses;
+      DROP TABLE expenses;
+      ALTER TABLE expenses_v3 RENAME TO expenses;
+      ${EXPENSES_INDEXES}
+      ${EXPENSES_TRIGGERS}
+      CREATE TABLE own_accounts (
+        merchant_key TEXT PRIMARY KEY,
+        created_at TEXT NOT NULL
+      );
+    `);
+  },
 ];
 export const SCHEMA_VERSION = MIGRATIONS.length;
 
+// Runs fn in one transaction; inside another one it is part of that one.
 function transaction(db, fn) {
+  if (db.isTransaction) return fn();
   db.exec('BEGIN IMMEDIATE');
   try {
     const r = fn();
@@ -143,6 +164,19 @@ export function openStore(file) {
     return row.name;
   };
   const ruleFor = (key) => (key ? db.prepare('SELECT category FROM rules WHERE merchant_key = ?').get(key)?.category ?? null : null);
+  const kinds = (list) => list.map((k) => `'${k}'`).join(', ');
+  const isOwn = (key) => !!key && !!db.prepare('SELECT 1 FROM own_accounts WHERE merchant_key = ?').get(key);
+  // An expense marked as moved to the user's own account goes back to its kind; it waits again unless it has a category.
+  const UNMARK = "kind = own_from, own_from = NULL, status = CASE WHEN category IS NULL THEN 'pending' ELSE 'classified' END";
+
+  /** The merchant_key a name the user or the agent says stands for: the exact key when one is stored, else its key. */
+  function recipientKey(name) {
+    const exact = String(name ?? '').trim().toLowerCase();
+    const known = exact && db.prepare('SELECT 1 FROM expenses WHERE merchant_key = ? UNION SELECT 1 FROM own_accounts WHERE merchant_key = ?').get(exact, exact);
+    const key = known ? exact : merchantKey(name);
+    if (!key) throw new Error('no recipient name');
+    return key;
+  }
 
   /** Stores a parsed expense once. Same Message-ID → duplicate. Same bank operation number → duplicate, unless the
    * mail is newer and the amount changed (e-commerce purchases settle later): then the amount is replaced, the old
@@ -160,12 +194,15 @@ export function openStore(file) {
         return { action: 'updated', id: same.id };
       }
       const key = e.merchantKey ?? merchantKey(e.merchant);
-      const ignored = IGNORED_KINDS.includes(e.kind);
-      const category = ignored || e.status === 'needs_review' ? null : ruleFor(key);
+      const own = OWN_KINDS.includes(e.kind) && isOwn(key);
+      const kind = own ? 'own_transfer' : e.kind;
+      const ignored = IGNORED_KINDS.includes(kind);
+      const category = NOT_SPENDING.includes(kind) || e.status === 'needs_review' ? null : ruleFor(key);
       const { lastInsertRowid } = db.prepare(`INSERT INTO expenses (source, kind, occurred_at, amount, currency, fee, merchant, merchant_key, account,
-          operation, message_id, mail_date, category, status, note, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-        .run(e.source, e.kind, e.occurredAt, e.amount, e.currency, e.fee ?? null, e.merchant ?? null, key || null, maskAccount(e.account ?? null),
-          e.operation ?? null, e.messageId ?? null, e.mailDate ?? null, category, ignored ? 'ignored' : category ? 'classified' : (e.status ?? 'pending'), e.note ?? null, now());
+          operation, message_id, mail_date, category, status, note, created_at, own_from) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+        .run(e.source, kind, e.occurredAt, e.amount, e.currency, e.fee ?? null, e.merchant ?? null, key || null, maskAccount(e.account ?? null),
+          e.operation ?? null, e.messageId ?? null, e.mailDate ?? null, category, ignored ? 'ignored' : category ? 'classified' : (e.status ?? 'pending'), e.note ?? null, now(),
+          own ? e.kind : null);
       return { action: 'inserted', id: Number(lastInsertRowid) };
     });
   }
@@ -185,6 +222,43 @@ export function openStore(file) {
       }
     });
     return name;
+  }
+
+  /** Takes an expense's category away: it waits to be classified again (rules stay). */
+  function unclassify(id) {
+    const r = db.prepare("UPDATE expenses SET category = NULL, status = CASE WHEN status = 'classified' THEN 'pending' ELSE status END, updated_at = ? WHERE id = ?").run(now(), id);
+    if (!r.changes) throw new Error(`no expense ${id}`);
+  }
+
+  /** Deletes a category: its expenses wait to be classified again and its rules go. → { expenses, rules } changed. */
+  function deleteCategory(name) {
+    const n = canonical(name);
+    return transaction(db, () => {
+      const expenses = db.prepare("UPDATE expenses SET category = NULL, status = CASE WHEN status = 'classified' THEN 'pending' ELSE status END, updated_at = ? WHERE category = ?").run(now(), n).changes;
+      const rules = db.prepare('DELETE FROM rules WHERE category = ?').run(n).changes;
+      db.prepare('DELETE FROM categories WHERE name = ?').run(n);
+      return { expenses: Number(expenses), rules: Number(rules) };
+    });
+  }
+
+  /** Marks a recipient (a merchant_key, or a name) as the user's own account: their transfers, past and future, are
+   * own_transfer (moved between the user's own accounts: neither spending nor income). → how many expenses changed. */
+  function markOwnAccount(name) {
+    const key = recipientKey(name);
+    return transaction(db, () => {
+      db.prepare('INSERT INTO own_accounts (merchant_key, created_at) VALUES (?, ?) ON CONFLICT DO NOTHING').run(key, now());
+      return Number(db.prepare(`UPDATE expenses SET own_from = kind, kind = 'own_transfer', status = 'ignored', updated_at = ?
+        WHERE merchant_key = ? AND kind IN (${kinds(OWN_KINDS)})`).run(now(), key).changes);
+    });
+  }
+
+  /** Undoes markOwnAccount: the recipient's transfers get their kind back. → how many expenses changed. */
+  function unmarkOwnAccount(name) {
+    const key = recipientKey(name);
+    return transaction(db, () => {
+      db.prepare('DELETE FROM own_accounts WHERE merchant_key = ?').run(key);
+      return Number(db.prepare(`UPDATE expenses SET ${UNMARK}, updated_at = ? WHERE merchant_key = ? AND own_from IS NOT NULL`).run(now(), key).changes);
+    });
   }
 
   /** A rule the user states ("Cafe Central is Comida"); learning never overwrites it. */
@@ -215,12 +289,28 @@ export function openStore(file) {
   }
 
   return {
-    db, file, addExpense, classify, setRule, addCategory, renameCategory,
+    db, file, addExpense, classify, unclassify, setRule, addCategory, renameCategory, deleteCategory, recipientKey, markOwnAccount, unmarkOwnAccount,
+    /** fn() in one transaction (the store's own changes inside it join it). */
+    atomic: (fn) => transaction(db, fn),
+    expense: (id) => db.prepare('SELECT * FROM expenses WHERE id = ?').get(id),
+    /** The canonical name of a category, or throws. */
+    categoryName: canonical,
     categories: () => db.prepare('SELECT name FROM categories ORDER BY position').all().map((r) => r.name),
+    /** Deletes an entry the user added by hand (never one read from a mail). */
+    deleteManual(id) {
+      if (!db.prepare("DELETE FROM expenses WHERE id = ? AND source = 'manual'").run(id).changes) throw new Error(`no entry added by hand with id ${id}`);
+    },
+    /** The own accounts with how many transfers each turned into own_transfer. */
+    ownAccounts: () => db.prepare(`SELECT o.merchant_key, max(e.merchant) AS merchant, COUNT(e.id) AS count FROM own_accounts o
+      LEFT JOIN expenses e ON e.merchant_key = o.merchant_key AND e.own_from IS NOT NULL GROUP BY o.merchant_key ORDER BY o.created_at, o.merchant_key`).all(),
+    /** What marking a recipient would change: { total, classified } transfers (classified: with a category). */
+    ownAccountEffect: (name) => ({ ...db.prepare(`SELECT COUNT(*) AS total, COUNT(category) AS classified FROM expenses
+      WHERE merchant_key = ? AND kind IN (${kinds(OWN_KINDS)})`).get(recipientKey(name)) }),
     suggest: (e) => ruleFor(e.merchantKey ?? e.merchant_key ?? merchantKey(e.merchant)),
-    /** Expenses waiting for the user (no category yet, or held for review), oldest first; never what is no spending. */
+    /** Expenses waiting for the user (no category yet, or held for review), oldest first; never what is no spending
+     * (money received included). */
     pending: () => db.prepare(`SELECT * FROM expenses WHERE status IN ('pending', 'needs_review')
-      AND kind NOT IN (${IGNORED_KINDS.map((k) => `'${k}'`).join(', ')}) ORDER BY occurred_at, id`).all(),
+      AND kind NOT IN (${kinds(NOT_SPENDING)}) ORDER BY occurred_at, id`).all(),
     /** Words in the merchant or the note, accent-insensitive; each word is a prefix, operators are not parsed. */
     search(text, limit = 50) {
       const words = String(text ?? '').match(/[\p{L}\p{N}]+/gu) ?? [];
