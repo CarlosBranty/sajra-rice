@@ -1137,7 +1137,8 @@
         const onStage = stage();
         if (presence.auto) {
           const hover = env.mouse?.active && Math.hypot(env.mouse.x - m.x, env.mouse.y - m.y) < k.R * 1.5;
-          const busyNow = b || dying.length || tool || pen.held || now < actUntil || m.dragging || m.flung || hover || k.presence === 'in' || R.panel?.working;
+          // An open check-it's-you card (agent-auth.js) waits for the user too: it isn't a bubble, and going away cancels it.
+          const busyNow = b || dying.length || tool || pen.held || now < actUntil || m.dragging || m.flung || hover || k.presence === 'in' || R.panel?.working || R.authCard?.isOpen;
           if (busyNow) presence.lastActive = now;
           const idleFor = presence.summoned ? presence.summonIdle : presence.idle;
           if (k.presence === 'shown' && now - presence.lastActive > idleFor) { presence.summoned = false; k.vanish(exit(), false, dockPt()); }

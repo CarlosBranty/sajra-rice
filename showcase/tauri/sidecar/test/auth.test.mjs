@@ -181,6 +181,15 @@ async function boot() {
   };
 }
 
+await rule('the card keeps the Roamie on screen while it waits: an idle Roamie going away cancelled it in ~6 s', async () => {
+  const p = await boot();
+  p.c.agent.setAuto(true);
+  p.host({ kind: 'auth', id: 'r9', reason: 'Delete category Comida', finger: true });
+  for (let i = 0; i < 12; i++) { p.run(1); p.tick(); }
+  assert.ok(p.card()?.classList.contains('on'), 'still up after 12 s');
+  assert.deepEqual(p.calls('auth_cancel'), [], 'not cancelled');
+});
+
 await rule('the prompt: the reason, the keyboard, and a password that goes to the shell only', async () => {
   const p = await boot();
   p.host({ kind: 'auth', id: 'r1', reason: 'Rename category Comida to Restaurantes', finger: true });
