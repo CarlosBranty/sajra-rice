@@ -21,7 +21,7 @@ Scope {
     property int delay: 0
     property string frozen: ""
     property var scr: null
-    // всё ниже — в пикселях макета (Stage); логические = × Theme.s, кадра — × k
+    // всё ниже — в пикселях макета (Stage); логические = × stage.k, кадра — × k
     property var wins: []       // окна текущего ws: { x, y, w, h }
     property rect drag: Qt.rect(0, 0, 0, 0) // w = 0 — ничего не выбрано
     property real mx: 0
@@ -53,7 +53,7 @@ Scope {
     function fire() {
         const r = sel.width > 2 && sel.height > 2 ? sel : Qt.rect(0, 0, stage.width, stage.height);
         const full = r.width === stage.width && r.height === stage.height;
-        const s = Theme.s, w = Math.round(r.width * s), h = Math.round(r.height * s);
+        const s = stage.k, w = Math.round(r.width * s), h = Math.round(r.height * s);
         const x = Math.round(scr.x + r.x * s), y = Math.round(scr.y + r.y * s);
         shotRect = r;
         shotRec = mode === 3;
@@ -87,7 +87,7 @@ Scope {
                 root.frozen = freeze.next; // только теперь: файл дописан
                 root.mode = 0;
                 root.drag = Qt.rect(0, 0, 0, 0);
-                const s = Theme.s;
+                const s = stage.k;
                 root.wins = Hyprland.toplevels.values
                     .filter(t => t.workspace?.id === Hyprland.focusedMonitor?.activeWorkspace?.id && t.lastIpcObject?.size)
                     .sort((a, b) => (b.lastIpcObject.floating ?? false) - (a.lastIpcObject.floating ?? false)) // плавающие сверху
@@ -219,7 +219,7 @@ Scope {
                         anchors.rightMargin: 2
                         spacing: 14
                         Lb { anchors.bottom: parent.bottom; text: `${Math.round(root.sel.width * root.k)}×${Math.round(root.sel.height * root.k)} px` }
-                        Num { id: dims; text: `${Math.round(root.sel.width * Theme.s)}×${Math.round(root.sel.height * Theme.s)}` }
+                        Num { id: dims; text: `${Math.round(root.sel.width * stage.k)}×${Math.round(root.sel.height * stage.k)}` }
                     }
                 }
             }
@@ -281,7 +281,7 @@ Scope {
                     height: 44
                     pad: 18
                     spacing: 12
-                    Num { anchors.verticalCenter: parent.verticalCenter; text: `${Math.round(root.mx * Theme.s)} · ${Math.round(root.my * Theme.s)}`; font.pixelSize: 26 }
+                    Num { anchors.verticalCenter: parent.verticalCenter; text: `${Math.round(root.mx * stage.k)} · ${Math.round(root.my * stage.k)}`; font.pixelSize: 26 }
                     Rectangle { anchors.verticalCenter: parent.verticalCenter; width: 12; height: 12; radius: 6; color: picker.hex; border { width: 1; color: Theme.s3 } }
                     Lb { anchors.verticalCenter: parent.verticalCenter; text: picker.hex; px: 11 }
                 }

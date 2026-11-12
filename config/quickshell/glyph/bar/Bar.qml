@@ -25,8 +25,18 @@ PanelWindow {
 
     readonly property bool vert: Theme.state.barAt !== "top" // всё, кроме top (и неизвестное), — слева
     anchors { left: true; right: !vert; top: true; bottom: vert }
-    implicitWidth: Math.ceil(78 * Theme.s)  // сбоку
-    implicitHeight: Math.ceil(78 * Theme.s) // сверху
+    // hug рисует вогнутые углы за краем бара: окно шире на их радиус, но место у окон — только сам бар (exclusiveZone),
+    // а клики мимо пилюли проходят насквозь (mask)
+    readonly property string style: Theme.barFloat ? "float" : Theme.state.barStyle
+    // радиус — зазор до окон и их скругление (hypr, логические px → px макета): дуга идёт вокруг угла окна на расстоянии
+    // зазора, как рамка, и не закрывает его. Больше дуга — больше скругление или зазор в WINDOWS. Игровой — без зазоров и углов
+    // px макета → логические: по своему монитору × размер бара (Theme.barK)
+    readonly property real k: Theme.barK(screen)
+    readonly property real hugR: style === "hug" && !Rules.store.game ? (Rules.store.gapsOut + Theme.state.rounding) / k : 0
+    implicitWidth: Math.ceil((Theme.barSpan + hugR) * k)  // сбоку
+    implicitHeight: Math.ceil((Theme.barSpan + hugR) * k) // сверху
+    exclusiveZone: Theme.barPx(screen)
+    mask: Region { item: pill }
     color: "transparent"
     WlrLayershell.namespace: "glyph-bar"
 
@@ -43,15 +53,27 @@ PanelWindow {
     SystemClock { id: clock; precision: SystemClock.Minutes }
 
     Stage {
+        k: root.k
         Rectangle {
             id: pill
-            x: 14 // от краёв экрана
-            y: 14
-            width: root.vert ? 64 : parent.width - 28
-            height: root.vert ? parent.height - 28 : 64
-            radius: Theme.corner(32)
+            readonly property real gap: root.style === "float" ? 14 : 0 // от краёв экрана
+            x: gap
+            y: gap
+            width: root.vert ? Theme.barSize : parent.width - 2 * gap
+            height: root.vert ? parent.height - 2 * gap : Theme.barSize
+            radius: root.style === "float" ? Theme.corner(Theme.barSize / 2) : 0
             color: Theme.s1
-            border { width: 1; color: Theme.s2 }
+            border { width: root.style === "float" ? 1 : 0; color: Theme.s2 }
+
+            // flat: линия по внутреннему краю вместо рамки
+            Rectangle {
+                visible: root.style === "flat"
+                x: root.vert ? parent.width - 1 : 0
+                y: root.vert ? 0 : parent.height - 1
+                width: root.vert ? 1 : parent.width
+                height: root.vert ? parent.height : 1
+                color: Theme.s2
+            }
 
             Notch { onNotch: d => root.go(d > 0 ? "-1" : "+1") }
 
@@ -150,7 +172,7 @@ PanelWindow {
                     Loader {
                         id: part
                         required property string modelData
-                        readonly property bool quick: modelData !== "mode" && modelData !== "power"
+                        readonly property bool quick: modelData !== "mode" && modelData !== "power" && modelData !== "roamie"
                         sourceComponent: root.parts[modelData] ?? null
                         visible: !!sourceComponent && (modelData !== "battery" || root.bat.isLaptopBattery)
                         TapHandler { enabled: part.quick; onTapped: root.trayClicked() }
@@ -159,9 +181,76 @@ PanelWindow {
                 }
             }
         }
+
+        // hug: вогнутые углы у концов бара с внутренней стороны — бар «обнимает» экран. Рисуются для левого/верхнего конца,
+        // второй — зеркалом
+        Repeater {
+            model: root.hugR > 0 ? 2 : 0
+            Shape {
+                required property int index
+                readonly property real r: root.hugR
+                x: root.vert ? Theme.barSize : index ? parent.width - r : 0
+                y: root.vert ? (index ? parent.height - r : 0) : Theme.barSize
+                width: r
+                height: r
+                preferredRendererType: Shape.CurveRenderer
+                transform: Scale {
+                    origin.x: r / 2
+                    origin.y: r / 2
+                    xScale: !root.vert && index ? -1 : 1
+                    yScale: root.vert && index ? -1 : 1
+                }
+                ShapePath {
+                    fillColor: Theme.s1
+                    strokeWidth: -1
+                    startX: 0
+                    startY: 0
+                    PathLine { x: r; y: 0 }
+                    PathAngleArc { centerX: r; centerY: r; radiusX: r; radiusY: r; startAngle: 270; sweepAngle: -90; moveToStart: false }
+                    PathLine { x: 0; y: 0 }
+                }
+            }
+        }
+
+        // hug: контур по внутреннему краю и дугам. Без него углы над окном того же цвета (kitty — s1, как бар) не видны
+        Shape {
+            id: line
+            visible: root.hugR > 0
+            anchors.fill: parent
+            preferredRendererType: Shape.CurveRenderer
+            readonly property real t: Theme.barSize
+            readonly property real r: root.hugR
+            ShapePath {
+                fillColor: "transparent"
+                strokeColor: Theme.s3
+                strokeWidth: 2
+                capStyle: ShapePath.FlatCap
+                PathAngleArc {
+                    centerX: root.vert ? line.t + line.r : line.r
+                    centerY: root.vert ? line.r : line.t + line.r
+                    radiusX: line.r; radiusY: line.r
+                    startAngle: root.vert ? 270 : 180
+                    sweepAngle: root.vert ? -90 : 90
+                }
+                PathLine {
+                    x: root.vert ? line.t : line.width - line.r
+                    y: root.vert ? line.height - line.r : line.t
+                }
+                PathAngleArc {
+                    centerX: root.vert ? line.t + line.r : line.width - line.r
+                    centerY: root.vert ? line.height - line.r : line.t + line.r
+                    radiusX: line.r; radiusY: line.r
+                    startAngle: root.vert ? 180 : 270
+                    sweepAngle: root.vert ? -90 : 90
+                    moveToStart: false
+                }
+            }
+        }
     }
-    readonly property var parts: ({ layout: layoutC, wifi: wifiC, bluetooth: btC, sound: soundC, notes: notesC, battery: batC, mode: modeC, power: powerC, cat: catC })
+    readonly property var parts: ({ layout: layoutC, wifi: wifiC, bluetooth: btC, sound: soundC, notes: notesC, battery: batC, mode: modeC, power: powerC, cat: catC, roamie: roamieC })
     Component { id: layoutC; Lb { text: Sys.layout; px: 10 } }
+    // Roamies descansa aquí mientras no está en pantalla (bar/Roamie.qml); sus clics son suyos
+    Component { id: roamieC; Roamie { screen: root.screen } }
     // кот RunCat: чем больше cpu, тем быстрее бежит (250 мс на кадр в простое, 50 на полной). cpu опрашивается, пока он в трее;
     // Binding не в делегате — уничтоженный значение не возвращает. Серый как есть, в светлой теме на белом теряется — чёрный, как buds
     Component {
@@ -328,11 +417,12 @@ PanelWindow {
         anchor.rect: root.vert ? Qt.rect(pill.width + 14, root.popAt.y, 1, 1) : Qt.rect(root.popAt.x, pill.height + 14, 1, 1)
         anchor.edges: Edges.Top | Edges.Left
         anchor.gravity: root.vert ? Edges.Top | Edges.Right : Edges.Bottom | Edges.Left
-        implicitWidth: Math.ceil(440 * Theme.s)
-        implicitHeight: Math.ceil(card.height * Theme.s)
+        implicitWidth: Math.ceil(440 * root.k)
+        implicitHeight: Math.ceil(card.height * root.k)
         color: "transparent"
 
         Stage {
+            k: root.k
             Rectangle {
                 id: card
                 width: 440

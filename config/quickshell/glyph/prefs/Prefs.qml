@@ -463,7 +463,7 @@ PanelWindow {
                                     target: null
                                     yAxis.enabled: false
                                     // без target сдвиг — в px сцены, а Stage масштабирован
-                                    onActiveTranslationChanged: deck.dx = activeTranslation.x / Theme.s
+                                    onActiveTranslationChanged: deck.dx = activeTranslation.x / stage.k
                                     onActiveChanged: {
                                         if (active) {
                                             deck.cur = ds.index;
@@ -590,7 +590,7 @@ PanelWindow {
                                 target: null
                                 xAxis.enabled: bar.onTop
                                 yAxis.enabled: !bar.onTop
-                                onActiveTranslationChanged: bar.d = (bar.onTop ? activeTranslation.x : activeTranslation.y) / Theme.s
+                                onActiveTranslationChanged: bar.d = (bar.onTop ? activeTranslation.x : activeTranslation.y) / stage.k
                                 onActiveChanged: {
                                     if (active) {
                                         bar.cur = bs.index;
@@ -636,11 +636,13 @@ PanelWindow {
                                     border { width: ed.on && edges.activeFocus ? 2 : 1; color: ed.on ? Theme.fg : Theme.s3 }
                                     Behavior on border.color { ColorAnimation { duration: Theme.t } }
                                     Rectangle {
-                                        x: 10
-                                        y: 10
-                                        width: ed.modelData === "top" ? parent.width - 20 : 16
-                                        height: ed.modelData === "top" ? 16 : parent.height - 20
-                                        radius: Theme.corner(8)
+                                        readonly property real g: Theme.barFloat ? 10 : 1
+                                        readonly property real t: Theme.barSize / 4
+                                        x: g
+                                        y: g
+                                        width: ed.modelData === "top" ? parent.width - 2 * g : t
+                                        height: ed.modelData === "top" ? t : parent.height - 2 * g
+                                        radius: Theme.barFloat ? Theme.corner(t / 2) : 0
                                         color: ed.on ? Theme.fg : Theme.s3
                                         Behavior on color { ColorAnimation { duration: Theme.t } }
                                     }
@@ -654,6 +656,22 @@ PanelWindow {
                     Item { width: 1; height: 12 }
                     Toggle { width: 200; text: "window title"; on: Theme.state.barTitle; onFlip: Theme.state.barTitle = !Theme.state.barTitle }
                     Lb { topPadding: 6; text: bar.onTop ? "left of the clock" : "above the clock"; px: 10 }
+                    Item { width: 1; height: 12 }
+                    // вид: float — пилюля с отступом, hug — вплотную с вогнутыми углами (как в end-4), flat — вплотную, прямая
+                    Row {
+                        spacing: 24
+                        Pick {
+                            anchors.verticalCenter: parent.verticalCenter
+                            label: "style"
+                            seg: 84
+                            opts: ["float", "hug", "flat"]
+                            cur: Math.max(0, opts.indexOf(Theme.state.barStyle))
+                            onPicked: i => Theme.state.barStyle = opts[i]
+                        }
+                        Dial { anchors.verticalCenter: parent.verticalCenter; size: 100; n: 26; label: "thickness"; from: 44; to: 96; step: 2; value: Theme.barSize; onMoved: v => Theme.state.barSize = v }
+                        // размер всего бара, % (иконки, часы, толщина); бар и так в пропорции своего монитора
+                        Dial { anchors.verticalCenter: parent.verticalCenter; size: 100; n: 26; label: "size"; from: 70; to: 150; step: 5; value: Theme.state.barScale; onMoved: v => Theme.state.barScale = v }
+                    }
                 }
             }
 
@@ -888,7 +906,7 @@ PanelWindow {
                             id: wnd
                             required property int index
                             readonly property real o: gOut.v * desk.k
-                            readonly property real l: 78 * Theme.s * desk.k + o // бар 64 + отступ 14, в логических px
+                            readonly property real l: Theme.barPx(null) * desk.k + o // бар с отступом (Theme.barSpan), в логических px
                             readonly property real w: (desk.width - (at === "top" ? o : l) - o - 2 * gIn.v * desk.k) / 2
                             readonly property string at: Theme.state.barAt
                             x: (at !== "top" ? l : o) + (index ? w + 2 * gIn.v * desk.k : 0)
@@ -1034,7 +1052,7 @@ PanelWindow {
                                     cursorShape: Qt.ClosedHandCursor
                                     onActiveTranslationChanged: {
                                         if (!active) return;
-                                        const m = sc.modelData, k = Theme.s * map.k;
+                                        const m = sc.modelData, k = stage.k * map.k;
                                         map.at = Rules.dock({ x: m.x + activeTranslation.x / k, y: m.y + activeTranslation.y / k, w: m.lw, h: m.lh },
                                                            map.ms.filter(o => o.name !== m.name), 16 / map.k);
                                     }
@@ -1073,9 +1091,24 @@ PanelWindow {
             }
             Row {
                 spacing: 24
-                Pick { label: "scale"; opts: Rules.scales; cur: disp.w.scale ? Rules.scales.indexOf(String(disp.w.scale)) : 0; onPicked: i => Rules.set(disp.m.name, "scale", i ? +Rules.scales[i] : 0) }
+                // масштаб — кольцом: у 4K-экрана годных шагов с десяток, пилюля ушла бы за край. Крутят — подпись и логические px
+                // сразу, hypr — на отпускании (Dial.moved). auto — первое деление
+                Dial {
+                    id: sc
+                    readonly property var opts: Rules.scales(disp.m)
+                    readonly property int cur: disp.w.scale ? opts.reduce((b, x, i) => i && Math.abs(x - disp.w.scale) < Math.abs(opts[b] - disp.w.scale) ? i : b, 1) : 0
+                    anchors.verticalCenter: parent.verticalCenter
+                    size: 120
+                    n: 24
+                    to: Math.max(1, opts.length - 1)
+                    value: cur
+                    readonly property bool turned: disp.m.transform % 2 === 1
+                    label: v ? `scale · ${Math.round((turned ? disp.m.h : disp.m.w) / opts[v])} × ${Math.round((turned ? disp.m.w : disp.m.h) / opts[v])}` : "scale · auto"
+                    text: Rules.scaleText(opts[v] ?? 0)
+                    onMoved: v => Rules.set(disp.m.name, "scale", opts[v] ?? 0)
+                }
                 // частот бывает и пять, и восемь (телевизор, 165 Гц) — уже сегменты, чтобы строка не ушла за край холста
-                Pick { label: "hz"; seg: Math.min(104, 416 / opts.length); opts: disp.m.rates.map(String); cur: disp.m.rates.indexOf(disp.w.refresh); onPicked: i => Rules.set(disp.m.name, "refresh", disp.m.rates[i]) }
+                Pick { anchors.verticalCenter: parent.verticalCenter; label: "hz"; seg: Math.min(104, 416 / opts.length); opts: disp.m.rates.map(String); cur: disp.m.rates.indexOf(disp.w.refresh); onPicked: i => Rules.set(disp.m.name, "refresh", disp.m.rates[i]) }
             }
             // и на одном экране: бар сняли с ноутбука в доке, отстыковали — вернуть его можно только здесь
             Row {
@@ -1326,9 +1359,9 @@ PanelWindow {
             fillMode: Image.Tile
             source: "data:image/svg+xml," + encodeURIComponent(`<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16"><circle cx="8" cy="8" r="1" fill="#${Theme.hex(Theme.s2)}"/></svg>`)
         }
-        // бар у своего края: отступ 14 и толщина 64 — px макета, на экране они Theme.s логических
+        // бар у своего края: отступ 14 и толщина 64 — px макета, на экране они Theme.barK логических
         Rectangle {
-            readonly property real u: Theme.s * parent.k
+            readonly property real u: Theme.barK(Theme.focusScreen) * parent.k
             readonly property bool onTop: Theme.state.barAt === "top"
             x: 14 * u
             y: 14 * u
@@ -1368,8 +1401,8 @@ PanelWindow {
         border { width: on ? 2 : 1; color: on ? Theme.fg : modelData.fits ? Theme.s2 : Theme.mute }
         z: drag.active ? 1 : 0
         // без target сдвиг — в px сцены, а Stage масштабирован
-        readonly property real dx: drag.activeTranslation.x / Theme.s
-        readonly property real dy: drag.activeTranslation.y / Theme.s
+        readonly property real dx: drag.activeTranslation.x / stage.k
+        readonly property real dy: drag.activeTranslation.y / stage.k
         transform: Translate { x: drag.active ? tile.dx : 0; y: drag.active ? tile.dy : 0 }
         Behavior on color { ColorAnimation { duration: Theme.t } }
 

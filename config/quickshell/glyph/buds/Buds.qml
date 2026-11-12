@@ -73,8 +73,8 @@ PanelWindow {
 
     visible: t > 0
     anchors.bottom: true
-    implicitWidth: Math.ceil(460 * Theme.s)
-    implicitHeight: Math.ceil(520 * Theme.s)
+    implicitWidth: Math.ceil(460 * stage.k)
+    implicitHeight: Math.ceil(520 * stage.k)
     exclusionMode: ExclusionMode.Ignore
     color: "transparent"
     mask: Region { item: card }
@@ -82,6 +82,7 @@ PanelWindow {
     WlrLayershell.namespace: "glyph-buds"
 
     Stage {
+        id: stage
         Rectangle {
             id: card
             x: 20

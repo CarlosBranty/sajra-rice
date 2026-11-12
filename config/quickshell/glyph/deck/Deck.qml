@@ -51,8 +51,8 @@ Scope {
             // Super+Space создаёт окно заново, уже в Overlay. ponytail: hasFullscreen — и maximized (Super+Alt+F), край там тоже молчит
             visible: Theme.state.deckHover && root.ids.length > 0 && !Hyprland.monitorFor(modelData)?.activeWorkspace?.hasFullscreen || t > 0
             anchors.bottom: true
-            implicitWidth: Math.ceil(panel.width * Theme.s)
-            implicitHeight: Math.ceil((panel.height + 14) * Theme.s)
+            implicitWidth: Math.ceil(panel.width * dstage.k)
+            implicitHeight: Math.ceil((panel.height + 14) * dstage.k)
             exclusionMode: ExclusionMode.Ignore
             color: "transparent"
             // закрыта — Top: Glyph-полоса прогресса поверх; открыта — Overlay, видна и над полноэкранным окном
@@ -65,6 +65,7 @@ Scope {
             Timer { id: leave; interval: 300; onTriggered: if (win.open) root.on = null }
 
             Stage {
+                id: dstage
                 // полоса и панель — одно окно: курсор не перескакивает между поверхностями, hovered не мигает
                 HoverHandler {
                     onHoveredChanged: {

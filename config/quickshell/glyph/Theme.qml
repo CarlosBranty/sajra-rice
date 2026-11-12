@@ -2,6 +2,7 @@ pragma Singleton
 
 import QtQuick
 import Quickshell
+import Quickshell.Hyprland
 import Quickshell.Io
 import qs.settings
 import "schemes.js" as Schemes
@@ -151,6 +152,19 @@ Singleton {
     function fade(c, a) { return Qt.rgba(c.r, c.g, c.b, a); }
     // радиус угла панели, плитки, пилюли — по настройке corners (prefs → WINDOWS → panels): 0 прямые, 100 как задумано
     function corner(px) { return px * st.corners / 100; }
+    // сколько бар занимает от края, px макета: толщина и у float — отступ 14. От него — календарь, дом, полосы Glyph
+    readonly property int barSize: Math.max(44, Math.min(96, st.barSize || 64))
+    readonly property bool barFloat: st.barStyle !== "hug" && st.barStyle !== "flat"
+    readonly property real barSpan: barSize + (barFloat ? 14 : 0)
+    // бар — в пропорции своего монитора (его 1920×1080, а не первого: на 1080p и на 2304×1440 занимает ту же долю) и
+    // × barScale (prefs → BAR → size: всё в баре — толщина, иконки, часы). Остальное — по своему монитору (Stage.k)
+    function screenS(scr) { return scr ? Math.min(scr.width / 1920, scr.height / 1080) : s; }
+    function barK(scr) { return screenS(scr) * Math.max(50, Math.min(200, st.barScale || 100)) / 100; }
+    readonly property var focusScreen: Quickshell.screens.find(x => x.name === Hyprland.focusedMonitor?.name) ?? Quickshell.screens[0] ?? null
+    // сколько бар занимает от края на экране, логические px (null — экран в фокусе: там открываются панели)
+    function barPx(scr) { return Math.ceil(barSpan * barK(scr ?? focusScreen)); }
+    // то же в px макета (экран в фокусе) — отступ панелей, что выезжают от бара (календарь, музыка)
+    readonly property real barOff: barPx(null) / screenS(focusScreen)
     // часы по настройке 12/24: «09» или «9»
     function hh(d) { const h = d.getHours(); return st.clock24 ? String(h).padStart(2, "0") : String(h % 12 || 12); }
     function hex(c) { return c.toString().slice(1, 7).toUpperCase(); }
@@ -206,6 +220,10 @@ Singleton {
             property var bar: ["layout", "wifi", "bluetooth", "sound", "notes", "battery", "mode", "power"] // трей бара сверху вниз, см. bars
             property bool barTitle: true   // заголовок окна столбиком в баре
             property string barAt: "left" // left или top; за баром едут календарь, карточка батареи, дом, остров и вспышка Glyph
+            property string barStyle: "float" // float — пилюля с отступом, hug — вплотную к краю с вогнутыми углами, flat — вплотную, прямая
+            property int barSize: 64       // толщина бара, px макета
+            property int barScale: 100     // размер всего бара, % (толщина, иконки, часы), см. barK
+            property int chargeLimit: 100  // батарея заряжается до, % (services/Charge); 100 — без лимита
             // свои у монитора, по модели (Theme.sid): { "TS2700-S6-1": { bar: false, home: false, wall: "…", widgets: […] } }; нет — общие (Theme.scr)
             property var screens: ({})
             // запись (quick/Rec, Sys.recArgs)
@@ -223,7 +241,7 @@ Singleton {
     // секции deck
     readonly property var decks: ["clock", "weather", "perf", "net", "media"]
     // трей бара
-    readonly property var bars: ["layout", "wifi", "bluetooth", "sound", "notes", "battery", "mode", "power", "cat"]
+    readonly property var bars: ["layout", "wifi", "bluetooth", "sound", "notes", "battery", "mode", "power", "cat", "roamie"]
 
     // ---- вид всего, что вне шелла. Зовёт только shell.qml: на старте, при смене темы и цвета ----
     // hypr наследует demonshot: монитор, ввод, простой, ночник и движение ставит его же Rules (shell.qml), анимации — из

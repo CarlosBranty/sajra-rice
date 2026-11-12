@@ -92,7 +92,7 @@ Scope {
             // снимок вписан между подписями и пилюлей, крупнее 1:1 не растёт; доезжает из 96%
             Item {
                 id: frame
-                readonly property real fit: Math.min(1 / (root.dpr * Theme.s), (st.width - 240) / Math.max(1, img.implicitWidth),
+                readonly property real fit: Math.min(1 / (root.dpr * st.k), (st.width - 240) / Math.max(1, img.implicitWidth),
                                                      (st.height - 140 - 220) / Math.max(1, img.implicitHeight))
                 width: img.implicitWidth * fit
                 height: img.implicitHeight * fit

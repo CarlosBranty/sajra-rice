@@ -242,11 +242,26 @@ Singleton {
     readonly property var rates: mon.rates.length ? mon.rates : [60, 120]
     readonly property int refreshHz: store.refresh ? rates.reduce((a, b) => Math.abs(b - store.refresh) < Math.abs(a - store.refresh) ? b : a) : rates[rates.length - 1]
     readonly property real scale: store.monScale || mon.scale || 1 // что стоит на деле, и при auto
-    readonly property var scales: ["auto", "1", "1.25", "1.5", "2"]
+    // масштабы, которые hypr примет у экрана m без поправки: n/120 (его шаг) при целых логических px по обеим сторонам.
+    // От 1 до того, где останется ≥ 1024 × 600 логических; дробные — до двух знаков и трети (1.33, 1.67). Первый — 0, auto
+    function scales(m) {
+        const out = [0];
+        if (!m?.w || !m?.h) return out.concat([1, 1.25, 1.5, 2]);
+        const big = Math.max(m.w, m.h), small = Math.min(m.w, m.h);
+        for (let n = 120; n <= 480; n++) {
+            const x = n / 120;
+            if (big / x < 1024 || small / x < 600) break;
+            if ((m.w * 120) % n || (m.h * 120) % n) continue;
+            if ((n * 100) % 120 && n % 40) continue; // не 1.xx и не треть
+            out.push(x);
+        }
+        return out;
+    }
+    function scaleText(x) { return x ? String(Math.round(x * 100) / 100) : "auto"; }
     function windows() {
         const s = store;
         hypr(`hl.config({ general = { gaps_in = ${s.gapsIn}, gaps_out = ${s.gapsOut}, border_size = ${s.border} }, `
-           + `decoration = { rounding = ${s.rounding}, blur = { enabled = ${blurOn} }, shadow = { enabled = ${shadowOn} } } })`);
+           + `decoration = { rounding = ${s.rounding}, ${glass()}, shadow = { enabled = ${shadowOn} } } })`);
     }
     // ponytail: только вкл/выкл; slam/snap — переопределять кривые из animations.lua
     function motion() { hypr(`hl.config({ animations = { enabled = ${moving} } })`); }

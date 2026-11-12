@@ -104,9 +104,9 @@ Scope {
         id: top
         shown: !!root.note && Theme.state.edges
         anchors.top: true
-        margins.top: root.underBar ? Math.ceil(78 * Theme.s) : 0
-        implicitWidth: Math.ceil(640 * Theme.s)
-        implicitHeight: Math.ceil(30 * Theme.s)
+        margins.top: root.underBar ? Theme.barPx(null) : 0
+        implicitWidth: Math.ceil(640 * k)
+        implicitHeight: Math.ceil(30 * k)
         Seg {
             x: 20
             y: 4
@@ -133,9 +133,9 @@ Scope {
     PanelWindow {
         visible: stack.count > 0
         anchors.top: true
-        margins.top: root.underBar ? Math.ceil(78 * Theme.s) : 0
-        implicitWidth: Math.ceil(600 * Theme.s)
-        implicitHeight: Math.ceil((24 + root.most * 132) * Theme.s)
+        margins.top: root.underBar ? Theme.barPx(null) : 0
+        implicitWidth: Math.ceil(600 * isle.k)
+        implicitHeight: Math.ceil((24 + root.most * 132) * isle.k)
         exclusionMode: ExclusionMode.Ignore
         color: "transparent"
         mask: Region { item: col }
@@ -143,6 +143,7 @@ Scope {
         WlrLayershell.namespace: "glyph-island"
 
         Stage {
+            id: isle
             Column {
                 id: col
                 y: 24
@@ -265,8 +266,8 @@ Scope {
     Edge {
         id: side
         anchors.right: true
-        implicitWidth: Math.ceil(160 * Theme.s)
-        implicitHeight: Math.ceil(520 * Theme.s)
+        implicitWidth: Math.ceil(160 * k)
+        implicitHeight: Math.ceil(520 * k)
         Lit {
             x: 160 - 5 - 5
             y: 10
@@ -294,8 +295,8 @@ Scope {
     Edge {
         shown: (!!root.task || Focus.running) && Theme.state.edges
         anchors.bottom: true
-        implicitWidth: Math.ceil(1100 * Theme.s)
-        implicitHeight: Math.ceil(110 * Theme.s)
+        implicitWidth: Math.ceil(1100 * k)
+        implicitHeight: Math.ceil(110 * k)
         Lit {
             x: 10
             y: 110 - 5 - 5
@@ -323,6 +324,7 @@ Scope {
         mask: Region {}
         WlrLayershell.layer: WlrLayer.Overlay
         WlrLayershell.namespace: "glyph-edge"
+        readonly property real k: st.k
         Stage { id: st }
     }
     // капсула-значение рядом с полосой; vertical — содержимое столбиком
