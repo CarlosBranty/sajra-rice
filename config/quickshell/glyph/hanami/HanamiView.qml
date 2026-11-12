@@ -47,6 +47,15 @@ FocusScope {
         Row {
             anchors.verticalCenter: parent.verticalCenter
             spacing: 18
+            // your look at your size, playing, as the web panel's header has it (nothing until Hanami has drawn it)
+            LookSprite {
+                id: avatar
+                objectName: "avatar"
+                anchors.verticalCenter: parent.verticalCenter
+                visible: !!root.s && ready
+                look: root.s?.look ?? ""
+                form: root.s?.size || "default"
+            }
             Num { anchors.verticalCenter: parent.verticalCenter; text: (root.s?.name ?? "Hanami").toLowerCase(); font.pixelSize: 44 }
             Column {
                 anchors.verticalCenter: parent.verticalCenter
@@ -70,7 +79,7 @@ FocusScope {
                         }
                     }
                     Text {
-                        width: Math.min(implicitWidth, head.width - 420)
+                        width: Math.min(implicitWidth, head.width - 420 - (avatar.visible ? avatar.width + 18 : 0))
                         elide: Text.ElideRight
                         textFormat: Text.PlainText
                         text: !root.s ? "Not running" : (root.s.status?.text ?? "")

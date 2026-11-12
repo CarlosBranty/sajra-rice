@@ -89,7 +89,8 @@ both, or run `install.sh --no-hanami`, to turn it off. Hanami is a modified vers
 Its settings open as a glyph side panel (`quickshell/glyph/hanami/`): `Ctrl` `Alt` `H`, `qs ipc call hanami toggle`,
 or Hanami's own tray and `hanami --panel`. It has the pages of Hanami's web panel (which other desktops keep): Home,
 Memory, Model, Appearance, Voice, Money, Behavior and About. It talks to Hanami over
-`$XDG_RUNTIME_DIR/roamies/panel.sock` (JSON lines) and waits quietly while Hanami isn't running.
+`$XDG_RUNTIME_DIR/roamies/panel.sock` (JSON lines) and waits quietly while Hanami isn't running. Its looks (the header, the
+Appearance tiles, Ken on About) play from sprite sheets Hanami draws with its own drawing code while the panel shows.
 
 | `config/` | goes to |
 |---|---|

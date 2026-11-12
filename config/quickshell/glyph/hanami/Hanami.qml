@@ -51,6 +51,38 @@ Singleton {
     property bool mren: false
     property var mform: ({ kind: "expense", amount: "", currency: "PEN", description: "", date: "", category: "" })
 
+    // ---- the looks, drawn: Hanami draws each look as a sheet of frames (this JS engine can't run its drawing code) and
+    // says where it put it: {kind:"looks", form, sheets:[{id, file, frames, columns, fps, width, height}]}, one frame
+    // width × height px at 2x, in rows of `columns`. Asked for only while the panel shows: the header's Roamie (your
+    // look at your size), every look on Appearance, Ken on About. Asked again when what's wanted changes ----
+    property var sheets: ({})    // "<form>:<id>" → the sheet
+    property string looksAsked: ""
+    function sheet(id, form) { return sheets[`${form}:${id}`] ?? null; }
+    function takeLooks(m) {
+        if (typeof m.form !== "string" || !Array.isArray(m.sheets)) return;
+        const next = Object.assign({}, sheets);
+        for (const s of m.sheets)
+            if (s && typeof s.id === "string" && typeof s.file === "string" && s.frames > 0 && s.columns > 0 && s.fps > 0 && s.width > 0 && s.height > 0)
+                next[`${m.form}:${s.id}`] = s;
+        sheets = next;
+    }
+    function wantLooks() {
+        if (!shown || !linked || !state?.look) return;
+        const form = state.size || "default";
+        const ids = [state.look];
+        if (page === "appearance")
+            for (const l of state.looks ?? []) if (!ids.includes(l[0])) ids.push(l[0]);
+        const asks = [{ type: "panel_looks", form: form, looks: ids }];
+        if (page === "about") asks.push({ type: "panel_looks", form: "default", looks: ["ken"] });
+        // the colours too: Hanami draws them again when they changed
+        const key = JSON.stringify([asks, state.theme ?? ""]);
+        if (key === looksAsked) return;
+        looksAsked = key;
+        for (const a of asks) send(a);
+    }
+    onShownChanged: if (!shown) looksAsked = ""
+    onPageChanged: wantLooks()
+
     // the clock for "2m" on the recent list
     property real now: Date.now()
     Timer { interval: 30000; repeat: true; running: root.shown; onTriggered: root.now = Date.now() }
@@ -75,6 +107,7 @@ Singleton {
         if (linked) send({ type: "panel_open" });
         else retryNow();
         if (page === "money") moneyAsk();
+        wantLooks();
     }
     // the panel closing itself: Hanami is told
     function close() {
@@ -174,7 +207,9 @@ Singleton {
         if (m.kind === "state") {
             state = m.state;
             if (page === "money" && shown) moneyAsk();
-        } else if (m.kind === "money") takeMoney(m.view);
+            wantLooks();
+        } else if (m.kind === "looks") takeLooks(m);
+        else if (m.kind === "money") takeMoney(m.view);
         else if (m.kind === "note") note(m.text ?? "", m.bad);
         else if (m.kind === "copied") {
             if (!m.ok && state?.bind?.[m.which] && !bindShown.includes(m.which)) bindShown = bindShown.concat([m.which]);
@@ -209,6 +244,9 @@ Singleton {
             } else {
                 root.state = null;
                 root.mview = null;
+                // a new Hanami draws its own
+                root.sheets = {};
+                root.looksAsked = "";
             }
         }
         onError: root.wait = Math.min(root.wait * 2, 15000)

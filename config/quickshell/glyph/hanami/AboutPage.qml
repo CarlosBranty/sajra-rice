@@ -51,10 +51,17 @@ Column {
 
     Group {
         title: "Original author"
-        // Ken, as the web panel's card (there he's drawn live; here his name)
+        // Ken, as the web panel's card: drawn (Hanami draws him), or his initials until he is
         Row {
             spacing: 16
+            LookSprite {
+                id: kenArt
+                anchors.verticalCenter: parent.verticalCenter
+                visible: ready
+                look: "ken"
+            }
             Rectangle {
+                visible: !kenArt.ready
                 width: 56
                 height: 56
                 radius: 28
