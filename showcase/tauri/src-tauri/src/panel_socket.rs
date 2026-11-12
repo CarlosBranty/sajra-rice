@@ -112,6 +112,9 @@ pub(crate) fn incoming(msg: Value) -> Incoming {
 pub(crate) const FORMS: &[&str] = &["default", "small", "cursor"];
 /// The most looks one request may ask for.
 pub(crate) const MAX_LOOKS: usize = 12;
+/// The most sheets held at once: every look at every size. More new ids (the socket's client asks for them) would
+/// keep adding files of up to MAX_PNG to the runtime folder, which is memory.
+pub(crate) const MAX_HELD: usize = MAX_LOOKS * 3;
 /// A sheet's limits: frames, frames a second, one frame's size in px, and the PNG's size.
 pub(crate) const MAX_FRAMES: u32 = 120;
 pub(crate) const MAX_FPS: u32 = 30;
@@ -250,6 +253,9 @@ impl Sheets {
         let key = (s.look.clone(), s.form.clone());
         let mut held = self.held.lock().unwrap();
         let held = held.get_or_insert_with(HashMap::new);
+        if s.png.is_some() && !held.contains_key(&key) && held.len() >= MAX_HELD {
+            return Err("too many sheets".into());
+        }
         let Some(b64) = s.png else {
             return match held.get(&key) {
                 Some((sig, path, meta)) if *sig == s.sig && path.is_file() => Ok(meta.clone()),
@@ -631,6 +637,15 @@ mod tests {
 
         // Held with the same colours: announced again without a PNG. Other colours: it needs one.
         assert_eq!(sheets.take(&s.0, sheet("anime", "small", "k1", None)).unwrap(), meta);
+
+        // No more than MAX_HELD sheets: new ids past it are refused, one already held is still replaced.
+        let (cap, many) = (Scratch::new("lookcap"), Sheets::new());
+        for i in 0..MAX_HELD {
+            many.take(&cap.0, sheet(&format!("l{i}"), "small", "k1", Some(strip.clone()))).unwrap();
+        }
+        assert!(many.take(&cap.0, sheet("onemore", "small", "k1", Some(strip.clone()))).is_err(), "past the cap");
+        assert!(many.take(&cap.0, sheet("l0", "small", "k2", Some(strip.clone()))).is_ok(), "a held one is redrawn");
+        assert_eq!(fs::read_dir(cap.0.join("roamies").join("looks")).unwrap().count(), MAX_HELD, "no more files than the cap");
         assert!(sheets.take(&s.0, sheet("anime", "small", "k2", None)).is_err());
         assert!(sheets.take(&s.0, sheet("sarah", "small", "k1", None)).is_err(), "never drawn");
 
