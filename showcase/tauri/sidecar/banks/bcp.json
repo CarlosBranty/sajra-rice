@@ -1,0 +1,32 @@
+{
+  "id": "bcp",
+  "name": "BCP",
+  "notes": "The yapeo layout is checked against a real mail (November 2026). The card purchase layout comes from public descriptions only (labels 'Total del consumo', 'Empresa'), so it is marked unverified and each one is held for review until a real mail confirms it.",
+  "senders": ["notificaciones@notificacionesbcp.com.pe"],
+  "mails": [
+    {
+      "subject": "Constancia de Yapeo a Celular",
+      "kind": "yape_out",
+      "fields": {
+        "amount": "Monto enviado",
+        "date": "Fecha y hora",
+        "merchant": "Enviado a",
+        "account": { "label": "Desde", "lines": 2 },
+        "note": { "label": "Mensaje", "optional": true },
+        "operation": "Número de operación"
+      }
+    },
+    {
+      "subject": "Consumo",
+      "kind": "purchase",
+      "verified": false,
+      "fields": {
+        "amount": "Total del consumo",
+        "merchant": "Empresa",
+        "date": "Fecha y hora",
+        "account": { "label": ["Número de Tarjeta de Débito", "Número de Tarjeta de Crédito", "Número de tarjeta", "Tarjeta"], "optional": true },
+        "operation": { "label": "Número de operación", "optional": true }
+      }
+    }
+  ]
+}

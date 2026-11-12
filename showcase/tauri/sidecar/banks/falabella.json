@@ -1,0 +1,33 @@
+{
+  "id": "falabella",
+  "name": "Banco Falabella",
+  "notes": "Both layouts checked against real mails (November 2026). The amount of an e-commerce purchase may change: the bank then sends a new mail for the same operation number.",
+  "senders": ["notificaciones@pe.notificaciones.bancofalabella.com"],
+  "mails": [
+    {
+      "subject": "Comprobante de transferencia",
+      "kind": "transfer_out",
+      "fields": {
+        "amount": "Monto de transferencia",
+        "fee": { "label": "Comisión", "optional": true },
+        "merchant": "Destinatario",
+        "account": "Nro. de cuenta",
+        "date": "Fecha",
+        "time": { "label": "Hora", "optional": true },
+        "operation": "Nro. de operación"
+      }
+    },
+    {
+      "subject": "Movimientos en cuentas",
+      "kind": "purchase",
+      "fields": {
+        "amount": "Monto",
+        "merchant": "Comercio",
+        "account": "Número de cuenta",
+        "date": "Fecha",
+        "time": "Hora",
+        "operation": "Número de operación"
+      }
+    }
+  ]
+}

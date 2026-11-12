@@ -1,0 +1,16 @@
+                                                                                            ¡Hola! Ana
+                   Te informamos que se ha realizado una operación
+                   con tu Cuenta de Ahorros, te adjuntamos el
+                   detalle:
+                   Realizado por: Pérez Ruiz Ana
+                   Número de cuenta: 1234567890123456789
+                   Fecha: 07-noviembre-2026
+                   Hora: 08:15
+                   Comercio:Cafe Central Pe
+                   Monto: S/ 45.90
+                   Número de operación: 990807081577
+                   Información Importante:
+                  Si compraste en comercios electrónicos, el monto de tu compra podría
+                  variar de acuerdo a la disponibilidad de los productos.
+                  Por ello, podrías recibir una nueva notiﬁcación con el
+                  monto ﬁnal cuando la compra termine de ser procesada.

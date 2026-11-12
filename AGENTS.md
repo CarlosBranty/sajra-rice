@@ -49,11 +49,17 @@ Python package) and that no character crashes espeak-ng; `ROAMIES_TEST_VOICE=<vo
 speak` runs `--speak` end to end on a copy of the voice. Debug builds: `ROAMIES_VOICE_ENGINE=local` (or `fish`) picks the voice for one run
 without changing the saved setting.
 
+Money (`sidecar/money.mjs`, `sidecar/money/`): expenses read from bank notification mails, kept in
+`<data dir>/money.db` (`node:sqlite`, schema migrations in `money/store.mjs`); questions run as one read-only SELECT
+in a child process with row and time limits (`money/query.mjs`). Banks are data, one JSON per bank in `sidecar/banks/`
+(bundled in), and users add or replace them with the same JSON in `<data dir>/banks/`. Test fixtures are synthetic:
+never put a real mail's names, account numbers or amounts in the repository.
+
 ## Commands
 
 ```sh
 cd showcase/tauri/sidecar && npm ci     # install sidecar deps
-npm test                                # sidecar tests (reply stream, storage, pointing, safety, voice model download)
+npm test                                # sidecar tests (reply stream, storage, pointing, safety, voice model download, money)
 npm run build                           # bundle the sidecar into dist/
 cd .. && ./build.sh dev                 # web files + sidecar + debug `cargo build`
 ./build.sh                              # release bundle for this OS (signs on macOS if a Developer ID is in the keychain)
