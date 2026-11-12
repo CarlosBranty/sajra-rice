@@ -99,6 +99,9 @@ remote control (`allow_remote_control socket-only`, `listen_on unix:${XDG_RUNTIM
 text over stdin) and into any other window by focusing it for a moment, then putting back that screen's workspace and
 the user's window; `terminal_output` reads a kitty's screen or last command's output. Text with Enter in a terminal goes
 through `classifyCommand` like run_command (refused, or asked first); password managers and prompts are never typed into.
+A yes/no question (Allow / Don't allow) can be answered by voice: while one is open a take doesn't interrupt the
+request or close the bubble (host.js), and its words go to `answerByVoice` (sidekick.mjs, `speech.mjs` `spokenChoice`:
+"sí", "dale", "permite"… allow; "no", "cancela"… decline; anything else leaves the question open).
 Dictation (Linux): `roamies --dictate` on a key's press and `roamies --dictate-end` on its release (two compositor
 binds, `{ release = true }` on the second) hold a take in the running voice helper (`hold` and `release` commands;
 pauses don't end it, MAX_HELD does if the release never comes) whose words are typed where the keyboard is with

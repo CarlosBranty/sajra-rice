@@ -217,3 +217,20 @@ export const wakeFor = (c) => (wakeOf(c).on ? wakeOf(c).phrase : '');
 export const THEMES = [['classic', 'Classic'], ['system', 'System']];
 /** The saved setting as one of the choices: anything else (missing, or a value that isn't a choice) is 'classic'. */
 export const themeOf = (v) => (typeof v === 'string' && THEMES.some(([id]) => id === v) ? v : 'classic');
+
+// ---------- a yes/no question answered by voice ----------
+// A permission question (Allow / Don't allow) heard as words: 'yes', 'no', or null when they say neither (the
+// question stays open). Spanish and English, accents and punctuation aside; a "no" anywhere first wins
+// ("mejor no", "no, permítelo después").
+const plainWords = (t) => String(t ?? '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[^a-z' ]+/g, ' ').trim().split(/\s+/).filter(Boolean);
+const NO_WORDS = new Set(['no', 'nope', 'nah', 'cancela', 'cancelar', 'cancelalo', 'niega', 'niegalo', 'deniega', 'denegar', 'rechaza', 'rechazalo', 'deny', "don't", 'dont', 'cancel']);
+// "Para" is also "for" ("sí, para eso"): a stop only as the first word.
+const STOP_FIRST = new Set(['para', 'detente', 'stop']);
+const YES_WORDS = new Set(['si', 'claro', 'dale', 'ok', 'okay', 'vale', 'acepto', 'acepta', 'aceptalo', 'aceptar', 'permite', 'permitelo', 'permitir', 'permitido', 'adelante', 'hazlo', 'yes', 'yeah', 'yep', 'sure', 'allow', 'go', 'confirmo', 'confirma']);
+export function spokenChoice(text) {
+  const w = plainWords(text).filter((x) => !['eh', 'em', 'mm', 'pues', 'bueno', 'mejor', 'well', 'um', 'uh'].includes(x));
+  if (!w.length || w.length > 8) return null;
+  if (w.some((x) => NO_WORDS.has(x)) || STOP_FIRST.has(w[0])) return 'no';
+  if (YES_WORDS.has(w[0]) || (w[0] === 'de' && w[1] === 'acuerdo')) return 'yes';
+  return null;
+}

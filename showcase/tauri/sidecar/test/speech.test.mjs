@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { SpeechText, speakable, CueFilter, VOICE_CUES, CUE_INTENSITY, endsWithQuestion, LANGUAGES, languageOf, languageLine } from '../speech.mjs';
+import { SpeechText, speakable, CueFilter, VOICE_CUES, CUE_INTENSITY, endsWithQuestion, LANGUAGES, languageOf, languageLine, spokenChoice } from '../speech.mjs';
 
 const said = (chunks, flushAt = []) => {
   const out = [];
@@ -149,3 +149,14 @@ for (const v of ['auto', undefined, null, '', 'fr', 'ES', ['es']]) assert.equal(
   }
   assert.match(languageLine('es'), /whatever language the user writes or speaks in/, 'with no name it says the user');
 }
+
+// A permission question answered by voice (Allow / Don't allow): yes or no in Spanish or English, else nothing.
+for (const t of ['Sí.', 'si', 'Sí, permítelo', 'Dale', 'Claro que sí', 'Ok', 'vale', 'Acepto', 'Acéptalo', 'Permitir', 'Permite', 'Adelante', 'Hazlo', 'De acuerdo', 'Eh, sí', 'Yes', 'allow', 'go ahead', 'Sure.']) {
+  assert.equal(spokenChoice(t), 'yes', t);
+}
+for (const t of ['No.', 'no, gracias', 'No permitas eso', 'Cancela', 'Cancelar', 'Niégalo', 'Deniega', 'Para', 'Mejor no', 'Nope', "Don't allow", 'deny']) {
+  assert.equal(spokenChoice(t), 'no', t);
+}
+assert.equal(spokenChoice('Sí, para eso'), 'yes', '"para" inside is not a stop');
+for (const t of ['', 'qué hora es', 'abre el navegador', 'sigue con lo otro', 'sistema', 'nota']) assert.equal(spokenChoice(t), null, t);
+console.log('spoken choice tests: passed');

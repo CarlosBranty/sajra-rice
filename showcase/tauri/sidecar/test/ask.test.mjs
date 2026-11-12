@@ -210,6 +210,20 @@ for (const [name, flags] of [['a layer surface', { ROAMIE_LINUX: 'wayland', ROAM
   assert.deepEqual(keys, [false], 'the keyboard had already gone back');
   assert.equal(p.whole(), false);
 
+  // A yes/no stays open while the user talks: the words may answer it, and the sidecar closes it then. A typed
+  // question still goes when a take starts, as before.
+  host({ kind: 'ask', id: 'yn2', prompt: 'Run it?', choices: ['Allow', "Don't allow"] }); run(1); tick();
+  const answered = p.answers().length;
+  host({ kind: 'voice', type: 'state', state: 'listening', mode: 'hold' }); run(1); tick();
+  assert.equal(p.answers().length, answered, 'not answered by starting to talk');
+  host({ kind: 'cancel_ask', id: 'yn2' }); run(1); tick();
+  assert.equal(p.answers().length, answered, 'closed by the sidecar without an answer of its own');
+  host({ kind: 'voice', type: 'state', state: 'idle' }); run(1);
+  host({ kind: 'ask', id: 'typed', prompt: 'Paste it' }); run(1); tick();
+  host({ kind: 'voice', type: 'state', state: 'listening', mode: 'hold' }); run(1); tick();
+  assert.deepEqual(p.answers().at(-1), { type: 'answer', id: 'typed', text: null }, 'a typed question goes, as before');
+  host({ kind: 'voice', type: 'state', state: 'idle' }); run(1);
+
   // The bar hears whether the Roamie is out even while its slot is on another screen (the one in use): there is one
   // overlay, and the shell goes by the same word when it takes the overlay there.
   p.outs.length = 0;

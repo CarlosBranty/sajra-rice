@@ -30,7 +30,7 @@ import { actionsOff as ACTIONS_OFF, createTools, expand, fitImage, imageBlock, w
 import { describeMarks } from './marks.mjs';
 import { faviconFor } from './draw.mjs';
 import { QUESTIONS, openNote, answerTurn, wantsSkip, endsChat, splitTurn, plain, stripNote, tourBeats, goalFrom, showcaseBeats } from './intro.mjs';
-import { SpeechText, CueFilter, VOICE_CUES, endsWithQuestion, LANGUAGES, languageOf, languageLine, DUCK_LEVELS, duckOf, duckLevel, WAKE_MIN, WAKE_MAX, wakePhrase, wakeOf, wakeFor, THEMES, themeOf } from './speech.mjs';
+import { SpeechText, CueFilter, VOICE_CUES, endsWithQuestion, spokenChoice, LANGUAGES, languageOf, languageLine, DUCK_LEVELS, duckOf, duckLevel, WAKE_MIN, WAKE_MAX, wakePhrase, wakeOf, wakeFor, THEMES, themeOf } from './speech.mjs';
 import { createSpeaker } from './speaker.mjs';
 import { createLatency } from './latency.mjs';
 import { LOCAL_VOICE, createLocalEngine, localModel } from './localvoice.mjs';
@@ -1028,16 +1028,19 @@ const friendly = (err) => {
 // ---------- asking the user (input bubble in the overlay) ----------
 let askSeq = 0;
 const pending = new Map();
+// The yes/no questions open now (Allow / Don't allow), which a spoken answer can close (onVoice, spokenChoice).
+const choiceAsks = new Map();
 function ask(opts, signal) {
   const id = `a${++askSeq}`;
   const to = onboarding ? ob : ui;
+  if (opts.choices?.length === 2) choiceAsks.set(id, { choices: opts.choices, to });
   // The setup guide has no buttons: its answer box takes a typed y.
   if (onboarding && opts.choices) opts = { ...opts, placeholder: `${opts.placeholder} Type y to allow.` };
   to({ kind: 'ask', id, ...opts });
   return new Promise((resolve) => {
     pending.set(id, resolve);
     // Another route finished first (e.g. the OAuth callback server): close the input bubble.
-    signal?.addEventListener('abort', () => { pending.delete(id); to({ kind: 'cancel_ask', id }); resolve(null); }, { once: true });
+    signal?.addEventListener('abort', () => { pending.delete(id); choiceAsks.delete(id); to({ kind: 'cancel_ask', id }); resolve(null); }, { once: true });
   });
 }
 
@@ -1499,14 +1502,28 @@ if (NEEDS_MODEL && voiceReady() && config.voice) {
     .then((missing) => logLine('voice_model', { phase: 'extras', missing }))
     .catch((e) => logLine('voice_model', { phase: 'extras', error: String(e?.message ?? e).slice(0, 200) }));
 }
+// A yes/no open (the newest) answered with words: "sí", "dale", "permite" → its first choice (Allow); "no",
+// "cancela" → its second. Neither: it stays open, and the words are dropped (they weren't a new question).
+function answerByVoice(text) {
+  const [id, { choices, to }] = [...choiceAsks].at(-1);
+  const pick = spokenChoice(text);
+  logLine('ask_by_voice', { pick: pick ?? 'unclear', chars: text.length });
+  if (!pick) return;
+  const resolve = pending.get(id);
+  pending.delete(id); choiceAsks.delete(id);
+  to({ kind: 'cancel_ask', id });
+  resolve?.(pick === 'yes' ? choices[0] : choices[1]);
+}
 const PRIVACY = { microphone: 'Privacy_Microphone', speech: 'Privacy_SpeechRecognition' };
 function onVoice(m) {
-  if (m.type === 'voice_state' && m.state === 'listening') { interruptQuietly(); speech.stop(); warmUp(); } // talking over it stops it
+  // Talking over a reply stops it; not while it waits on a yes/no, which the words may answer.
+  if (m.type === 'voice_state' && m.state === 'listening') { if (!choiceAsks.size) interruptQuietly(); speech.stop(); warmUp(); }
   else if (m.type === 'voice_state' && m.state === 'processing') frontSoon = { at: Date.now(), p: whereNow() };
   else if (m.type === 'voice' && m.text?.trim()) {
     // Key release to the words arriving (mic tail and the recogniser finishing), to see what that step costs.
     if (typeof m.ms === 'number') logLine('voice_final', { ms: m.ms, via: String(m.via ?? ''), chars: m.text.trim().length });
     if (latency.on) asked = latency.start(m.trace);
+    if (choiceAsks.size) return answerByVoice(m.text.trim());
     onSpoken(m.text.trim(), m.area);
   }
   else if (m.type === 'voice_state' && m.state === 'idle' && snap?.waitingVoice) snap.waitingVoice = false;
@@ -1695,7 +1712,7 @@ async function onSpoken(text, area) {
 function takeSnap() {
   if (!snap || Date.now() - snap.at > 120_000) { snap = null; return null; }
   const s = snap; snap = null;
-  for (const [id, resolve] of pending) { ui({ kind: 'cancel_ask', id }); resolve(null); pending.delete(id); }
+  for (const [id, resolve] of pending) { ui({ kind: 'cancel_ask', id }); resolve(null); pending.delete(id); choiceAsks.delete(id); }
   return s.image;
 }
 
@@ -1879,7 +1896,7 @@ createInterface({ input: process.stdin }).on('line', (line) => {
     if (r.view && panelOpen) send({ type: 'panel', msg: { kind: 'money', view: r.view } });
     if (r.text && (m.op !== 'list' || !r.ok)) panelNote(r.text, !r.ok);
   });
-  else if (m.type === 'answer') { pending.get(m.id)?.(m.text ?? null); pending.delete(m.id); }
+  else if (m.type === 'answer') { pending.get(m.id)?.(m.text ?? null); pending.delete(m.id); choiceAsks.delete(m.id); }
   // Only the shell sends these (pages can't: main.rs page_may_send): the prompt is up, and how it went.
   else if (m.type === 'auth_open' || m.type === 'auth_result') authorize.heard(m);
   else if (m.type === 'ui_ready') {

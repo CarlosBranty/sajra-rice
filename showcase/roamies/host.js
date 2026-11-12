@@ -481,7 +481,8 @@
     if (m.type === 'state' && m.state === 'listening') {
       hearing = true; penAway = false; penSync();
       dropAutoListen();
-      if (ask) finishAsk(null);
+      // A yes/no (Allow / Don't allow) stays: the words may answer it (the sidecar closes it then).
+      if (ask && !ask.choices) finishAsk(null);
       endTalk();
       heard = null;
       panel()?.close();
