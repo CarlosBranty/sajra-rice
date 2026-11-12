@@ -2,14 +2,16 @@
 // GPL-3.0) speaks it: espeak-ng turns the text into IPA clause by clause (espeak_TextToPhonemesWithTerminator), each
 // clause gets its punctuation back, the phonemes are split into Unicode code points (NFD) with the voice's vowel
 // clusters ("eɪ") merged into one token, and the tokens become ids (^ _ id _ id _ … $) for the model, one run per
-// sentence. Each sentence's audio is scaled to full range and sent as 16-bit PCM at the voice's rate.
+// sentence. Each sentence's audio is scaled to full range and sent as 16-bit PCM at the voice's rate. A sentence
+// longer than MAX_PHONEMES is made in pieces cut at spaces (Piper makes it whole: memory grows with its length).
 //
 // roamies-voice --speak <voice.onnx> [--speaker 1] [--threads 2]
-// Loads the voice (its config is <voice.onnx>.json; espeak-ng's Spanish data, built into this helper, is written next
-// to it as espeak-ng-data), says {"type":"ready","rate":22050,"ms":…}, then reads JSON lines:
+// Loads the voice (its config is <voice.onnx>.json; espeak-ng's data, built into this helper, is unpacked next to it
+// as espeak-ng-data the first time), says {"type":"ready","rate":22050,"ms":…}, then reads JSON lines:
 //   {"id":"s1","text":"Hola. ¿Qué tal?"}  speaks it: {"type":"audio","id":"s1","rate":22050,"pcm":"<base64>"} per
 //                                          chunk (sentence by sentence, as each is made), then {"type":"said","id":"s1"}
-//   {"cmd":"cancel","id":"s1"}            drops what's still queued for s1
+//                                          (texts are spoken in the order they come, each ends with its "said")
+//   {"cmd":"cancel","id":"s1"}            drops what's still queued for s1 (its texts still end with "said")
 // Exits when stdin closes. Errors: {"type":"error","message":…} (and exit 1 when the voice can't load).
 use crate::emit;
 use parakeet_rs::ort;
@@ -23,6 +25,14 @@ use unicode_normalization::UnicodeNormalization;
 
 /// At most this many samples per audio message (about a third of a second at 22 050 Hz).
 pub const CHUNK: usize = 8192;
+
+/// At most this many phoneme tokens (2n + 3 ids) go to the model at once. Its memory and time grow with the length:
+/// measured on a 4-core i7-1185G7 with 2 threads, peak RSS 407 MB and 1.4 s at 583 ids, 696 MB and 4.1 s at 1167,
+/// 1.4 GB at 2357, 2.8 GB and 18 s at 4709. In pieces of at most 1003 ids the peak stays at 0.55 to 0.8 GB however long
+/// the sentence (400 words: 2.8 GB before; 930 characters with no space: 1.9 GB and 16 s to the first audio before,
+/// 1.6 s now), and that's twice what the sidecar's longest sentences make (it cuts at 220 characters: about 490 ids
+/// of Spanish), so those stay whole.
+pub const MAX_PHONEMES: usize = 500;
 
 /// What the voice's .onnx.json says, as Piper reads it (config.py PiperConfig.from_dict).
 #[derive(Debug)]
@@ -184,6 +194,25 @@ pub fn phonemize(text: &str, clusters: &[Vec<String>], clauses: &mut dyn FnMut(&
     out
 }
 
+/// A sentence's tokens in pieces of at most `max`, each cut at the last space that fits (the spaces at a cut dropped),
+/// or at `max` when there's none. A sentence that fits is one piece, as it was.
+pub fn pieces(tokens: &[String], max: usize) -> Vec<&[String]> {
+    let mut out = Vec::new();
+    let mut rest = tokens;
+    while rest.len() > max {
+        let cut = rest[..=max].iter().rposition(|t| t == " ").filter(|&i| i > 0).unwrap_or(max);
+        out.push(&rest[..cut]);
+        rest = &rest[cut..];
+        while rest.first().is_some_and(|t| t == " ") {
+            rest = &rest[1..];
+        }
+    }
+    if !rest.is_empty() || out.is_empty() {
+        out.push(rest);
+    }
+    out
+}
+
 /// Phoneme tokens to the model's ids: ^ _ then each token's ids and _, then $ (phoneme_ids.phonemes_to_ids).
 /// Tokens the voice doesn't know are left out, as Piper does (it logs a warning).
 pub fn to_ids(phonemes: &[String], map: &HashMap<String, Vec<i64>>) -> Vec<i64> {
@@ -245,25 +274,44 @@ mod espeak {
     const CHARS_AUTO: c_int = 0;
     const PHONEMES_IPA: c_int = 0x02;
 
-    // The data compiled with this library (build.rs): written next to the voice, as espeak-ng reads files.
-    const FILES: &[(&str, &[u8])] = &[
-        ("phondata", include_bytes!(concat!(env!("ROAMIES_ESPEAK_DATA"), "/phondata"))),
-        ("phonindex", include_bytes!(concat!(env!("ROAMIES_ESPEAK_DATA"), "/phonindex"))),
-        ("phontab", include_bytes!(concat!(env!("ROAMIES_ESPEAK_DATA"), "/phontab"))),
-        ("intonations", include_bytes!(concat!(env!("ROAMIES_ESPEAK_DATA"), "/intonations"))),
-        ("es_dict", include_bytes!(concat!(env!("ROAMIES_ESPEAK_DATA"), "/es_dict"))),
-        ("lang/roa/es", include_bytes!(concat!(env!("ROAMIES_ESPEAK_DATA"), "/lang/roa/es"))),
-    ];
+    // The data compiled with this library (build.rs: phonemes, intonations, every dictionary, the Spanish voice file),
+    // deflated: PACK, its FILES (name, size) and the SUM of the unpacked stream.
+    mod data {
+        include!(concat!(env!("OUT_DIR"), "/espeak_data.rs"));
+    }
+    const STAMP: &str = "roamies-data";
 
-    /// Writes the data (only what differs) into `dir` and starts espeak-ng on it. Once per process.
-    pub fn init(dir: &Path) -> Result<(), String> {
-        for (name, bytes) in FILES {
-            let p = dir.join(name);
-            if std::fs::read(&p).ok().as_deref() != Some(*bytes) {
-                std::fs::create_dir_all(p.parent().unwrap()).map_err(|e| format!("{}: {e}", dir.display()))?;
-                std::fs::write(&p, bytes).map_err(|e| format!("{}: {e}", p.display()))?;
-            }
+    /// Unpacks the data into `dir`, as espeak-ng reads files, unless it's already there: the stamp file (written last)
+    /// holds this build's SUM and every file has its size. Returns whether it wrote anything.
+    pub fn unpack(dir: &Path) -> Result<bool, String> {
+        let there = std::fs::read_to_string(dir.join(STAMP)).is_ok_and(|s| s == data::SUM)
+            && data::FILES.iter().all(|(name, len)| std::fs::metadata(dir.join(name)).is_ok_and(|m| m.len() == *len));
+        if there {
+            return Ok(false);
         }
+        let io = |p: &Path, e: std::io::Error| format!("{}: {e}", p.display());
+        let _ = std::fs::remove_file(dir.join(STAMP));
+        let mut z = std::io::BufReader::new(flate2::read::ZlibDecoder::new(data::PACK));
+        let mut take = |n: usize| -> Result<Vec<u8>, String> {
+            let mut b = vec![0; n];
+            std::io::Read::read_exact(&mut z, &mut b).map_err(|e| format!("espeak-ng data: {e}"))?;
+            Ok(b)
+        };
+        for _ in data::FILES {
+            let n = u32::from_le_bytes(take(4)?.try_into().unwrap()) as usize;
+            let name = String::from_utf8(take(n)?).map_err(|e| e.to_string())?;
+            let len = u64::from_le_bytes(take(8)?.try_into().unwrap()) as usize;
+            let p = dir.join(&name);
+            std::fs::create_dir_all(p.parent().unwrap()).map_err(|e| io(dir, e))?;
+            std::fs::write(&p, take(len)?).map_err(|e| io(&p, e))?;
+        }
+        std::fs::write(dir.join(STAMP), data::SUM).map_err(|e| io(dir, e))?;
+        Ok(true)
+    }
+
+    /// Unpacks the data into `dir` (unless it's there) and starts espeak-ng on it. Once per process.
+    pub fn init(dir: &Path) -> Result<(), String> {
+        unpack(dir)?;
         let path = CString::new(dir.to_string_lossy().into_owned()).map_err(|e| e.to_string())?;
         // SAFETY: a NUL-terminated path; espeak-ng copies it. Called once, from the one thread that uses espeak-ng.
         let rate = unsafe { espeak_Initialize(AUDIO_OUTPUT_SYNCHRONOUS, 0, path.as_ptr(), INITIALIZE_DONT_EXIT) };
@@ -429,19 +477,22 @@ pub fn run(model: &Path, speaker: Option<i64>, threads: usize) -> i32 {
             if s.is_empty() {
                 continue;
             }
-            let ids = to_ids(&s, &voice.cfg.ids);
-            match voice.audio(ids) {
-                Ok(a) => {
-                    for pcm in chunks(&to_pcm(&a)) {
-                        emit(json!({ "type": "audio", "id": id, "rate": rate, "pcm": pcm }));
-                    }
+            for piece in pieces(&s, MAX_PHONEMES) {
+                if stopped(&id) {
+                    break;
                 }
-                Err(e) => emit(json!({ "type": "error", "id": id, "message": e })),
+                match voice.audio(to_ids(piece, &voice.cfg.ids)) {
+                    Ok(a) => {
+                        for pcm in chunks(&to_pcm(&a)) {
+                            emit(json!({ "type": "audio", "id": id, "rate": rate, "pcm": pcm }));
+                        }
+                    }
+                    Err(e) => emit(json!({ "type": "error", "id": id, "message": e })),
+                }
             }
         }
-        if !stopped(&id) {
-            emit(json!({ "type": "said", "id": id }));
-        }
+        // Every text ends with "said", a cancelled one too: the sidecar knows from it which text is being spoken.
+        emit(json!({ "type": "said", "id": id }));
     }
     0
 }
@@ -454,16 +505,24 @@ mod tests {
         Config::parse(&serde_json::from_str(include_str!("../fixtures/es_ES-sharvard-medium.onnx.json")).unwrap()).unwrap()
     }
 
-    // The ids upstream Piper 1.8 gave for the five test lines (fixtures/piper18-ids.json, made once with its Python
-    // package); espeak-ng from build.rs must give the same, token for token.
+    // espeak-ng is one state for the process: the tests that use it take turns, on its data unpacked once (OUT_DIR).
     #[cfg(not(no_espeak))]
-    #[test]
-    fn text_to_ids_matches_piper_1_8() {
+    fn espeak_ready() -> std::sync::MutexGuard<'static, ()> {
+        static TURN: Mutex<()> = Mutex::new(());
+        static INIT: std::sync::Once = std::sync::Once::new();
+        let turn = TURN.lock().unwrap_or_else(|e| e.into_inner());
+        INIT.call_once(|| {
+            espeak::init(&Path::new(env!("OUT_DIR")).join("speak-test")).unwrap();
+            espeak::set_voice(&voice_config().espeak_voice).unwrap();
+        });
+        turn
+    }
+
+    #[cfg(not(no_espeak))]
+    fn matches_piper(fixture: &str) {
         let cfg = voice_config();
-        let dir = std::env::temp_dir().join(format!("roamies-speak-test-{}", std::process::id()));
-        espeak::init(&dir).unwrap();
-        espeak::set_voice(&cfg.espeak_voice).unwrap();
-        let want: Value = serde_json::from_str(include_str!("../fixtures/piper18-ids.json")).unwrap();
+        let _turn = espeak_ready();
+        let want: Value = serde_json::from_str(fixture).unwrap();
         for line in want.as_array().unwrap() {
             let text = line["text"].as_str().unwrap();
             let got = phonemize(text, &cfg.clusters, &mut |t| espeak::clauses(t));
@@ -472,7 +531,86 @@ mod tests {
             assert_eq!(got, want_ph, "phonemes of {text:?}");
             assert_eq!(got.iter().map(|s| to_ids(s, &cfg.ids)).collect::<Vec<_>>(), want_ids, "ids of {text:?}");
         }
+    }
+
+    // The ids upstream Piper 1.8 gave for the five test lines (fixtures/piper18-ids.json, made once with its Python
+    // package); espeak-ng from build.rs must give the same, token for token.
+    #[cfg(not(no_espeak))]
+    #[test]
+    fn text_to_ids_matches_piper_1_8() {
+        matches_piper(include_str!("../fixtures/piper18-ids.json"));
+    }
+
+    // Letters outside the Spanish alphabet make espeak-ng switch to another language (English for “ ² →, Greek for π,
+    // Korean, Hebrew…): the same ids as Piper 1.8, which ships every dictionary (fixtures/piper18-ids-switch.json).
+    #[cfg(not(no_espeak))]
+    #[test]
+    fn text_in_other_alphabets_matches_piper_1_8() {
+        matches_piper(include_str!("../fixtures/piper18-ids-switch.json"));
+    }
+
+    // espeak-ng crashed on a language switch whose dictionary wasn't there. Every character there is, one by one and
+    // run together, and the lines that crashed it, go through without a crash; each of those lines makes ids.
+    #[cfg(not(no_espeak))]
+    #[test]
+    fn no_text_crashes_espeak() {
+        let cfg = voice_config();
+        let _turn = espeak_ready();
+        let lines: Vec<String> = serde_json::from_str::<Value>(include_str!("../fixtures/piper18-ids-switch.json")).unwrap()
+            .as_array().unwrap().iter().map(|l| l["text"].as_str().unwrap().to_owned()).collect();
+        for text in &lines {
+            let ids: usize = phonemize(text, &cfg.clusters, &mut |t| espeak::clauses(t)).iter().map(|s| to_ids(s, &cfg.ids).len()).sum();
+            assert!(ids > 10, "no ids for {text:?}");
+        }
+        let all: Vec<char> = (1..=0x10FFFFu32).filter_map(char::from_u32).collect();
+        for block in all.chunks(64) {
+            let apart: String = block.iter().flat_map(|c| [*c, ' ']).collect();
+            let together: String = block.iter().collect();
+            for text in [format!("Hola {apart}."), format!("Hola {together} adiós.")] {
+                for s in phonemize(&text, &cfg.clusters, &mut |t| espeak::clauses(t)) {
+                    to_ids(&s, &cfg.ids);
+                }
+            }
+        }
+    }
+
+    // The data is unpacked once: again only when a file is missing or another size, or the stamp is another build's.
+    #[cfg(not(no_espeak))]
+    #[test]
+    fn espeak_data_is_unpacked_once_and_mended() {
+        let dir = Path::new(env!("OUT_DIR")).join("unpack-test");
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(espeak::unpack(&dir).unwrap());
+        assert!(!espeak::unpack(&dir).unwrap(), "already there");
+        let ru = std::fs::metadata(dir.join("ru_dict")).unwrap().len();
+        std::fs::remove_file(dir.join("ru_dict")).unwrap();
+        std::fs::write(dir.join("es_dict"), b"x").unwrap();
+        assert!(espeak::unpack(&dir).unwrap(), "a file missing, one cut short");
+        assert_eq!(std::fs::metadata(dir.join("ru_dict")).unwrap().len(), ru);
+        std::fs::write(dir.join("roamies-data"), "another build").unwrap();
+        assert!(espeak::unpack(&dir).unwrap());
+        assert!(dir.join("en_dict").is_file() && dir.join("lang/roa/es").is_file() && !dir.join("lang/roa/it").exists());
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn long_sentences_are_made_in_pieces_cut_at_spaces() {
+        let s = |x: &str| x.chars().map(String::from).collect::<Vec<_>>();
+        let short = s("ola, ke tal.");
+        assert_eq!(pieces(&short, 12), vec![&short[..]], "one that fits stays whole");
+        assert_eq!(pieces(&[], 5), vec![&[] as &[String]]);
+        let long = s("uno dos tres, kwatro.");
+        assert_eq!(pieces(&long, 9), vec![&s("uno dos")[..], &s("tres,")[..], &s("kwatro.")[..]]);
+        assert_eq!(pieces(&long, 13), vec![&s("uno dos tres,")[..], &s("kwatro.")[..]], "the space after the cut is dropped");
+        let word = s("abcdefghij");
+        assert_eq!(pieces(&word, 4), vec![&s("abcd")[..], &s("efgh")[..], &s("ij")[..]], "no space: a hard cut");
+        // Whatever the size, every piece fits, none starts with a space, and nothing but the spaces at the cuts is lost.
+        let unspaced = |t: &[String]| t.iter().filter(|x| *x != " ").cloned().collect::<Vec<_>>();
+        for max in 1..25 {
+            let p = pieces(&long, max);
+            assert!(p.iter().all(|x| !x.is_empty() && x.len() <= max && x[0] != " "), "{max}");
+            assert_eq!(unspaced(&p.concat()), unspaced(&long), "{max}");
+        }
     }
 
     #[test]

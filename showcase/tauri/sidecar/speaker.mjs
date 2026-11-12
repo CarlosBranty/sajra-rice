@@ -11,7 +11,8 @@
 //   Spanish line ("Vale, déjame ver.") plays instead, made over Fish in the voice in use when it's picked.
 // - The local voice (localvoice.mjs, Linux and Windows), when it's picked and downloaded: replies are spoken on this
 //   computer instead, with no Fish key. It's one Spanish voice for every look; its beats are made with it, never Fish's
-//   shipped ones. If it fails before any audio the reply stays text, as with Fish.
+//   shipped ones. If it fails before any audio the reply stays text, as with Fish; a sentence its helper crashes on is
+//   skipped and the reply goes on (localvoice.mjs).
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';

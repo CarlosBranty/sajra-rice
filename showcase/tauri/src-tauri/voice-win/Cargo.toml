@@ -12,8 +12,10 @@ publish = false
 parakeet-rs = "=0.4.3"
 serde_json = "=1.0.154"
 hound = "=3.5.1"
-# The local voice (speak.rs): Unicode NFD of espeak-ng's phonemes, as upstream Piper splits them.
+# The local voice (speak.rs): Unicode NFD of espeak-ng's phonemes, as upstream Piper splits them; flate2 unpacks
+# espeak-ng's data (build.rs deflates it: ~18 MB of dictionaries in ~9 MB of the binary).
 unicode-normalization = "=0.1.26"
+flate2 = "=1.1.11"
 
 [target.'cfg(any(windows, target_os = "linux"))'.dependencies]
 cpal = "=0.18.2"

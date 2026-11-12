@@ -37,11 +37,16 @@ The local voice (Windows and Linux): `roamies-voice --speak <voice.onnx> [--spea
 voice as upstream Piper 1.8 (`OHF-Voice/piper1-gpl`) does, in a process of its own that the sidecar starts when the
 voice is picked (`sidecar/localvoice.mjs`, JSON lines; see the top of `voice-win/src/speak.rs`). Text becomes phonemes
 with espeak-ng, built from source by `voice-win/build.rs` at the commit Piper pins (downloaded once and checked; set
-`ESPEAK_NG_SOURCE` to a checkout to build offline; needs CMake and a C compiler), whose Spanish data is compiled at build
-time and embedded in the helper. The VITS model runs on the `ort` Parakeet already links. The voice (`es_ES-sharvard-medium`
+`ESPEAK_NG_SOURCE` to a checkout to build offline; needs CMake and a C compiler), whose data is compiled at build time,
+deflated into the helper and unpacked next to the voice on first use. Every dictionary is built, as Piper ships them:
+for letters outside the Spanish alphabet espeak-ng switches language and crashes if that dictionary is missing
+(`build.rs` `check_switches` fails the build if one could be). Sentences longer than `MAX_PHONEMES` go to the model in
+pieces (memory grows with length). If the helper still dies on a text, the sidecar skips that text and starts it again
+once. The VITS model runs on the `ort` Parakeet already links. The voice (`es_ES-sharvard-medium`
 at piper-voices commit cf910fb, speaker F) downloads on first use next to the speech model. `cargo test` there checks
-that text gives the same phoneme ids as Piper 1.8 for five Spanish lines (`voice-win/fixtures/piper18-ids.json`, made
-once with Piper's Python package). Debug builds: `ROAMIES_VOICE_ENGINE=local` (or `fish`) picks the voice for one run
+that text gives the same phoneme ids as Piper 1.8 (`voice-win/fixtures/piper18-ids*.json`, made once with Piper's
+Python package) and that no character crashes espeak-ng; `ROAMIES_TEST_VOICE=<voice.onnx> cargo test --release --test
+speak` runs `--speak` end to end on a copy of the voice. Debug builds: `ROAMIES_VOICE_ENGINE=local` (or `fish`) picks the voice for one run
 without changing the saved setting.
 
 ## Commands

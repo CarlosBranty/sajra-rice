@@ -318,10 +318,10 @@ const fakeSpawn = () => {
   assert.deepEqual(procs[0].lines.at(-1), { cmd: 'cancel', id: 'a' });
   procs[0].send({ type: 'audio', id: 'a', rate: 22050, pcm: 'CCC=' });
   assert.equal(got.length, 2);
-  // The process exits: open ids get an error, and the next text starts it again.
+  // The process exits while on the cancelled text: nothing open is lost, and the next text starts it again.
   e.listen('c', { onError: (err) => got.push(['error', err.message]) });
   procs[0].emit('exit', 1);
-  assert.deepEqual(got.at(-1), ['error', 'The local voice stopped']);
+  assert.equal(got.length, 2);
   e.say('d', 'Otra vez.');
   assert.equal(procs.length, 2);
   assert.deepEqual(procs[1].lines, [{ id: 'd', text: 'Otra vez.' }]);
@@ -346,6 +346,57 @@ const fakeSpawn = () => {
   x.say('Cuatro.');
   procs[0].send({ type: 'error', id: x.id, message: 'boom' });
   assert.equal(ev.at(-1), 'error false', 'failed before any audio');
+}
+{ // The helper dies on a text (a crash on something in it): that text is skipped, the helper starts again with what
+  // was still queued, and the reply goes on without it. Once: one started again that dies before saying anything
+  // fails what's open, as does one that dies before it's ready (the voice won't load).
+  const { procs, spawnImpl } = fakeSpawn();
+  const logs = [];
+  const e = createLocalEngine({ bin: 'b', model: 'm', spawnImpl, log: (k, d) => logs.push([k, d]) });
+  const ev = [];
+  const reply = (tag) => new LocalVoice({ engine: e, onAudio: (p) => ev.push(`${tag} ${p}`), onEnd: () => ev.push(`${tag} end`), onError: (err) => ev.push(`${tag} error ${err.message}`) }).open();
+  const v = reply('v');
+  v.say('Uno.'); v.say('Dos π².'); v.say('Tres.'); v.end();
+  procs[0].send({ type: 'ready', ms: 1 });
+  procs[0].send({ type: 'audio', id: v.id, pcm: 'AA==' }); procs[0].send({ type: 'said', id: v.id });
+  procs[0].emit('exit', null, 'SIGSEGV');
+  assert.equal(procs.length, 2, 'started again');
+  assert.deepEqual(procs[1].lines, [{ id: v.id, text: 'Tres.' }], 'with the rest, not the text it died on');
+  assert.deepEqual(logs.find(([k]) => k === 'local_voice_skip')?.[1], { id: v.id, chars: 7 });
+  procs[1].send({ type: 'ready', ms: 1 }); procs[1].send({ type: 'audio', id: v.id, pcm: 'BB==' }); procs[1].send({ type: 'said', id: v.id });
+  assert.deepEqual(ev, ['v AA==', 'v BB==', 'v end'], 'the reply went on to its end, with no error');
+  // It has said something since, so a new crash is skipped again; the one after that, with nothing said, is the end.
+  const w = reply('w');
+  w.say('Cuatro.'); w.say('Cinco.');
+  procs[1].emit('exit', null, 'SIGSEGV');
+  assert.equal(procs.length, 3);
+  assert.deepEqual(procs[2].lines, [{ id: w.id, text: 'Cinco.' }]);
+  procs[2].send({ type: 'ready', ms: 1 });
+  procs[2].emit('exit', null, 'SIGSEGV');
+  assert.equal(procs.length, 3, 'not started a third time on its own');
+  assert.equal(ev.at(-1), 'w error The local voice stopped');
+  // A cancelled text still ends with "said", so the text being spoken is always known: here the crash is on 'Siete.'.
+  const x = reply('x'), y = reply('y');
+  x.say('Seis.'); y.say('Siete.'); y.say('Ocho.'); y.end();
+  assert.equal(procs.length, 4);
+  procs[3].send({ type: 'ready', ms: 1 });
+  x.abort();
+  procs[3].send({ type: 'said', id: x.id });
+  procs[3].emit('exit', null, 'SIGSEGV');
+  assert.deepEqual(procs[4].lines, [{ id: y.id, text: 'Ocho.' }]);
+  procs[4].send({ type: 'ready', ms: 1 }); procs[4].send({ type: 'said', id: y.id });
+  assert.equal(ev.at(-1), 'y end');
+  // Gone while nothing was being spoken: nothing skipped or failed, the next text starts it again. One that dies
+  // before it's ready (the voice can't load) fails what's open, and isn't started again on its own.
+  const z = reply('z');
+  procs[4].emit('exit', 0, null);
+  assert.equal(procs.length, 5); assert.equal(ev.at(-1), 'y end');
+  z.say('Nueve.');
+  assert.equal(procs.length, 6);
+  assert.deepEqual(procs[5].lines, [{ id: z.id, text: 'Nueve.' }]);
+  procs[5].emit('exit', 1, null);
+  assert.equal(ev.at(-1), 'z error The local voice stopped');
+  assert.equal(procs.length, 6);
 }
 // The speaker with the local voice: a fake LocalVoice the test drives, like FakeVoice for Fish.
 const localMade = [];

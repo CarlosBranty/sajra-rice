@@ -27,10 +27,16 @@ export const spokenText = (t) => String(t ?? '').replace(/\[[^\]]*\]\s*/g, '').r
 /**
  * The helper process: started on first use (or warm()) and kept. say(id, text) queues text; what comes back for
  * that id goes to the handlers listen(id, …) registered: onAudio(base64 PCM, rate), onSaid() once the text is all
- * spoken, onError(err). If the process exits, every open id gets an error and the next say() starts it again.
+ * spoken, onSkip() when it was skipped, onError(err).
+ * The helper speaks the texts in the order they were sent and ends each with "said" (a cancelled one too), so the
+ * first one not said yet is the one it's on. If it dies on that one (a crash on some text), that text is skipped
+ * and the helper is started again with the rest: the reply goes on without that sentence. Once: if the new one dies
+ * too before it has said anything, or one dies before it's ready (the voice won't load), every open id gets an
+ * error, as when it's stopped. With nothing being spoken, the next say() starts it again.
  */
 export function createLocalEngine({ bin, model, spawnImpl = spawn, log = () => {}, speaker = LOCAL_SPEAKER, threads = LOCAL_THREADS }) {
-  let proc = null;
+  let proc = null, ready = false, restarted = false;
+  let queue = []; // { id, text } sent to the running helper and not said yet, in order
   const listeners = new Map();
   const failAll = (why) => {
     const all = [...listeners.values()];
@@ -40,15 +46,20 @@ export function createLocalEngine({ bin, model, spawnImpl = spawn, log = () => {
   const handle = (line) => {
     let m;
     try { m = JSON.parse(line); } catch { return; }
-    if (m.type === 'ready') return log('local_voice_ready', { ms: m.ms });
+    if (m.type === 'ready') { ready = true; return log('local_voice_ready', { ms: m.ms }); }
     const l = m.id != null ? listeners.get(m.id) : null;
     if (m.type === 'audio' && typeof m.pcm === 'string') l?.onAudio?.(m.pcm, m.rate);
-    else if (m.type === 'said') l?.onSaid?.();
-    else if (m.type === 'error') { if (l) l.onError?.(new Error(String(m.message ?? 'The local voice failed'))); else log('local_voice_error', { message: String(m.message ?? '').slice(0, 200) }); }
+    else if (m.type === 'said') {
+      const i = queue.findIndex((q) => q.id === m.id);
+      if (i >= 0) queue.splice(i, 1);
+      restarted = false;
+      l?.onSaid?.();
+    } else if (m.type === 'error') { if (l) l.onError?.(new Error(String(m.message ?? 'The local voice failed'))); else log('local_voice_error', { message: String(m.message ?? '').slice(0, 200) }); }
   };
   const start = () => {
     const p = spawnImpl(bin, ['--speak', model, '--speaker', String(speaker), '--threads', String(threads)], { stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
     proc = p;
+    ready = false;
     let buf = '';
     p.stdout.setEncoding?.('utf8');
     p.stdout.on('data', (d) => {
@@ -57,12 +68,25 @@ export function createLocalEngine({ bin, model, spawnImpl = spawn, log = () => {
     });
     p.stderr?.on('data', (d) => log('local_voice_log', { text: String(d).trim().slice(0, 300) }));
     p.stdin.on?.('error', () => {});
-    const gone = (why) => { if (proc !== p) return; proc = null; log('local_voice_exit', { why }); failAll('The local voice stopped'); };
-    p.on('exit', (code) => gone(`exit ${code}`));
+    const gone = (why) => {
+      if (proc !== p) return;
+      proc = null;
+      log('local_voice_exit', { why });
+      const [doing, ...rest] = queue;
+      queue = [];
+      if (!ready || (restarted && doing)) { restarted = false; return failAll('The local voice stopped'); }
+      if (!doing) return;
+      restarted = true;
+      log('local_voice_skip', { id: doing.id, chars: doing.text.length });
+      listeners.get(doing.id)?.onSkip?.();
+      for (const q of rest) if (listeners.has(q.id)) send(q);
+    };
+    p.on('exit', (code, signal) => gone(`exit ${code ?? signal}`));
     p.on('error', (e) => gone(e.message));
   };
   const send = (msg) => {
     if (!proc) start();
+    if (msg.text != null) queue.push(msg);
     try { proc.stdin.write(`${JSON.stringify(msg)}\n`); } catch { /* the exit handler reports it */ }
   };
   return {
@@ -72,7 +96,7 @@ export function createLocalEngine({ bin, model, spawnImpl = spawn, log = () => {
     cancel(id) { listeners.delete(id); if (proc) send({ cmd: 'cancel', id }); },
     done(id) { listeners.delete(id); },
     warm() { if (!proc) start(); },
-    stop() { const p = proc; proc = null; failAll('The local voice stopped'); try { p?.kill(); } catch {} },
+    stop() { const p = proc; proc = null; queue = []; restarted = false; failAll('The local voice stopped'); try { p?.kill(); } catch {} },
     get running() { return !!proc; },
   };
 }
@@ -97,6 +121,7 @@ export class LocalVoice {
     this.engine.listen(this.id, {
       onAudio: (pcm) => { if (this.state === 'done') return; this.heard = true; this.onAudio?.(pcm); },
       onSaid: () => { this.pending--; this.check(); },
+      onSkip: () => { this.pending--; this.check(); }, // the helper crashed on that text: the reply goes on without it
       onError: (e) => this.fail(e),
     });
     return this;

@@ -2,8 +2,13 @@
 // (OHF-Voice/piper1-gpl CMakeLists.txt, GIT_TAG 724808c), so text becomes the same phonemes. Its source is downloaded
 // once into OUT_DIR and checked (the SHA-256 of the tar inside GitHub's .tar.gz, which stays the same for a commit),
 // or taken from ESPEAK_NG_SOURCE (a checkout or an unpacked archive) to build offline. CMake builds the library and the
-// espeak-ng tool; the tool then compiles the Spanish data (phonemes, intonations, es_dict), which speak.rs embeds, so
-// the data always matches the library. Needs CMake and a C compiler.
+// espeak-ng tool; the tool then compiles the data (phonemes, intonations and every dictionary espeak-ng's own build
+// makes, as Piper ships them all), which speak.rs embeds deflated, so the data always matches the library.
+// Every dictionary, not just Spanish: for a letter outside the Spanish alphabet (π, ², “, Москва, 안녕…) espeak-ng
+// switches to another language's translator, and with that language's dictionary missing it crashes (translator2 and
+// translator3 are used even when their dictionary didn't load: translate.c SetAlternateTranslator, readclause.c,
+// translateword.c). check_switches() fails the build if a language espeak-ng can switch to has no dictionary.
+// Needs CMake and a C compiler.
 // Cross-compiling (cargo xwin check from a Mac) can't run the tool: espeak-ng is left out and the local voice reports
 // that it isn't built in (cfg no_espeak).
 use std::path::{Path, PathBuf};
@@ -48,27 +53,136 @@ fn main() {
         println!("cargo:rustc-link-lib=static={lib}");
     }
 
-    // The Spanish data, as espeak-ng's cmake/data.cmake makes it (for every language there).
+    // The data, as espeak-ng's cmake/data.cmake makes it: every dictionary in its list (with the extra ones it adds by
+    // default: extra/<lang>_listx). Compiling one reads its language's voice file, so they're all there; only the
+    // Spanish one (the voice set by name) is shipped.
     let root = out.join("espeak-data");
     let data = root.join("espeak-ng-data");
     let _ = std::fs::remove_dir_all(&root);
-    std::fs::create_dir_all(data.join("lang").join("roa")).unwrap();
-    std::fs::copy(src.join("espeak-ng-data/lang/roa/es"), data.join("lang/roa/es")).unwrap();
+    copy_dir(&src.join("espeak-ng-data/lang"), &data.join("lang"));
     let ph = root.join("phsource");
     copy_dir(&src.join("phsource"), &ph);
     let dict = root.join("dictsource");
     std::fs::create_dir_all(&dict).unwrap();
-    for f in ["es_rules", "es_list", "es_emoji"] {
-        std::fs::copy(src.join("dictsource").join(f), dict.join(f)).unwrap();
+    let ds = src.join("dictsource");
+    let langs = dict_list(&std::fs::read_to_string(src.join("cmake/data.cmake")).unwrap());
+    for l in &langs {
+        for f in [format!("{l}_rules"), format!("{l}_list")] {
+            std::fs::copy(ds.join(&f), dict.join(&f)).unwrap_or_else(|e| panic!("dictsource/{f}: {e}"));
+        }
+        let listx = format!("{l}_listx");
+        if let Some(from) = [ds.join("extra").join(&listx), ds.join(&listx)].into_iter().find(|p| p.is_file()) {
+            std::fs::copy(from, dict.join(&listx)).unwrap();
+        }
+        let emoji = format!("{l}_emoji");
+        if ds.join(&emoji).is_file() {
+            std::fs::copy(ds.join(&emoji), dict.join(&emoji)).unwrap();
+        }
     }
     let run = |args: &[&str], dir: &Path| {
-        let ok = Command::new(&tool).args(args).current_dir(dir).env("ESPEAK_DATA_PATH", &root).status().map(|s| s.success());
-        assert!(matches!(ok, Ok(true)), "espeak-ng {args:?} failed");
+        let o = Command::new(&tool).args(args).current_dir(dir).env("ESPEAK_DATA_PATH", &root).output().unwrap_or_else(|e| panic!("espeak-ng {args:?}: {e}"));
+        assert!(o.status.success(), "espeak-ng {args:?} failed: {}", String::from_utf8_lossy(&o.stderr));
     };
     run(&["--compile-intonations"], &ph);
     run(&["--compile-phonemes"], &ph);
-    run(&["--compile=es"], &dict);
-    println!("cargo:rustc-env=ROAMIES_ESPEAK_DATA={}", data.display());
+    // Each dictionary is its own file, so they compile side by side.
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let threads = std::thread::available_parallelism().map_or(4, |n| n.get());
+    std::thread::scope(|s| {
+        for _ in 0..threads {
+            s.spawn(|| {
+                while let Some(l) = langs.get(next.fetch_add(1, std::sync::atomic::Ordering::Relaxed)) {
+                    run(&[&format!("--compile={l}")], &dict);
+                }
+            });
+        }
+    });
+    check_switches(&src, &data, &langs);
+    pack(&out, &data);
+}
+
+/// The dictionaries espeak-ng's build compiles: the `_dict_compile_list` in cmake/data.cmake.
+fn dict_list(cmake: &str) -> Vec<String> {
+    let start = cmake.find("_dict_compile_list").expect("no _dict_compile_list in cmake/data.cmake");
+    let body = &cmake[start + "_dict_compile_list".len()..];
+    let langs: Vec<String> = body[..body.find(')').unwrap()].split_whitespace().map(str::to_owned).collect();
+    assert!(langs.iter().any(|l| l == "es") && langs.len() > 50, "unexpected _dict_compile_list: {langs:?}");
+    langs
+}
+
+/// Every language espeak-ng can switch to while reading text must have its dictionary, or it crashes: English (the
+/// fallback for letters and numbers: ESPEAKNG_DEFAULT_VOICE), the alphabets' languages and alt_alphabet_lang
+/// (tr_languages.c), and every `_^_<lang>` in the dictionaries' sources. A switch only happens to a language with a
+/// phoneme table (SelectPhonemeTableName), so those are the ones checked. Croatian, Bosnian and Serbian read the
+/// dictionary "hbs", which espeak-ng doesn't build: a switch to them would crash too.
+fn check_switches(src: &Path, data: &Path, langs: &[String]) {
+    let tr = std::fs::read_to_string(src.join("src/libespeak-ng/tr_languages.c")).unwrap();
+    let pairs = |s: &str| -> Vec<String> {
+        s.match_indices("L('").filter_map(|(i, _)| {
+            let b = s[i..].as_bytes();
+            (b.len() > 9 && b[4] == b'\'' && b[7] == b'\'' && b[9] == b')').then(|| format!("{}{}", b[3] as char, b[8] as char))
+        }).collect()
+    };
+    let table = &tr[tr.find("alphabets[] = {").expect("no alphabets table")..];
+    let mut targets = pairs(&table[..table.find("};").unwrap()]);
+    targets.extend(tr.lines().filter(|l| l.contains("alt_alphabet_lang =")).flat_map(pairs));
+    targets.push("en".into());
+    for l in langs {
+        for f in [format!("{l}_rules"), format!("{l}_list"), format!("{l}_listx"), format!("{l}_emoji")] {
+            let Ok(text) = std::fs::read_to_string(data.parent().unwrap().join("dictsource").join(&f)) else { continue };
+            for (i, _) in text.match_indices("_^_") {
+                let name: String = text[i + 3..].chars().take_while(|c| c.is_ascii_alphanumeric() || *c == '-').collect();
+                targets.push(name.to_ascii_lowercase());
+            }
+        }
+    }
+    let phonemes = std::fs::read_to_string(src.join("phsource/phonemes")).unwrap();
+    let tables: Vec<&str> = phonemes.lines().filter_map(|l| l.trim().strip_prefix("phonemetable")).filter_map(|l| l.split_whitespace().next()).collect();
+    targets.sort();
+    targets.dedup();
+    for t in targets.iter().filter(|t| tables.contains(&t.as_str())) {
+        assert!(!["hr", "bs", "sr"].contains(&t.as_str()), "espeak-ng can switch to {t}, whose dictionary (hbs) isn't built");
+        assert!(data.join(format!("{t}_dict")).is_file(), "espeak-ng can switch to {t}, but {t}_dict wasn't built");
+    }
+}
+
+/// The data for speak.rs: its files one after another (name length u32, name, length u64, bytes; little-endian,
+/// sorted by name) as one zlib stream, `espeak-data.z`, and `espeak_data.rs` with the list of files and sizes and the
+/// SHA-256 of the unpacked stream (written next to the unpacked files, so they're only unpacked again when they change).
+fn pack(out: &Path, data: &Path) {
+    use std::io::Write;
+    let mut files = Vec::new();
+    walk(data, data, &mut files);
+    // phondata-manifest is a list for tools; of the voice files only Spanish is read (espeak_SetVoiceByName).
+    files.retain(|(name, _)| name != "phondata-manifest" && (!name.starts_with("lang/") || name == "lang/roa/es"));
+    files.sort();
+    let mut raw = Vec::new();
+    let mut list = String::new();
+    for (name, bytes) in &files {
+        raw.extend((name.len() as u32).to_le_bytes());
+        raw.extend(name.as_bytes());
+        raw.extend((bytes.len() as u64).to_le_bytes());
+        raw.extend(bytes);
+        list.push_str(&format!("    ({name:?}, {}),\n", bytes.len()));
+    }
+    let sum: String = hmac_sha256::Hash::hash(&raw).iter().map(|b| format!("{b:02x}")).collect();
+    let mut z = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::best());
+    z.write_all(&raw).unwrap();
+    std::fs::write(out.join("espeak-data.z"), z.finish().unwrap()).unwrap();
+    let rs = format!("pub const PACK: &[u8] = include_bytes!(concat!(env!(\"OUT_DIR\"), \"/espeak-data.z\"));\npub const SUM: &str = \"{sum}\";\npub const FILES: &[(&str, u64)] = &[\n{list}];\n");
+    std::fs::write(out.join("espeak_data.rs"), rs).unwrap();
+}
+
+fn walk(base: &Path, dir: &Path, files: &mut Vec<(String, Vec<u8>)>) {
+    for e in std::fs::read_dir(dir).unwrap().flatten() {
+        let p = e.path();
+        if p.is_dir() {
+            walk(base, &p, files);
+        } else {
+            let name = p.strip_prefix(base).unwrap().components().map(|c| c.as_os_str().to_string_lossy().into_owned()).collect::<Vec<_>>().join("/");
+            files.push((name, std::fs::read(&p).unwrap()));
+        }
+    }
 }
 
 /// The pinned source, downloaded and checked once (a stamp marks a checked copy).

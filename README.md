@@ -107,9 +107,10 @@ Windows and Linux uses [NVIDIA Parakeet TDT 0.6B v3](https://huggingface.co/nvid
 
 <sub>**Local voice (Spanish)**, Windows and Linux: picked on the panel's Voice page (Replies), it speaks replies on your
 computer, offline, free and with no key, in one voice for every look: the female speaker of
-[Piper](https://github.com/OHF-Voice/piper1-gpl)'s `es_ES` sharvard voice (medium, retrained upstream;
-[CC BY 4.0](https://creativecommons.org/licenses/by/4.0/), from the Sharvard corpus under
-[CC BY 3.0](https://creativecommons.org/licenses/by/3.0/)). It's a Spanish (Spain) voice: replies in other languages
+[Piper](https://github.com/OHF-Voice/piper1-gpl)'s `es_ES` sharvard voice (medium, retrained upstream; MIT, trained on
+the Sharvard corpus by Aubanel, Garcia Lecumberri and Cooke, [CC BY 3.0](https://creativecommons.org/licenses/by/3.0/),
+and on NVIDIA's Hi-Fi TTS, [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/); full credits in
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)), spoken through [eSpeak NG](https://github.com/espeak-ng/espeak-ng). It's a Spanish (Spain) voice: replies in other languages
 sound Spanish-accented, so it suits Language set to Español. It downloads once (about 77 MB) the first time it's picked.
 Fish Audio stays the default.</sub>
 
