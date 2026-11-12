@@ -188,3 +188,10 @@ Nothing, Nothing OS and Glyph are trademarks of Nothing Technology Ltd; this is 
 ```
 
 </div>
+
+## Credits
+
+This is a modified version of [glyph-rice](https://github.com/Nebelung-cloud/glyph-rice) by Nebelung and its
+contributors (GPL-3.0), modified and maintained by Carlos Branty Conza Mendoza (losbrantybc@yahoo.com) to his own needs: the guided installer,
+the Hanami assistant as an optional component, and the light theme reaching gtk, qt and the system. Hanami is a
+modified version of [Roamies](https://github.com/KenKaiii/Roamies) by Ken Kai (AGPL-3.0-only).

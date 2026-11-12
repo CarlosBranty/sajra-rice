@@ -34,7 +34,18 @@ Column {
         }
         Setting {
             label: "Copyright"
-            hint: "Roamies: copyright Ken Kai and the Roamies contributors. Hanami changes: copyright their authors. All under AGPL-3.0-only."
+            hint: "Roamies: copyright Ken Kai and the Roamies contributors. Hanami changes: copyright 2026 Carlos Branty Conza Mendoza. All under AGPL-3.0-only."
+        }
+        // who made this copy what it is, as the web panel's About says
+        Setting {
+            label: "Modified by"
+            hint: "Carlos Branty Conza Mendoza (losbrantybc@yahoo.com): Hanami and its glyph dotfiles, adapted from the original projects to his own needs."
+            Lnk { text: "Write"; Accessible.name: "Write to Carlos Branty Conza Mendoza"; onClicked: root.open("mailto:losbrantybc@yahoo.com") }
+        }
+        Setting {
+            label: "Desktop"
+            hint: "The glyph dotfiles are a modified version of glyph-rice by Nebelung (Nebelung-cloud/glyph-rice), GPL-3.0."
+            Lnk { text: "Open"; Accessible.name: "Open the original glyph-rice repository"; onClicked: root.open("https://github.com/Nebelung-cloud/glyph-rice") }
         }
         Setting {
             label: "Source code"
