@@ -367,6 +367,27 @@ fn auth_password(app: AppHandle, window: WebviewWindow, id: String, password: St
     let _ = (app, window, id, password);
 }
 
+/// Linux: a look drawn as a sprite sheet for the native panel (looksheet.js, panel_socket.rs). Only the overlay the
+/// Roamie is in may send one; it's checked, written to the private runtime folder and announced to the panel.
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+fn look_sheet(window: WebviewWindow, look: String, form: String, sig: String, frames: u32, columns: u32, fps: u32, width: u32, height: u32, png: Option<String>) {
+    #[cfg(target_os = "linux")]
+    {
+        if !(is_overlay(window.label()) && is_sidekick(window.label())) {
+            return;
+        }
+        let Ok(base) = auth::runtime_dir_from(std::env::var_os("XDG_RUNTIME_DIR")) else { return };
+        let sheet = panel_socket::SheetIn { look, form: form.clone(), sig, frames, columns, fps, width, height, png };
+        match panel_socket::SHEETS.take(&base, sheet) {
+            Ok(meta) => panel_socket::SERVER.send(&json!({ "kind": "looks", "form": form, "sheets": [meta] })),
+            Err(e) => eprintln!("look sheet refused: {e}"),
+        }
+    }
+    #[cfg(not(target_os = "linux"))]
+    let _ = (window, look, form, sig, frames, columns, fps, width, height, png);
+}
+
 /// Linux: the check-it's-you prompt was closed without an answer (Esc, Cancel, the Roamie leaving).
 #[tauri::command]
 fn auth_cancel(app: AppHandle, window: WebviewWindow, id: String) {
@@ -1843,7 +1864,7 @@ fn main() {
         .manage(TalkChord(Mutex::new(vec!["control".into(), "option".into()])))
         .manage(VoiceModel(Mutex::new(None)))
         .manage(PermGuide(Mutex::new(None)))
-        .invoke_handler(tauri::generate_handler![buddy, ink_wait, set_hot, set_hit_rects, theme_get, dock_get, dock_state, talk_state, sidecar_send, set_typing, perm_status, perm_request, perm_guide, screen_check, open_settings, onboarding_finish, guide_close, panel_hide, esc_watch, relaunch, focus_guide, guide_aside, drag_window, pen_stroke, auth_password, auth_cancel])
+        .invoke_handler(tauri::generate_handler![buddy, ink_wait, set_hot, set_hit_rects, theme_get, dock_get, dock_state, talk_state, sidecar_send, set_typing, perm_status, perm_request, perm_guide, screen_check, open_settings, onboarding_finish, guide_close, panel_hide, esc_watch, relaunch, focus_guide, guide_aside, drag_window, pen_stroke, auth_password, auth_cancel, look_sheet])
         .on_menu_event(|app, e| match e.id.as_ref() {
             "quit" => app.exit(0),
             "restart" => spawn_sidecar(app),

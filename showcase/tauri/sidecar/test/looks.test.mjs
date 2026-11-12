@@ -57,3 +57,68 @@ assert.match(src('../../../desktop.html'), /canvas \{[^}]*-webkit-user-select: n
   const page = src('../../../desktop.html'), at = (f) => page.indexOf(`roamies/${f}`);
   assert.ok(at('glass.js') > 0 && at('glass.js') < at('agent.js') && at('glass.js') < at('agent-cards.js'), 'desktop.html loads glass.js before agent.js and agent-cards.js');
 }
+
+// The native panel's sprite sheets (roamies/looksheet.js): each look drawn by the real kit into one strip of frames,
+// muted while it's drawn, and drawn again only when the colours changed (the shell says which sheets it holds).
+{
+  const vm = await import('node:vm');
+  const noop = () => {};
+  const canvases = [], draws = [], invokes = [], played = [];
+  let lit = 0;
+  const ctx2d = (cv) => new Proxy({}, {
+    get: (_, k) => (k === 'createImageData' ? (w, h) => ({ width: w, height: h, data: new Uint8ClampedArray(w * h * 4) })
+      : k === 'getImageData' ? (x, y, w, h) => ({ width: w, height: h, data: new Uint8ClampedArray(w * h * 4) })
+      : k === 'putImageData' ? (img) => { for (let i = 3; i < img.data.length; i += 4) if (img.data[i]) { lit++; break; } }
+      : k === 'drawImage' ? (src, x, y) => draws.push({ to: cv, from: src, x, y })
+      : k === 'measureText' ? (s) => ({ width: String(s).length * 7 })
+      : noop),
+    set: () => true,
+    has: (_, k) => k === 'filter',
+  });
+  const el = () => { const cv = { width: 0, height: 0, style: {}, getContext: () => ctx2d(cv), toDataURL: () => `data:image/png;base64,STRIP${canvases.indexOf(cv)}` }; canvases.push(cv); return cv; };
+  let seed = 7;
+  const M = Object.create(Math); M.random = () => (seed = (seed * 1664525 + 1013904223) >>> 0) / 4294967296;
+  const window = { __TAURI__: { core: { invoke: async (cmd, args) => { invokes.push([cmd, args]); } } } };
+  const ctx = {
+    window, Math: M, Map, Set, Promise, console, Uint32Array, Uint8ClampedArray, Uint8Array, Float32Array, URLSearchParams, JSON,
+    performance: { now: () => 0 }, setTimeout: (f) => setImmediate(f), clearTimeout: noop, matchMedia: () => ({ matches: false, addEventListener: noop }),
+    addEventListener: noop, innerWidth: 1200, innerHeight: 800, devicePixelRatio: 1, requestAnimationFrame: noop,
+    Path2D: class { moveTo() {} lineTo() {} closePath() {} arc() {} rect() {} },
+    document: { addEventListener: noop, createElement: el, body: { appendChild: noop }, head: { appendChild: noop }, getElementById: () => null },
+  };
+  vm.createContext(ctx);
+  const load = (f) => vm.runInContext(src(`../../../roamies/${f}`), ctx, { filename: f });
+  load('core.js');
+  vm.runInContext('var Roamie = window.Roamie;', ctx);
+  for (const f of ['theme.js', 'jarvis.js', 'people.js', '10-dither.js', 'looksheet.js']) load(f);
+  const R = window.Roamie;
+  const sfx = { play: (n) => played.push(n) };
+  R.sfx = sfx;
+  for (const [look, form] of [['classic', 'default'], ['anime', 'small'], ['jarvis', 'cursor'], ['ken', 'default']]) {
+    draws.length = 0; lit = 0;
+    const out = R.lookSheet(look, form);
+    assert.equal(out.frames, 96, `${look}: 96 frames`);
+    assert.equal(out.fps, 12);
+    assert.deepEqual([out.width, out.height, out.scale], [208, 152, 2], 'one frame: the web tile (104×76) at 2x');
+    assert.equal(out.columns, 12);
+    assert.deepEqual([out.canvas.width, out.canvas.height], [208 * 12, 152 * 8], `${look}: one sheet, 8 rows of 12 frames`);
+    const onStrip = draws.filter((d) => d.to === out.canvas);
+    assert.deepEqual(onStrip.map((d) => [d.x, d.y]), Array.from({ length: 96 }, (_, i) => [(i % 12) * 208, Math.floor(i / 12) * 152]), `${look} ${form}: each frame in its place`);
+    assert.ok(lit >= 96, `${look} ${form}: the kit drew dots in every frame (${lit})`);
+  }
+  assert.deepEqual(played, [], 'no sounds while a sheet is drawn');
+  assert.equal(R.sfx, sfx, 'the sounds are back after');
+  assert.match(src('../../../desktop.html'), /roamies\/10-dither\.js"><\/script>\s*<script src="roamies\/looksheet\.js">/, 'the overlay loads it after the kit');
+
+  // The shell's request: a look whose sheet the shell holds with today's colours isn't drawn again.
+  const sig = R.lookSig();
+  window.__roamieLooks({ form: 'small', looks: ['classic', 'sarah'], have: { classic: sig, sarah: 'old' } });
+  for (let i = 0; i < 20 && invokes.length < 2; i++) await new Promise((r) => setImmediate(r));
+  assert.deepEqual(invokes.map(([c, a]) => [c, a.look, a.form, a.sig, a.frames, a.columns, a.fps, a.width, a.height]),
+    [['look_sheet', 'classic', 'small', sig, 96, 12, 12, 208, 152], ['look_sheet', 'sarah', 'small', sig, 96, 12, 12, 208, 152]]);
+  assert.equal(invokes[0][1].png, null, 'held with the same colours: no PNG');
+  assert.match(invokes[1][1].png, /^STRIP\d+$/, 'drawn again: its PNG, base64 without the data: prefix');
+  R.theme.set('light');
+  assert.notEqual(R.lookSig(), sig, 'other colours, another signature');
+  console.log('look sheet tests: passed');
+}

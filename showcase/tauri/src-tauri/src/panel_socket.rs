@@ -5,7 +5,16 @@
 // (never anything auth*), plus {"type":"panel_hide"} (it closed) and {"type":"hello"} (a greeting, not forwarded).
 // One client at a time: a new connection replaces the old one. While one is connected (and ROAMIES_WEB_PANEL isn't
 // 1), opening the panel opens it instead of the web panel (main.rs show_panel).
+//
+// The looks, drawn: a native panel can't run the drawing code, so it asks {"type":"panel_looks","form","looks":[ids]}
+// (handled here, never forwarded) while it is open, and the sidekick's overlay draws each look at that size into a
+// PNG of frames (roamies/looksheet.js: left to right in rows of `columns`) that comes back through the look_sheet
+// command (main.rs). Each is written to $XDG_RUNTIME_DIR/roamies/looks/<look>-<form>-<n>.png (0600, the folder 0700,
+// emptied of older sheets on the first one) and the client gets {"kind":"looks","form","sheets":[{id, file, frames,
+// columns, fps, width, height}]} (one frame width × height px, at 2x). A sheet held with the same colours (its
+// signature) isn't drawn again, only announced again.
 
+use std::collections::HashMap;
 use std::fs;
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::os::unix::fs::{DirBuilderExt, FileTypeExt, PermissionsExt};
@@ -17,7 +26,7 @@ use std::thread;
 use std::time::Duration;
 
 use serde_json::{json, Value};
-use tauri::AppHandle;
+use tauri::{AppHandle, Manager};
 
 /// The longest line read from a client (without its newline). A longer one drops the connection.
 pub(crate) const MAX_LINE: usize = 1 << 20;
@@ -42,6 +51,8 @@ pub(crate) enum Incoming {
     Hide,
     /// A greeting: nothing to do.
     Hello,
+    /// The client wants these looks drawn at this size (panel_looks): the shell's own business, not the sidecar's.
+    Looks { form: String, looks: Vec<String> },
     /// Not allowed from a page (auth*): dropped.
     Drop,
 }
@@ -91,9 +102,211 @@ pub(crate) fn incoming(msg: Value) -> Incoming {
     match msg.get("type").and_then(Value::as_str) {
         Some("panel_hide") => Incoming::Hide,
         Some("hello") => Incoming::Hello,
+        Some("panel_looks") => looks_request(&msg).map_or(Incoming::Drop, |(form, looks)| Incoming::Looks { form, looks }),
         Some(t) if PANEL_TYPES.contains(&t) && crate::page_may_send(&msg) => Incoming::Forward(msg),
         _ => Incoming::Drop,
     }
+}
+
+/// The sizes a look is drawn at (the panel's Size picks).
+pub(crate) const FORMS: &[&str] = &["default", "small", "cursor"];
+/// The most looks one request may ask for.
+pub(crate) const MAX_LOOKS: usize = 12;
+/// A sheet's limits: frames, frames a second, one frame's size in px, and the PNG's size.
+pub(crate) const MAX_FRAMES: u32 = 120;
+pub(crate) const MAX_FPS: u32 = 30;
+pub(crate) const MAX_FRAME_PX: u32 = 512;
+pub(crate) const MAX_PNG: usize = 4 << 20;
+
+/// A look id as the app names them (classic, jarvis, anime…): it becomes part of a file name.
+pub(crate) fn look_id_ok(id: &str) -> bool {
+    let b = id.as_bytes();
+    (1..=24).contains(&b.len())
+        && b[0].is_ascii_lowercase()
+        && b.iter().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || *c == b'_' || *c == b'-')
+}
+
+fn form_ok(form: &str) -> bool {
+    FORMS.contains(&form)
+}
+
+/// A sheet's signature (looksheet.js lookSig: base 36).
+fn sig_ok(sig: &str) -> bool {
+    (1..=16).contains(&sig.len()) && sig.bytes().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit())
+}
+
+/// panel_looks: a size and 1..=MAX_LOOKS valid look ids (repeats dropped), or nothing.
+pub(crate) fn looks_request(msg: &Value) -> Option<(String, Vec<String>)> {
+    let form = msg.get("form")?.as_str().filter(|f| form_ok(f))?;
+    let ids = msg.get("looks")?.as_array()?;
+    if ids.is_empty() || ids.len() > MAX_LOOKS {
+        return None;
+    }
+    let mut looks: Vec<String> = Vec::new();
+    for id in ids {
+        let id = id.as_str().filter(|i| look_id_ok(i))?;
+        if !looks.iter().any(|l| l == id) {
+            looks.push(id.to_owned());
+        }
+    }
+    Some((form.to_owned(), looks))
+}
+
+/// Standard base64 (padding optional), as canvas.toDataURL gives it. None on anything else.
+pub(crate) fn base64_decode(text: &str) -> Option<Vec<u8>> {
+    let val = |c: u8| -> Option<u32> {
+        Some(match c {
+            b'A'..=b'Z' => c - b'A',
+            b'a'..=b'z' => c - b'a' + 26,
+            b'0'..=b'9' => c - b'0' + 52,
+            b'+' => 62,
+            b'/' => 63,
+            _ => return None,
+        } as u32)
+    };
+    let body = text.trim_end_matches('=');
+    if text.len() - body.len() > 2 || body.len() % 4 == 1 {
+        return None;
+    }
+    let mut out = Vec::with_capacity(body.len() / 4 * 3 + 2);
+    for chunk in body.as_bytes().chunks(4) {
+        let mut n = 0u32;
+        for (i, c) in chunk.iter().enumerate() {
+            n |= val(*c)? << (18 - 6 * i);
+        }
+        let bytes = n.to_be_bytes();
+        out.extend_from_slice(&bytes[1..chunk.len()]);
+    }
+    Some(out)
+}
+
+/// A PNG's width and height (its IHDR), or None when it isn't one.
+pub(crate) fn png_size(b: &[u8]) -> Option<(u32, u32)> {
+    if b.len() < 24 || b[..8] != *b"\x89PNG\r\n\x1a\n" || &b[12..16] != b"IHDR" {
+        return None;
+    }
+    let be = |i: usize| u32::from_be_bytes([b[i], b[i + 1], b[i + 2], b[i + 3]]);
+    Some((be(16), be(20)))
+}
+
+/// One sheet from the overlay (look_sheet's arguments). png: base64, or None when the shell holds it already.
+#[derive(Debug, Clone)]
+pub(crate) struct SheetIn {
+    pub(crate) look: String,
+    pub(crate) form: String,
+    pub(crate) sig: String,
+    pub(crate) frames: u32,
+    pub(crate) columns: u32,
+    pub(crate) fps: u32,
+    pub(crate) width: u32,
+    pub(crate) height: u32,
+    pub(crate) png: Option<String>,
+}
+
+/// The sheets written so far, by (look, form): their signature, file and what the client is told.
+pub(crate) struct Sheets {
+    held: Mutex<Option<HashMap<(String, String), (String, PathBuf, Value)>>>,
+    seq: AtomicU64,
+}
+
+pub(crate) static SHEETS: Sheets = Sheets::new();
+
+/// The sheets' folder: $XDG_RUNTIME_DIR/roamies/looks, private like the socket's (0700, ours).
+pub(crate) fn looks_dir(base: &Path) -> io::Result<PathBuf> {
+    let dir = socket_dir(base)?.join("looks");
+    fs::DirBuilder::new().recursive(true).mode(0o700).create(&dir)?;
+    crate::auth::own_private_dir(&dir)?;
+    Ok(dir)
+}
+
+impl Sheets {
+    pub(crate) const fn new() -> Sheets {
+        Sheets { held: Mutex::new(None), seq: AtomicU64::new(0) }
+    }
+
+    /// The signature of each sheet held at this size, for the overlay: {look: sig}.
+    pub(crate) fn have(&self, form: &str) -> Value {
+        let held = self.held.lock().unwrap();
+        let mut map = serde_json::Map::new();
+        for ((l, f), (sig, _, _)) in held.iter().flatten() {
+            if f == form {
+                map.insert(l.clone(), Value::from(sig.clone()));
+            }
+        }
+        Value::Object(map)
+    }
+
+    /// Checks one sheet and writes it into `base`'s looks folder (or, without a PNG, finds the one held with the same
+    /// signature). Returns what the client is told about it.
+    pub(crate) fn take(&self, base: &Path, s: SheetIn) -> Result<Value, String> {
+        if !look_id_ok(&s.look) || !form_ok(&s.form) || !sig_ok(&s.sig) {
+            return Err("bad look, size or signature".into());
+        }
+        if !(1..=MAX_FRAMES).contains(&s.frames) || !(1..=s.frames).contains(&s.columns) || !(1..=MAX_FPS).contains(&s.fps)
+            || !(1..=MAX_FRAME_PX).contains(&s.width) || !(1..=MAX_FRAME_PX).contains(&s.height)
+        {
+            return Err("bad frames, rate or size".into());
+        }
+        let key = (s.look.clone(), s.form.clone());
+        let mut held = self.held.lock().unwrap();
+        let held = held.get_or_insert_with(HashMap::new);
+        let Some(b64) = s.png else {
+            return match held.get(&key) {
+                Some((sig, path, meta)) if *sig == s.sig && path.is_file() => Ok(meta.clone()),
+                _ => Err("not held".into()),
+            };
+        };
+        if b64.len() > MAX_PNG / 3 * 4 + 4 {
+            return Err("sheet too big".into());
+        }
+        let png = base64_decode(&b64).ok_or("not base64")?;
+        if png.len() > MAX_PNG {
+            return Err("sheet too big".into());
+        }
+        if png_size(&png) != Some((s.width * s.columns, s.height * s.frames.div_ceil(s.columns))) {
+            return Err("not a PNG of those frames".into());
+        }
+        let dir = looks_dir(base).map_err(|e| e.to_string())?;
+        // The first sheet of this run: what an earlier run left is nobody's now.
+        if held.is_empty() {
+            for e in fs::read_dir(&dir).map_err(|e| e.to_string())?.flatten() {
+                if e.file_name().to_string_lossy().ends_with(".png") {
+                    let _ = fs::remove_file(e.path());
+                }
+            }
+        }
+        let n = self.seq.fetch_add(1, Ordering::SeqCst) + 1;
+        let path = sheet_path(&dir, &s.look, &s.form, n);
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            let mut f = fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(&path).map_err(|e| e.to_string())?;
+            f.write_all(&png).map_err(|e| {
+                let _ = fs::remove_file(&path);
+                e.to_string()
+            })?;
+        }
+        let meta = json!({
+            "id": s.look, "file": path.to_string_lossy(), "frames": s.frames, "columns": s.columns, "fps": s.fps, "width": s.width, "height": s.height,
+        });
+        if let Some((_, old, _)) = held.insert(key, (s.sig, path, meta.clone())) {
+            let _ = fs::remove_file(old);
+        }
+        Ok(meta)
+    }
+}
+
+/// Where sheet number `n` of a look at a size goes: a new name each time, so the panel never shows an old one it
+/// cached under the same name.
+pub(crate) fn sheet_path(dir: &Path, look: &str, form: &str, n: u64) -> PathBuf {
+    dir.join(format!("{look}-{form}-{n}.png"))
+}
+
+/// Asks the sidekick's overlay to draw these looks (looksheet.js __roamieLooks), passing the sheets already held.
+fn ask_looks(app: &AppHandle, form: &str, looks: &[String]) {
+    let Some(label) = crate::SIDEKICK_OVERLAY.lock().unwrap().clone() else { return };
+    let Some(w) = app.get_webview_window(&label) else { return };
+    let req = json!({ "form": form, "looks": looks, "have": SHEETS.have(form) });
+    let _ = w.eval(format!("window.__roamieLooks&&__roamieLooks({req})"));
 }
 
 /// Reads one line into `buf` (cleared first, newline left out). Ok(false) at the end of the stream (a last line
@@ -229,6 +442,12 @@ pub(crate) fn start(app: &AppHandle) {
             SERVER.set_open(false);
             crate::to_sidecar(&a, &json!({ "type": "panel_closed", "why": "native" }));
         }
+        // Drawn only while the panel shows, where they're seen.
+        Incoming::Looks { form, looks } => {
+            if SERVER.is_open() {
+                ask_looks(&a, &form, &looks);
+            }
+        }
         Incoming::Hello | Incoming::Drop => {}
     });
     let on_gone: Arc<dyn Fn() + Send + Sync> = Arc::new(move || {
@@ -318,6 +537,134 @@ mod tests {
         assert_eq!(incoming(json!({ "type": 7 })), Incoming::Drop, "a type that isn't text");
         assert_eq!(incoming(json!({ "type": "panel_hide" })), Incoming::Hide);
         assert_eq!(incoming(json!({ "type": "hello", "client": "glyph" })), Incoming::Hello);
+    }
+
+    #[test]
+    fn asking_for_the_looks_is_the_shells_own_and_never_reaches_the_sidecar() {
+        let m = json!({ "type": "panel_looks", "form": "small", "looks": ["classic", "anime", "classic", "ken"] });
+        assert_eq!(
+            incoming(m),
+            Incoming::Looks { form: "small".into(), looks: vec!["classic".into(), "anime".into(), "ken".into()] },
+            "repeats dropped"
+        );
+        let bad = [
+            json!({ "type": "panel_looks", "form": "huge", "looks": ["classic"] }),
+            json!({ "type": "panel_looks", "looks": ["classic"] }),
+            json!({ "type": "panel_looks", "form": "default", "looks": [] }),
+            json!({ "type": "panel_looks", "form": "default", "looks": "classic" }),
+            json!({ "type": "panel_looks", "form": "default", "looks": ["../x"] }),
+            json!({ "type": "panel_looks", "form": "default", "looks": ["Classic"] }),
+            json!({ "type": "panel_looks", "form": "default", "looks": [7] }),
+            json!({ "type": "panel_looks", "form": "default", "looks": vec!["a"; MAX_LOOKS + 1] }),
+        ];
+        for m in bad {
+            assert_eq!(incoming(m.clone()), Incoming::Drop, "{m}");
+        }
+        for id in ["classic", "jarvis", "a", "x_1-b"] {
+            assert!(look_id_ok(id), "{id}");
+        }
+        for id in ["", "1a", "-a", "a/b", "a.b", "a b", "ÁB", &"a".repeat(25)] {
+            assert!(!look_id_ok(id), "{id}");
+        }
+    }
+
+    #[test]
+    fn base64_and_png_sizes_are_read() {
+        assert_eq!(base64_decode("aGVsbG8=").unwrap(), b"hello");
+        assert_eq!(base64_decode("aGVsbG8").unwrap(), b"hello", "no padding");
+        assert_eq!(base64_decode("").unwrap(), b"");
+        assert_eq!(base64_decode("+/8=").unwrap(), [0xfb, 0xff]);
+        for bad in ["a", "aGVsbG8===", "aGV*bG8=", "aGV sbG8="] {
+            assert_eq!(base64_decode(bad), None, "{bad}");
+        }
+        assert_eq!(png_size(&png(416, 152)), Some((416, 152)));
+        assert_eq!(png_size(b"GIF89a................................"), None);
+        assert_eq!(png_size(&png(1, 1)[..20]), None, "cut short");
+    }
+
+    /// The start of a PNG of w×h (signature and IHDR): what png_size reads.
+    fn png(w: u32, h: u32) -> Vec<u8> {
+        let mut b = b"\x89PNG\r\n\x1a\n\0\0\0\x0dIHDR".to_vec();
+        b.extend_from_slice(&w.to_be_bytes());
+        b.extend_from_slice(&h.to_be_bytes());
+        b.extend_from_slice(&[8, 6, 0, 0, 0, 0, 0, 0, 0]);
+        b
+    }
+
+    fn b64(bytes: &[u8]) -> String {
+        const A: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+        let mut out = String::new();
+        for c in bytes.chunks(3) {
+            let n = (c[0] as u32) << 16 | (*c.get(1).unwrap_or(&0) as u32) << 8 | *c.get(2).unwrap_or(&0) as u32;
+            for i in 0..=c.len() {
+                out.push(A[(n >> (18 - 6 * i) & 63) as usize] as char);
+            }
+        }
+        out
+    }
+
+    fn sheet(look: &str, form: &str, sig: &str, png: Option<String>) -> SheetIn {
+        SheetIn { look: look.into(), form: form.into(), sig: sig.into(), frames: 3, columns: 2, fps: 12, width: 208, height: 152, png }
+    }
+
+    #[test]
+    fn a_sheet_is_checked_and_kept_privately_and_only_drawn_again_when_its_colours_change() {
+        let s = Scratch::new("looks");
+        let sheets = Sheets::new();
+        // An earlier run's sheet is cleared on the first one.
+        let dir = s.0.join("roamies").join("looks");
+        fs::DirBuilder::new().recursive(true).mode(0o700).create(&dir).unwrap();
+        fs::write(dir.join("classic-default-9.png"), "old").unwrap();
+        // 3 frames in rows of 2: 2 × 2 frames of 208 × 152.
+        let strip = b64(&png(416, 304));
+        let meta = sheets.take(&s.0, sheet("anime", "small", "k1", Some(strip.clone()))).unwrap();
+        let file = PathBuf::from(meta["file"].as_str().unwrap());
+        assert!(!dir.join("classic-default-9.png").exists(), "an earlier run's sheet is gone");
+        assert_eq!(file.parent(), Some(dir.as_path()), "inside the private folder");
+        assert_eq!(file.file_name().unwrap().to_str().unwrap(), "anime-small-1.png");
+        assert_eq!(fs::metadata(&dir).unwrap().permissions().mode() & 0o777, 0o700);
+        assert_eq!(fs::metadata(&file).unwrap().permissions().mode() & 0o777, 0o600);
+        assert_eq!(fs::read(&file).unwrap(), png(416, 304));
+        assert_eq!(meta, json!({ "id": "anime", "file": file.to_string_lossy(), "frames": 3, "columns": 2, "fps": 12, "width": 208, "height": 152 }));
+        assert_eq!(sheets.have("small"), json!({ "anime": "k1" }));
+        assert_eq!(sheets.have("default"), json!({}));
+
+        // Held with the same colours: announced again without a PNG. Other colours: it needs one.
+        assert_eq!(sheets.take(&s.0, sheet("anime", "small", "k1", None)).unwrap(), meta);
+        assert!(sheets.take(&s.0, sheet("anime", "small", "k2", None)).is_err());
+        assert!(sheets.take(&s.0, sheet("sarah", "small", "k1", None)).is_err(), "never drawn");
+
+        // Drawn again: a new file, and the old one goes.
+        let again = sheets.take(&s.0, sheet("anime", "small", "k2", Some(strip.clone()))).unwrap();
+        assert_ne!(again["file"], meta["file"]);
+        assert!(!file.exists());
+        assert_eq!(sheets.have("small"), json!({ "anime": "k2" }));
+
+        // Refused: names that aren't looks or sizes, a PNG that isn't those frames, not a PNG, too big, bad limits.
+        for bad in [
+            sheet("../anime", "small", "k1", Some(strip.clone())),
+            sheet("anime", "big", "k1", Some(strip.clone())),
+            sheet("anime", "small", "K!", Some(strip.clone())),
+            sheet("anime", "small", "k1", Some(b64(&png(624, 152)))),
+            sheet("anime", "small", "k1", Some(b64(&png(416, 152)))),
+            sheet("anime", "small", "k1", Some(b64(b"GIF89a, not a png at all, no"))),
+            sheet("anime", "small", "k1", Some("not base64!".into())),
+            sheet("anime", "small", "k1", Some("A".repeat(MAX_PNG / 3 * 4 + 8))),
+            SheetIn { frames: MAX_FRAMES + 1, ..sheet("anime", "small", "k1", Some(strip.clone())) },
+            SheetIn { columns: 0, ..sheet("anime", "small", "k1", Some(strip.clone())) },
+            SheetIn { columns: 4, ..sheet("anime", "small", "k1", Some(strip.clone())) },
+            SheetIn { fps: 0, ..sheet("anime", "small", "k1", Some(strip.clone())) },
+            SheetIn { width: MAX_FRAME_PX + 1, ..sheet("anime", "small", "k1", Some(strip.clone())) },
+        ] {
+            assert!(sheets.take(&s.0, bad.clone()).is_err(), "{bad:?}");
+        }
+        assert_eq!(fs::read_dir(&dir).unwrap().count(), 1, "nothing else written");
+
+        // A looks folder that is a symlink is refused.
+        let s2 = Scratch::new("looklink");
+        fs::DirBuilder::new().mode(0o700).create(s2.0.join("roamies")).unwrap();
+        std::os::unix::fs::symlink(&s.0, s2.0.join("roamies").join("looks")).unwrap();
+        assert!(sheets.take(&s2.0, sheet("anime", "small", "k3", Some(strip))).is_err());
     }
 
     #[test]

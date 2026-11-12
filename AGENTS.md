@@ -123,6 +123,13 @@ passes to `sidecar_send`, through the same `page_may_send` gate, plus `{"type":"
 gets `panel_closed`) and `{"type":"hello"}`. It sends `panel_open` itself when it shows, as the shell does for the web
 panel. While one is connected every way of opening the panel (tray, `hanami --panel`, `panel_show`, a plain second
 launch) opens it instead, and a tray click while it's open closes it; `ROAMIES_WEB_PANEL=1` keeps the web panel.
+It can't run the drawing code, so the looks reach it as sprite sheets: while it shows it sends
+`{"type":"panel_looks","form","looks":[ids]}` (the shell's own, never forwarded; ignored while the panel is closed), the
+sidekick's overlay draws each look at that size as the web panel's tiles do (`roamies/looksheet.js`: 96 frames at
+12 fps, 2x, rows of 12) and returns it through `look_sheet` (only that overlay may call it; id, size, frame limits,
+PNG ≤ 4 MiB of exactly those frames), and the shell writes it to `$XDG_RUNTIME_DIR/roamies/looks/<look>-<form>-<n>.png`
+(0600) and sends `{"kind":"looks","form","sheets":[{id, file, frames, columns, fps, width, height}]}`. A sheet held with
+the same colours (`lookSig`) isn't drawn again.
 Dictation (Linux): `hanami --dictate` on a key's press and `hanami --dictate-end` on its release (two compositor
 binds, `{ release = true }` on the second) hold a take in the running voice helper (`hold` and `release` commands;
 pauses don't end it, MAX_HELD does if the release never comes) whose words are typed where the keyboard is with
