@@ -879,7 +879,11 @@
           el('span', {}, 'License', el('small', { textContent: 'AGPL-3.0-only. The full text is in the LICENSE file that comes with the source; what changed is in NOTICE.' })),
           link('Read', () => send({ type: 'open_link', url: 'https://www.gnu.org/licenses/agpl-3.0.html' }), { k: 'license', aria: 'Read the GNU Affero General Public License, version 3' })),
         el('div', { className: 'setting' },
-          el('span', {}, 'Copyright', el('small', { textContent: 'Roamies: copyright Ken Kai and the Roamies contributors. Hanami changes: copyright their authors. All under AGPL-3.0-only.' }))),
+          el('span', {}, 'Copyright', el('small', { textContent: 'Roamies: copyright Ken Kai and the Roamies contributors. Hanami changes: copyright 2026 Carlos Branty Conza Mendoza. All under AGPL-3.0-only.' }))),
+        // Who made this copy what it is: the changes to Roamies, and the glyph dotfiles Hanami ships with.
+        el('div', { className: 'setting' },
+          el('span', {}, 'Modified by', el('small', { textContent: 'Carlos Branty Conza Mendoza (losbrantybc@yahoo.com): Hanami and its glyph dotfiles, adapted from the original projects to his own needs.' })),
+          link('Write', () => send({ type: 'open_link', url: 'mailto:losbrantybc@yahoo.com' }), { k: 'modifier-mail', aria: 'Write to Carlos Branty Conza Mendoza' })),
         el('div', { className: 'setting' },
           el('span', {}, 'Source code', el('small', { textContent: src ? `Hanami's source is available at github.com/${state.repo}` : "Hanami's source is available from whoever gave you this copy; its repository link shows here once set." })),
           src ? link('Open', () => send({ type: 'open_link', url: src }), { k: 'source', aria: "Open Hanami's source code on GitHub" }) : null),

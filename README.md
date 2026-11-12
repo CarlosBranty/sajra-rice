@@ -341,3 +341,7 @@ the original belong upstream: [KenKaiii/Roamies](https://github.com/KenKaiii/Roa
 Hanami is built on [Roamies](https://github.com/KenKaiii/Roamies), made by Ken Kai
 ([YouTube](https://youtube.com/@kenkaidoesai), [RAID, his free community](https://www.skool.com/raid)), and its
 contributors. Copyright stays with them for their work; Hanami's changes are under the same AGPL-3.0-only licence.
+
+Hanami, and the glyph dotfiles it ships with, are modified and maintained by Carlos Branty Conza Mendoza (losbrantybc@yahoo.com), adapted from the
+original projects to his own needs. The dotfiles are a modified version of
+[glyph-rice](https://github.com/Nebelung-cloud/glyph-rice) by Nebelung (GPL-3.0).
