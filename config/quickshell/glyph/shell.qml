@@ -74,7 +74,9 @@ ShellRoot {
     // движение, ночник и hypridle; сверху Theme.apply — свои цвета рамок, скругление и kitty. Его же зовём при смене темы
     Component.onCompleted: {
         hypr();
-        if (Theme.state.paint) Theme.apps(); // rice start ставит ссылки на term/ — цвет надо вернуть
+        // rice start points the links at term/ (dark glyph): a palette of its own or light needs its colours back
+        if (Theme.state.paint || Theme.light) Theme.apps();
+        else Theme.system();
         Rules.night();
         Rules.idle();
         Charge.read(); // límite de carga guardado → al EC de la batería

@@ -296,7 +296,9 @@ Singleton {
     // ссылкой целиком в репо, копию некуда деть; понадобится — color_theme путём до копии
     function apps() {
         const from = glyphDark.concat(ansi.slice(1, 7));
-        const p = pal.light ? pair(false) ?? make({ light: false }) : pal;
+        // the templates are glyph's dark palette by role: a light palette maps onto them as well (greys swap), and the
+        // system is told below, so gtk and qt apps follow light and dark with the shell
+        const p = pal;
         const to = p.c.concat([p.red], p.ansi.slice(2, 7));
         const pairs = from.map((c, i) => [c, "#" + hex(Qt.lighter(to[i], 1))]).filter(([a, b]) => a !== b);
         const sed = pairs.map(([a], i) => ["-e", `s/${a}/@${i}@/gI`]).concat(pairs.map(([, b], i) => ["-e", `s/@${i}@/${b}/g`])).reduce((x, y) => x.concat(y), []);
@@ -307,5 +309,13 @@ for f in gtk-3.0/gtk.css gtk-4.0/gtk.css qtengine.colors; do
     if [ $# -gt 0 ]; then mkdir -p "$(dirname "$o/$f")" && sed "$@" "$t/$f" > "$o/$f" && ln -sfn "$o/$f" "$l"; else ln -sfn "$t/$f" "$l"; fi
 done`,
             "bash", Quickshell.shellPath("term"), riceState + "/glyph"].concat(sed));
+        system();
+    }
+
+    // the system's own light/dark: what libadwaita/gtk4, browsers, Electron and portals go by (color-scheme), and the
+    // gtk3 base the colours above sit on (adw-gtk3 / adw-gtk3-dark)
+    function system() {
+        Quickshell.execDetached(["gsettings", "set", "org.gnome.desktop.interface", "color-scheme", light ? "prefer-light" : "prefer-dark"]);
+        Quickshell.execDetached(["gsettings", "set", "org.gnome.desktop.interface", "gtk-theme", light ? "adw-gtk3" : "adw-gtk3-dark"]);
     }
 }
