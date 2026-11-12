@@ -142,6 +142,13 @@ Singleton {
             mask: Region {}
         }
     }
+    // The Wayland inhibitor counts only while its surface is shown, and a 0×0 one isn't, so hypridle kept counting
+    // (lock, screen off, suspend). A logind lock as well, held while caffeine is on: hypridle honours idle locks
+    // (ignore_systemd_inhibit is off by default) and `systemctl suspend` is blocked by the sleep one.
+    Process {
+        running: root.caffeine
+        command: ["systemd-inhibit", "--what=idle:sleep", "--who=glyph", "--why=Caffeine", "--mode=block", "sleep", "infinity"]
+    }
 
     // ---- vpn: clash verge через пункты его трея, как договор в demonshot.
     // ponytail: подписи английские (language: en в verge); другой язык — поменять строки ----
