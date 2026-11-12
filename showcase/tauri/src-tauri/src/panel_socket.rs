@@ -80,13 +80,19 @@ pub(crate) fn parse_line(line: &[u8]) -> Option<Value> {
     v.is_object().then_some(v)
 }
 
-/// What a message from the client asks for. The gate is main.rs page_may_send, the same as sidecar_send's.
+/// What the settings panel sends (panel.js's send()): the only messages a client may pass to the sidecar. Any
+/// other process of the user's could connect, so nothing else goes through, e.g. a forged spoken "sí" that would
+/// answer an Allow / Don't allow question, a typed request, or a shell-only report.
+const PANEL_TYPES: &[&str] = &["menu", "panel_open", "panel_key", "panel_fishkey", "panel_wake", "panel_mail_add", "panel_money", "open_link", "copy_bind"];
+
+/// What a message from the client asks for: the panel's own messages only, and never authentication (main.rs
+/// page_may_send, sidecar_send's gate, is kept as a second check).
 pub(crate) fn incoming(msg: Value) -> Incoming {
     match msg.get("type").and_then(Value::as_str) {
         Some("panel_hide") => Incoming::Hide,
         Some("hello") => Incoming::Hello,
-        _ if !crate::page_may_send(&msg) => Incoming::Drop,
-        _ => Incoming::Forward(msg),
+        Some(t) if PANEL_TYPES.contains(&t) && crate::page_may_send(&msg) => Incoming::Forward(msg),
+        _ => Incoming::Drop,
     }
 }
 
@@ -301,6 +307,15 @@ mod tests {
             let m = json!({ "type": ty, "x": 1 });
             assert_eq!(incoming(m.clone()), Incoming::Forward(m), "{ty}");
         }
+        for ty in ["panel_fishkey", "panel_wake", "panel_mail_add"] {
+            let m = json!({ "type": ty });
+            assert_eq!(incoming(m.clone()), Incoming::Forward(m), "{ty}");
+        }
+        // Only the panel's own messages: not what the overlay, the voice helper or the shell report.
+        for ty in ["voice", "cli", "user_click", "voice_state", "panel_closed", "answer", "AUTH_result", "ask"] {
+            assert_eq!(incoming(json!({ "type": ty, "text": "sí" })), Incoming::Drop, "{ty}");
+        }
+        assert_eq!(incoming(json!({ "type": 7 })), Incoming::Drop, "a type that isn't text");
         assert_eq!(incoming(json!({ "type": "panel_hide" })), Incoming::Hide);
         assert_eq!(incoming(json!({ "type": "hello", "client": "glyph" })), Incoming::Hello);
     }
