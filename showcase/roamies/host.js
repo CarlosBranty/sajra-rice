@@ -602,7 +602,9 @@
   let toldTalk = null;
   const talkSync = () => {
     if (!LINUX) return;
-    const speaking = !!Roamie.voiceOut?.playing(), key = `${hearing},${speaking}`;
+    // A reply counts until it is over, gaps between its chunks (a tool running) included: the wake word's follow-up
+    // opens only after the whole reply.
+    const speaking = !!Roamie.voiceOut?.speaking(), key = `${hearing},${speaking}`;
     if (key === toldTalk) return;
     toldTalk = key;
     invoke('talk_state', { hearing, speaking }).catch(() => { toldTalk = null; });

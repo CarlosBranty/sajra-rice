@@ -5,6 +5,10 @@
   const R = window.Roamie;
   const LEAD = 0.12; // cushion before a reply's first chunk, so the next chunk is never late
   let ac = null, out = null, meter = null, buf = null, id = null, endAt = 0, live = [], lv = 0;
+  // A reply falls quiet between chunks while a tool runs; it still counts as speaking until its end arrives, or until
+  // nothing has come for this long (a reply that stalls without its end must not keep the wake word deaf).
+  const REPLY_STALL = 30000;
+  let chunkAt = 0;
   // How fast the voice talks (characters a second), learned from each whole reply: its audio length against how much
   // text it said. Drawings pace their marks to it (ink.js).
   let rate = 15, secs = 0;
@@ -54,6 +58,7 @@
   const play = (m) => {
     const a = ctx();
     if (m.id !== id) { stop(); id = m.id; secs = 0; traced = !!m.trace; }
+    chunkAt = performance.now();
     const b = pcm(m.pcm, m.rate || 44100), s = a.createBufferSource();
     s.buffer = b; s.connect(out);
     const now = a.currentTime;
@@ -76,6 +81,8 @@
       if (m.pcm) play(m);
     },
     playing: () => !!ac && live.length > 0 && ac.currentTime < endAt + 0.05 && moving(),
+    // A reply is under way: sounding, or between two of its chunks (the shell and the voice helper hear this one).
+    speaking() { return this.playing() || (!!id && !over.has(id) && performance.now() - chunkAt < REPLY_STALL); },
     cps: () => rate,
     // That reply has nothing left to play: its end arrived (or it was stopped), and nothing is still sounding.
     finished(rid) { return !this.playing() && (!rid || over.has(rid)); },

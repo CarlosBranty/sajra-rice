@@ -103,7 +103,10 @@ Windows also leaves Roamies out of every screen capture, so it won't show in you
 Windows and Linux uses [NVIDIA Parakeet TDT 0.6B v3](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3)
 ([CC BY 4.0](https://creativecommons.org/licenses/by/4.0/)), in the ONNX export by
 [istupakov](https://huggingface.co/istupakov/parakeet-tdt-0.6b-v3-onnx), run with
-[parakeet-rs](https://github.com/altunenes/parakeet-rs). The model (about 670 MB) downloads once at setup and isn't bundled.</sub>
+[parakeet-rs](https://github.com/altunenes/parakeet-rs). The model (about 670 MB) downloads once at setup and isn't bundled. Beside it, two small models
+download too: [Silero VAD](https://github.com/snakers4/silero-vad) (MIT) tells a voice from noise, so waiting for the
+wake word costs almost nothing in a quiet or noisy room, and [Pipecat Smart Turn](https://github.com/pipecat-ai/smart-turn)
+(BSD-2-Clause) tells from your voice when you've finished, so a question is sent about 0.4 s after you stop.</sub>
 
 <sub>**Local voice (Spanish)**, Windows and Linux: picked on the panel's Voice page (Replies), it speaks replies on your
 computer, offline, free and with no key, in one voice for every look: the female speaker of

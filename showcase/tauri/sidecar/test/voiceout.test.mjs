@@ -17,6 +17,7 @@ class AudioContext {
 const window = { Roamie: {} };
 vm.runInNewContext(fs.readFileSync(new URL('../../../roamies/voice-out.js', import.meta.url), 'utf8'), { window, AudioContext, atob, Float32Array, Math, Set, performance: { now: () => clock.t } });
 const V = window.Roamie.voiceOut;
+const REPLY_STALL = 30000;
 const second = Buffer.alloc(44100 * 2).toString('base64'); // one second of 16-bit mono
 const at = (audio, wall) => { ac.currentTime = audio; clock.t = wall; };
 
@@ -63,5 +64,30 @@ assert.equal(started.length, 1, 'only the first chunk of a traced reply');
 assert.equal(started[0][0], 'e');
 assert.ok(Math.abs(started[0][1] - (t0 + 120)) < 50, `when its first buffer starts, after the lead: ${started[0][1] - t0}`);
 V.stop();
+
+// Regression (follow-up window): a reply falls quiet between two chunks while a tool runs; playing() is then false,
+// so the wake word's follow-up opened mid-reply and any voice in the room started a take. speaking() lasts until the
+// reply's end arrives (or it is stopped), and gives up on a reply that stalls without one.
+at(10, 20000);
+V.handle({ id: 'f', pcm: second, rate: 44100 });
+at(11.5, 21500);
+assert.equal(V.playing(), false, 'its first chunk has played out');
+assert.equal(V.speaking(), true, 'but the reply goes on');
+at(11.5, 21500 + 25000);
+assert.equal(V.speaking(), true, 'a slow tool');
+V.handle({ id: 'f', pcm: second, rate: 44100 });
+at(11.6, 47000);
+assert.equal(V.speaking(), true, 'the rest of it');
+V.handle({ id: 'f', end: true, chars: 10 });
+at(12.7, 48200);
+assert.equal(V.speaking(), false, 'its end arrived and nothing is sounding');
+V.handle({ id: 'g', pcm: second, rate: 44100 });
+at(14, 49500);
+assert.equal(V.speaking(), true);
+at(14, 49500 + REPLY_STALL + 100);
+assert.equal(V.speaking(), false, 'a reply that never ends stops counting');
+V.handle({ id: 'h', pcm: second, rate: 44100 });
+V.stop();
+assert.equal(V.speaking(), false, 'stopped');
 
 console.log('voice out tests: passed');
