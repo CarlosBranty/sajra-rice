@@ -1,8 +1,9 @@
 // The desktop's own shortcuts on Hyprland with a Lua config (0.55 and later, like the glyph dotfiles): read from the
 // user's keybinds.lua each time they are asked for, so they follow the user's edits, and used for them by voice. A
-// shell action (`hl.dsp.global("shell:<name>")`: the launcher, settings, quick settings, wallpapers…) is dispatched
-// to the compositor by name; any other shortcut (special workspaces, apps, media, workspaces, window actions) is
-// pressed as keys (wtype), so the compositor does exactly what the user's bind does. What could hurt (killing or
+// shortcut is used by running its own action, as written in the config, in the compositor's Lua (`hyprctl eval`,
+// with the config's `vars` and `fn` modules loaded as keybinds.lua has them): the shell's panels
+// (`hl.dsp.global("shell:<name>")`), special workspaces, apps, media, workspaces, window actions. Pressing the keys
+// instead (wtype) does nothing there: Hyprland doesn't run binds for a virtual keyboard's keys. What could hurt (killing or
 // restarting the shell, typing, putting the computer to sleep) is never offered nor used (safety.mjs checkShortcut).
 // Parsing is pure (test/shortcuts.test.mjs).
 import { execFile } from 'node:child_process';
@@ -76,7 +77,7 @@ const str = (s) => (/^"([^"]*)"$|^'([^']*)'$/.exec(s ?? '') ?? []).slice(1).find
  *  is what checkShortcut reads (`does` may be cut short to be shown). */
 function describe(action) {
   const flat = action.replace(/\s+/g, ' ').trim();
-  return { ...short(flat), action: flat };
+  return { ...short(flat), action: flat, actions: [flat] };
 }
 function short(flat) {
   let m;
@@ -99,9 +100,9 @@ export function parseBinds(texts, varsTexts = []) {
     const k = normKeys(keys), id = k.toUpperCase();
     const prev = out.get(id);
     const both = (a, b) => (a && b ? `${a}; ${b}` : a || b);
-    // A key with several actions is pressed, so that the compositor runs them all (not dispatched as one of them).
+    // A key with several actions runs them all, in order, as the compositor would.
     if (!prev) out.set(id, { keys: k, section, ...d });
-    else out.set(id, { keys: prev.keys, section: prev.section, does: both(prev.does, d.does), action: both(prev.action, d.action) });
+    else out.set(id, { keys: prev.keys, section: prev.section, does: both(prev.does, d.does), action: both(prev.action, d.action), actions: [...prev.actions, ...d.actions] });
   };
   const calls = (Array.isArray(texts) ? texts : [texts]).flatMap((t) => bindCalls(t));
   for (const { args: [keyExpr = '', action = '', opts = ''], section, unbind } of calls) {
@@ -116,7 +117,8 @@ export function parseBinds(texts, varsTexts = []) {
     if ((m = /^vars\.(\w+)\s*\.\.\s*" \+ "\s*\.\.\s*key$/.exec(keyExpr))) {
       const w = /^fn\.wsaction\(\s*"(\w+)"\s*,\s*"(\w*)"\s*,\s*i\s*\)$/.exec(action.replace(/\s+/g, ' '));
       if (!vars[m[1]] || !w) continue;
-      for (let i = 1; i <= 10; i++) add(`${vars[m[1]]} + ${i % 10}`, 'Workspaces', { does: `${WS[w[1]] ?? w[1]}${w[2] ? ` ${w[2]}` : ''} ${i}`, action: action.replace(/\s+/g, ' ') });
+      const flat = action.replace(/\s+/g, ' ');
+      for (let i = 1; i <= 10; i++) add(`${vars[m[1]]} + ${i % 10}`, 'Workspaces', { does: `${WS[w[1]] ?? w[1]}${w[2] ? ` ${w[2]}` : ''} ${i}`, action: flat, actions: [`(function(i) return ${flat} end)(${i})`] });
       continue;
     }
     const keys = str(keyExpr) ?? ((m = /^vars\.(\w+)$/.exec(keyExpr)) ? vars[m[1]] : null);
@@ -134,21 +136,14 @@ export function normKeys(keys) {
   return parts.map((p, i) => (i < parts.length - 1 || MODS[p.toUpperCase()] || p.length === 1 ? p.toUpperCase() : p)).join(' + ');
 }
 
-const MODS = { SUPER: 'logo', CTRL: 'ctrl', CONTROL: 'ctrl', ALT: 'alt', SHIFT: 'shift' };
-const KEYS = {
-  SPACE: 'space', RETURN: 'Return', ENTER: 'Return', ESCAPE: 'Escape', TAB: 'Tab', BACKSLASH: 'backslash', COMMA: 'comma',
-  PERIOD: 'period', MINUS: 'minus', EQUAL: 'equal', DELETE: 'Delete', LEFT: 'Left', RIGHT: 'Right', UP: 'Up', DOWN: 'Down',
-  PAGE_UP: 'Prior', PAGE_DOWN: 'Next', PRINT: 'Print',
-};
+const MODS = { SUPER: 1, CTRL: 1, CONTROL: 1, ALT: 1, SHIFT: 1 };
 
-/** wtype's arguments to press a shortcut (modifiers held around the key), or null when it isn't one key. */
-export function pressArgs(keys) {
-  const parts = normKeys(keys).split(' + ');
-  const key = parts.pop();
-  const mods = parts.map((p) => MODS[p]);
-  if (!key || mods.some((x) => !x) || MODS[key] || /^(SUPER|CONTROL|ALT|SHIFT)_[LR]$/i.test(key) || !/^\w+$/.test(key)) return null;
-  const sym = KEYS[key.toUpperCase()] ?? (key.length === 1 ? key.toLowerCase() : key);
-  return [...mods.flatMap((x) => ['-M', x]), '-k', sym, ...mods.reverse().flatMap((x) => ['-m', x])];
+/** The Lua that runs a bind's actions in the compositor, with what keybinds.lua has in scope: a dispatcher is
+ *  dispatched, a function (a bind like `function() … end` or `fn.toggle_special("music")`) is called. */
+export function luaRun(actions) {
+  return ['local vars = require("variables")', 'local fn = require("hyprland.functions")',
+    'local function run(a) if type(a) == "function" then a() else hl.dispatch(a) end end',
+    ...actions.map((a) => `run(${a})`)].join('\n');
 }
 
 const configDir = () => path.join(process.env.XDG_CONFIG_HOME || path.join(os.homedir(), '.config'), 'hypr');
@@ -161,7 +156,8 @@ async function readConfig() {
 }
 const runFile = (file, args) => new Promise((resolve, reject) => {
   execFile(file, args, { timeout: 3000, killSignal: 'SIGKILL', windowsHide: true }, (err, stdout, stderr) => {
-    if (err) reject(new Error(err.code === 'ENOENT' ? `${file} is not installed` : String(stderr || err.message).trim().slice(0, 300)));
+    // hyprctl says what went wrong on stdout.
+    if (err) reject(new Error(err.code === 'ENOENT' ? `${file} is not installed` : String(stdout || stderr || err.message).trim().slice(0, 300)));
     else resolve(String(stdout));
   });
 });
@@ -196,12 +192,8 @@ export function shortcutTools({ read = readConfig, run = runFile } = {}) {
         if (!b) throw new Error(`No shortcut ${normKeys(keys)} in the desktop's keybinds. desktop_shortcuts lists them.`);
         const v = checkShortcut(b);
         if (v.level === BLOCK) throw new Error(`${b.keys} can't be used: ${v.reason}`);
-        if (b.global) await run('hyprctl', ['dispatch', `hl.dsp.global("shell:${b.global}")`]);
-        else {
-          const args = pressArgs(b.keys);
-          if (!args) throw new Error(`${b.keys} can't be pressed.`);
-          await run('wtype', args);
-        }
+        const said = String(await run('hyprctl', ['eval', luaRun(b.actions)]) ?? '').trim();
+        if (/^error/i.test(said)) throw new Error(`${b.keys} didn't run: ${said.slice(0, 300)}`);
         return `Done: ${b.keys} (${b.does}).`;
       },
     },

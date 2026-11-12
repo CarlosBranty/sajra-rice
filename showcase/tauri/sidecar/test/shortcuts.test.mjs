@@ -3,7 +3,7 @@
 // config below is synthetic, in the shape of a glyph keybinds.lua. Run: npm test
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { parseBinds, pressArgs, shortcutTools } from '../shortcuts.mjs';
+import { luaRun, parseBinds, shortcutTools } from '../shortcuts.mjs';
 import { BLOCK, SAFE, checkShortcut } from '../safety.mjs';
 
 const VARS = `
@@ -56,14 +56,14 @@ const binds = parseBinds(BINDS, [VARS, USER]);
 const find = (keys) => binds.find((b) => b.keys === keys);
 
 test('the binds are read with their keys resolved, their section and what they do', () => {
-  assert.deepEqual(find('SUPER + Space'), { keys: 'SUPER + Space', section: 'Misc', does: 'global shell:altar', global: 'altar', action: 'hl.dsp.global("shell:altar")' });
+  assert.deepEqual(find('SUPER + Space'), { keys: 'SUPER + Space', section: 'Misc', does: 'global shell:altar', global: 'altar', action: 'hl.dsp.global("shell:altar")', actions: ['hl.dsp.global("shell:altar")'] });
   assert.equal(find('SUPER + A').global, 'quick');
   assert.equal(find('SUPER + SUPER_L').global, 'launcher', 'the launcher, by its shell action');
   assert.equal(find('CTRL + SUPER + Space').does, 'exec playerctl play-pause');
   assert.equal(find('SUPER + SHIFT + M').does, 'toggle special workspace music', "user.lua's override wins; a commented one doesn't");
   assert.equal(find('SUPER + Return').does, 'function() hl.exec_cmd(vars.terminal) end');
   assert.equal(find('XF86AudioLowerVolume').does, 'exec wpctl set-volume @DEFAULT_AUDIO_SINK@ 5%-', 'a call over several lines');
-  assert.deepEqual(find('SUPER + 1'), { keys: 'SUPER + 1', section: 'Workspaces', does: 'go to workspace 1', action: 'fn.wsaction("focus", "", i)' });
+  assert.deepEqual(find('SUPER + 1'), { keys: 'SUPER + 1', section: 'Workspaces', does: 'go to workspace 1', action: 'fn.wsaction("focus", "", i)', actions: ['(function(i) return fn.wsaction("focus", "", i) end)(1)'] });
   assert.equal(find('CTRL + SHIFT + ALT + V').does, `exec sleep 0.5s && ydotool type -d 1 "$(cliphist list | head -1 | cliphist decode)"`, 'a comment inside the call is not part of it');
   assert.equal(find('SUPER + 0').does, 'go to workspace 10');
   assert.equal(find('SUPER + Q').does, 'window close');
@@ -107,19 +107,18 @@ test('what kills, ends the session or sleeps is seen however it is written, and 
   assert.equal(checkShortcut(bind('hl.dsp.exec_cmd("firefox")')).level, SAFE);
 });
 
-test('a shortcut is pressed with its modifiers held', () => {
-  assert.deepEqual(pressArgs('SUPER + SHIFT + M'), ['-M', 'logo', '-M', 'shift', '-k', 'm', '-m', 'shift', '-m', 'logo']);
-  assert.deepEqual(pressArgs('CTRL + SUPER + Space'), ['-M', 'ctrl', '-M', 'logo', '-k', 'space', '-m', 'logo', '-m', 'ctrl']);
-  assert.deepEqual(pressArgs('SUPER + Return'), ['-M', 'logo', '-k', 'Return', '-m', 'logo']);
-  assert.deepEqual(pressArgs('XF86AudioLowerVolume'), ['-k', 'XF86AudioLowerVolume']);
-  assert.equal(pressArgs('SUPER + SUPER_L'), null, 'a modifier alone is not pressed');
+test("a bind's own actions run in the compositor's Lua, with the config's vars and fn in scope", () => {
+  assert.equal(luaRun(['fn.toggle_special("music")', 'hl.dsp.exec_cmd("playerctl next")']), [
+    'local vars = require("variables")', 'local fn = require("hyprland.functions")',
+    'local function run(a) if type(a) == "function" then a() else hl.dispatch(a) end end',
+    'run(fn.toggle_special("music"))', 'run(hl.dsp.exec_cmd("playerctl next"))'].join('\n'));
 });
 
-test('the tools list the shortcuts and use one: dispatched, pressed or refused', async () => {
+test('the tools list the shortcuts and use one: run, failed or refused', async () => {
   const ran = [];
   const tools = shortcutTools({
     read: async () => ({ binds: BINDS, vars: [VARS, USER] }),
-    run: async (file, args) => { ran.push([file, ...args]); },
+    run: async (file, args) => { ran.push([file, ...args]); return args[1].includes('nope') ? 'Error: [string "…"]:4: attempt to call a nil value' : 'ok'; },
   });
   const [list, use] = tools;
   assert.deepEqual(tools.map((t) => t.name), ['desktop_shortcuts', 'use_shortcut']);
@@ -129,9 +128,14 @@ test('the tools list the shortcuts and use one: dispatched, pressed or refused',
   assert.doesNotMatch(text, /kill|ydotool/, 'what can never be used is not offered');
 
   assert.match(await use.execute({ keys: 'super + a' }), /Done: SUPER \+ A/);
-  assert.deepEqual(ran.pop(), ['hyprctl', 'dispatch', 'hl.dsp.global("shell:quick")']);
+  assert.deepEqual(ran.pop(), ['hyprctl', 'eval', luaRun(['hl.dsp.global("shell:quick")'])]);
   await use.execute({ keys: 'SUPER + SHIFT + M' });
-  assert.deepEqual(ran.pop(), ['wtype', '-M', 'logo', '-M', 'shift', '-k', 'm', '-m', 'shift', '-m', 'logo']);
+  assert.deepEqual(ran.pop(), ['hyprctl', 'eval', luaRun(['fn.toggle_special("music")'])]);
+  await use.execute({ keys: 'SUPER + 3' });
+  assert.deepEqual(ran.pop(), ['hyprctl', 'eval', luaRun(['(function(i) return fn.wsaction("focus", "", i) end)(3)'])]);
+  const failing = shortcutTools({ read: async () => ({ binds: 'hl.bind("SUPER + J", nope())', vars: [] }), run: async (f, a) => { ran.push([f, ...a]); return 'Error: [string "…"]:4: attempt to call a nil value'; } })[1];
+  await assert.rejects(failing.execute({ keys: 'SUPER + J' }), /SUPER \+ J didn't run: Error/, 'what the compositor said goes back');
+  ran.pop();
   await assert.rejects(use.execute({ keys: 'SUPER + SHIFT + U' }), /can't be used/);
   await assert.rejects(use.execute({ keys: 'SUPER + J' }), /No shortcut SUPER \+ J/);
   assert.equal(ran.length, 0, 'nothing run for a refused or unknown shortcut');

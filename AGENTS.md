@@ -96,15 +96,17 @@ Devices (Linux, the Voice page's Devices tab): the microphones and speakers come
 sources|sinks` (`sidecar/audiodev.mjs`, monitors left out); a pick is a device name, '' the system's default. The voice
 helper is started with `PIPEWIRE_NODE` and `PULSE_SOURCE` set to the microphone (`voice.rs` `set_mic`; a change
 restarts it), and Roamies' own playback streams are moved to the speaker with `pactl move-sink-input` when the pick
-changes and whenever a reply starts playing (`linux.rs` `set_speaker`, `route_own`).
+changes and whenever a reply starts playing (`linux.rs` `set_speaker`, `route_own`). The microphone boost (100–400 %)
+is applied by the helper to what it hears only (`voice-win/src/audio.rs` `amplify`, the `gain` command), not to the
+microphone's level for other apps.
 Usage (`sidecar/usage.mjs`): the agent's `token_usage` tool sums `~/.gg/sidekick/usage.jsonl` (one line per request:
 provider, route, model, token counts, never what was said) for today, yesterday, the last 7 days, this month or all,
 and says how it answers now: Anthropic signed in with Claude (Claude Code, the user's subscription), another
 provider's account, or an API key.
 Shortcuts (`sidecar/shortcuts.mjs`, Hyprland with a Lua config such as the glyph dotfiles): `desktop_shortcuts` reads
 `~/.config/hypr/hyprland/keybinds.lua` (keys from `variables.lua`, `user.lua` overrides) each time, and `use_shortcut`
-dispatches a shell action by name (`hyprctl dispatch 'hl.dsp.global("shell:<name>")'`) or presses any other shortcut
-with `wtype`. `safety.mjs` `checkShortcut` keeps out binds that kill or restart, type text, or sleep or power off.
+runs the bind's own action in the compositor's Lua (`hyprctl eval`, with the config's `variables` and
+`hyprland.functions` modules loaded as keybinds.lua has them; keys pressed with wtype don't trigger Hyprland binds). `safety.mjs` `checkShortcut` keeps out binds that kill or restart, type text, or sleep or power off.
 Mail (`sidecar/mail/`): bank mails over IMAP with app passwords (Gmail, Yahoo; `imapflow`, `mailparser`), strictly
 read-only: EXAMINE, `BODY.PEEK[]`, a server-side SEARCH for the definitions' exact senders inside a 90-day or UID
 window (cursors with UIDVALIDITY in `<data dir>/mail.db`), never STORE, COPY, MOVE or EXPUNGE. Only the receiving
