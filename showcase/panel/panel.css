@@ -267,6 +267,21 @@ html, body { height: 100%; background: transparent; }
 .tip.in { animation: dissolve-in 140ms step-end both; }
 @media (prefers-reduced-motion: reduce) { .tip.in { animation: none; } }
 
+/* ---------- Money: the movements (filters, or what to do with the rows selected), adding by hand ----------
+   Layout only: the colours are the list's, the fields' and the radio chips' (a selected row's box is a picked chip).
+   The filters and the selection's actions take the same two rows, so the list keeps its size between them. */
+.mtools { display: grid; gap: 6px; }
+.mfilters { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.3fr) minmax(0, 1fr); gap: 6px; }
+.mfilters .field.select { min-width: 0; }
+.mlinks { display: flex; align-items: center; min-height: 33px; }
+.mtools > .why { margin: 0; min-height: 33px; display: flex; align-items: center; }
+.mrow { grid-template-columns: 20px minmax(0, 1fr) auto; }
+.pick { --s: 1px; padding: 3px; }
+.pick .cap { --s: 1px; --bw: 0px; min-width: 0; width: 14px; height: 14px; padding: 0; font-size: 10px; }
+.empty.wrap { white-space: normal; }
+.field.mdate { flex: none; width: 150px; }
+.mrow .amt { text-align: end; overflow: visible; font-variant-numeric: tabular-nums; }
+
 /* ---------- note: what just happened after something you did here ---------- */
 .note {
   margin: 0; padding: 9px var(--gut); border-top: 1px dashed var(--line);

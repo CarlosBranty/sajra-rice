@@ -4,7 +4,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
-import { IGNORED_KINDS, NOT_SPENDING, OWN_KINDS } from './banks.mjs';
+import { IGNORED_KINDS, INCOME_KINDS, NOT_SPENDING, OWN_KINDS } from './banks.mjs';
 import { maskAccount, merchantKey } from './parse.mjs';
 
 export const DEFAULT_CATEGORIES = ['Comida', 'Supermercado', 'Transporte', 'Viajes', 'Servicios', 'Salud', 'Entretenimiento', 'Compras', 'Educación', 'Transferencias', 'Otros'];
@@ -165,6 +165,10 @@ export function openStore(file) {
   };
   const ruleFor = (key) => (key ? db.prepare('SELECT category FROM rules WHERE merchant_key = ?').get(key)?.category ?? null : null);
   const kinds = (list) => list.map((k) => `'${k}'`).join(', ');
+  const SPENDING = `kind NOT IN (${kinds(NOT_SPENDING)}) AND status <> 'ignored'`;
+  const INCOME = `kind IN (${kinds(INCOME_KINDS)}) AND status <> 'ignored'`;
+  // Words → an FTS5 query where each is a prefix and nothing is read as an operator; '' when there is no word.
+  const ftsQuery = (text) => (String(text ?? '').match(/[\p{L}\p{N}]+/gu) ?? []).map((w) => `"${w}"*`).join(' ');
   const isOwn = (key) => !!key && !!db.prepare('SELECT 1 FROM own_accounts WHERE merchant_key = ?').get(key);
   // An expense marked as moved to the user's own account goes back to its kind; it waits again unless it has a category.
   const UNMARK = "kind = own_from, own_from = NULL, status = CASE WHEN category IS NULL THEN 'pending' ELSE 'classified' END";
@@ -313,11 +317,37 @@ export function openStore(file) {
       AND kind NOT IN (${kinds(NOT_SPENDING)}) ORDER BY occurred_at, id`).all(),
     /** Words in the merchant or the note, accent-insensitive; each word is a prefix, operators are not parsed. */
     search(text, limit = 50) {
-      const words = String(text ?? '').match(/[\p{L}\p{N}]+/gu) ?? [];
-      if (!words.length) return [];
-      const q = words.map((w) => `"${w}"*`).join(' ');
+      const q = ftsQuery(text);
+      if (!q) return [];
       return db.prepare('SELECT e.* FROM expenses_fts f JOIN expenses e ON e.id = f.rowid WHERE expenses_fts MATCH ? ORDER BY e.occurred_at DESC LIMIT ?').all(q, limit);
     },
+    /** Every movement (expenses, income, and what is not counted), newest first, filtered: month 'YYYY-MM'; category a
+     * name, or null for the expenses not classified yet; group 'spending' | 'income' | 'other' (neither: not counted);
+     * text as search() reads it. → { total, rows (limit from offset), totals per currency { currency, spent, received,
+     * count } in cents }. */
+    movements({ month, category, group, text, offset = 0, limit = 50 } = {}) {
+      const where = [], args = [];
+      if (month) { where.push('substr(occurred_at, 1, 7) = ?'); args.push(month); }
+      if (category === null) where.push(`category IS NULL AND ${SPENDING}`);
+      else if (category !== undefined) { where.push('category = ?'); args.push(canonical(category)); }
+      if (group === 'spending') where.push(SPENDING);
+      else if (group === 'income') where.push(INCOME);
+      else if (group === 'other') where.push(`NOT (${SPENDING}) AND NOT (${INCOME})`);
+      if (text != null && String(text).trim()) {
+        const q = ftsQuery(text);
+        if (!q) return { total: 0, rows: [], totals: [] };
+        where.push('id IN (SELECT rowid FROM expenses_fts WHERE expenses_fts MATCH ?)'); args.push(q);
+      }
+      const w = where.length ? `WHERE ${where.join(' AND ')}` : '';
+      return {
+        total: db.prepare(`SELECT COUNT(*) AS n FROM expenses ${w}`).get(...args).n,
+        rows: db.prepare(`SELECT * FROM expenses ${w} ORDER BY occurred_at DESC, id DESC LIMIT ? OFFSET ?`).all(...args, limit, offset),
+        totals: db.prepare(`SELECT currency, coalesce(SUM(CASE WHEN ${SPENDING} THEN amount END), 0) AS spent,
+            coalesce(SUM(CASE WHEN ${INCOME} THEN amount END), 0) AS received, COUNT(*) AS count FROM expenses ${w} GROUP BY currency ORDER BY currency`).all(...args),
+      };
+    },
+    /** The months with any movement, newest first. */
+    months: () => db.prepare('SELECT DISTINCT substr(occurred_at, 1, 7) AS month FROM expenses ORDER BY month DESC').all().map((r) => r.month),
     /** Keeps a mail that was not understood (once per Message-ID) so it can be reviewed and read again: `account` is
      * where it came from, `definitions` the fingerprint of the definitions that could not read it. Read again and still
      * not understood, its reason and fingerprint are updated. */

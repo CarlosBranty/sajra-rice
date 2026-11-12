@@ -64,6 +64,8 @@ Each provider's own privacy policy applies to what is sent to it.
   password or your fingerprint (Linux). Your system's own PAM checks it on your computer, as your lock screen does;
   the password goes from the prompt straight to that check and is wiped after. It is never stored, sent anywhere
   (the AI model included) or logged; the log only notes that a check was asked and how it went.
+- The panel's Money page shows these records (and lets you classify them or add one by hand) only on your computer;
+  the same changes ask for your password or fingerprint there too.
 
 ## What's stored on your computer
 

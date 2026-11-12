@@ -1,6 +1,6 @@
 // The panel that opens from the menu bar or tray icon: a sidebar of pages. Home (what's going on) and Memory,
-// then a page per group of settings: Model, Appearance, Voice, Money (the mail accounts bank notifications are read from),
-// Behavior and About.
+// then a page per group of settings: Model, Appearance, Voice, Money (the movements read from bank mails or added by hand,
+// and the mail accounts they are read from), Behavior and About.
 // The sidecar owns every value: it sends the whole state when the panel opens and after each change, and the
 // panel sends back the same actions the menu used ({type:'menu', id}). Opened in a plain browser it shows a
 // labelled preview with sample data instead.
@@ -22,8 +22,12 @@
   let state = null, tab = 'home', deferred = false;
   // What's open in the panel itself: a key field (provider id or 'fish'), the row action waiting for its
   // Confirm, each long list's page (pg) and how many rows fit on one (per, measured), Memory's tab and its search.
-  // Money's tab, the provider picked to add and the address typed (the app password is never kept here).
-  const ui = { key: null, kind: {}, arm: null, pg: {}, per: {}, mtab: 'facts', vtab: 'replies', atab: 'look', ytab: 'accounts', mprov: 'gmail', maddr: '', q: '', bindShown: new Set() };
+  // Money's tab, the provider picked to add and the address typed (the app password is never kept here); its table
+  // (mview, as the sidecar last sent it), its filters (mq), page and selected rows, the category picked for them or a
+  // new one being typed (mnew), a category being renamed (mren), and the entry being added by hand (mform).
+  const ui = { key: null, kind: {}, arm: null, pg: {}, per: {}, mtab: 'facts', vtab: 'replies', atab: 'look', ytab: 'moves', mprov: 'gmail', maddr: '', q: '', bindShown: new Set(),
+    mview: null, mq: { month: '', category: undefined, group: 'all', text: '' }, mpage: 0, msel: new Set(), mcat: '', mnew: false, mren: false, mfocus: null, masked: null,
+    mform: { kind: 'expense', amount: '', currency: 'PEN', description: '', date: '', category: '' } };
   let armTimer = 0;
   const disarm = () => { clearTimeout(armTimer); if (ui.arm) { ui.arm = null; return true; } return false; };
 
@@ -306,12 +310,16 @@
       shown.length ? el('ul', { className: 'list', 'aria-label': label }, shown.map(row)) : el('p', { className: 'empty', textContent: empty }));
     return { box, nav: pages > 1 ? pager(key, pg, pages, label) : null };
   }
-  function pager(key, pg, pages, label) {
+  // turn(page): a list the sidecar pages (Money's movements) asks for that page; the arrow keeps focus when it comes.
+  function pager(key, pg, pages, label, turn = null) {
     const go = (d) => {
-      ui.pg[key] = pg + d; disarm();
+      disarm();
       // Keep focus on an arrow that still works at the end of the list.
       const edge = pg + d === 0 || pg + d === pages - 1;
-      refresh(`${key}:${edge ? (d < 0 ? 'next' : 'prev') : d < 0 ? 'prev' : 'next'}`);
+      const k = `${key}:${edge ? (d < 0 ? 'next' : 'prev') : d < 0 ? 'prev' : 'next'}`;
+      if (turn) { ui.mfocus = k; return turn(pg + d); }
+      ui.pg[key] = pg + d;
+      refresh(k);
     };
     return el('div', { className: 'pager', role: 'group', 'aria-label': `${label}: page ${pg + 1} of ${pages}` },
       btn('‹', () => go(-1), { kind: 'ghost mini', k: `${key}:prev`, disabled: pg === 0, aria: 'Previous page' }),
@@ -565,20 +573,39 @@
     ];
     return [head, ...(on === 'talking' ? talking : on === 'sounds' ? sounds : replies)];
   }
-  // Money: the mail accounts bank notifications are read from (read-only) and adding one, with each provider's way
-  // to an app password. Two tabs: the panel doesn't scroll, and the form with its how-to doesn't fit under the list.
+  // Money: the movements read from bank mails or added by hand (the sidecar filters them and sends a page at a time),
+  // adding one by hand, and the mail accounts bank notifications are read from (read-only) with adding one and each
+  // provider's way to an app password. Tabs: the panel doesn't scroll.
   const MAIL_HELP = {
     gmail: 'Gmail needs an app password: turn on 2-Step Verification in your Google Account, then create one at myaccount.google.com/apppasswords. Revoke it there at any time; changing your Google password revokes it too.',
     yahoo: 'Yahoo needs an app password: Account Info, Account Security, Generate app password. Revoke it there at any time: it keeps working after you change your Yahoo password, so revoke it when you stop using Roamies.',
     outlook: "Coming soon: Outlook.com no longer takes app passwords and needs a Microsoft sign-in, which Roamies doesn't have yet.",
   };
+  const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  const monthName = (m) => `${MONTHS[Number(m.slice(5)) - 1]} ${m.slice(0, 4)}`;
+  const movesPer = () => Math.min(50, ui.per.moves ?? 8);
+  // The table's query as the sidecar takes it (category null: not classified; left out: every one). Every message
+  // carries it, so what comes back is the table as it is shown.
+  const mquery = () => ({ month: ui.mq.month, ...(ui.mq.category === undefined ? {} : { category: ui.mq.category }), group: ui.mq.group, text: ui.mq.text.trim().slice(0, 200), page: ui.mpage, per: movesPer() });
+  const moneyDo = (op, args = {}) => send({ type: 'panel_money', op, ...args, query: mquery() });
+  const moneyAsk = () => moneyDo('list');
+  // Before a protected change (the sidecar asks for the password or fingerprint): where the prompt shows.
+  const askFirst = () => note('Confirm it is you: the prompt is by your Roamie.');
+  const clearSel = () => { ui.msel.clear(); ui.mnew = false; };
+  const choose = (label, list, value, pick, k) => el('span', { className: 'px field select' },
+    el('select', { 'aria-label': label, 'data-k': k, on: { change: (e) => pick(e.target.value) } },
+      list.map(([v, text, off]) => el('option', { value: v, textContent: text, selected: v === value, disabled: off }))));
+  let findTimer = 0;
+
   function moneyPage() {
     const m = state.money, on = ui.ytab;
     const tabBtn = (id, label) => el('button', {
       className: 'tab', type: 'button', role: 'tab', id: `ytab-${id}`, 'aria-selected': String(on === id), tabIndex: on === id ? 0 : -1, 'data-k': `ytab-${id}`,
-      on: { click: () => { if (ui.ytab !== id) { ui.ytab = id; disarm(); render(`ytab-${id}`); } } },
+      on: { click: () => { if (ui.ytab !== id) { ui.ytab = id; disarm(); clearSel(); ui.mren = false; render(`ytab-${id}`); } } },
     }, label);
-    const head = el('div', { className: 'mhead' }, el('div', { className: 'tabs', role: 'tablist', 'aria-label': 'Money' }, tabBtn('accounts', 'Accounts'), tabBtn('add', 'Add account')));
+    const head = el('div', { className: 'mhead' }, el('div', { className: 'tabs', role: 'tablist', 'aria-label': 'Money' }, tabBtn('moves', 'Movements'), tabBtn('entry', 'Add by hand'), tabBtn('accounts', 'Accounts'), tabBtn('add', 'Add account')));
+    if (on === 'moves') return [head, ...movesPage()];
+    if (on === 'entry') return [head, entryForm()];
     if (on === 'add') {
       const p = ui.mprov;
       const addr = el('input', { type: 'email', id: 'key-mailaddr', value: ui.maddr, autocomplete: 'off', spellcheck: false, placeholder: 'Email address', 'aria-label': 'Email address', maxLength: 200, on: { input: (e) => { ui.maddr = e.target.value; } } });
@@ -608,12 +635,161 @@
         link('Test', () => act(`mail_test:${a.id}`), { k: `mail-test:${a.id}`, aria: `Test the connection to ${a.email}` }),
         armed('Remove', 'Confirm', `mail-remove:${a.id}`, `mail_remove:${a.id}`, `Remove ${a.email} and its app password`))),
     { label: 'Mail accounts', empty: 'No account yet: add one to read your bank mails.' });
+    // The recipients marked as the user's own accounts (from a transfer on Movements): unmarking asks who it is.
+    const { box: obox, nav: onav } = paged('own', ui.mview?.own ?? [], (o) => el('li', { className: 'item' },
+      el('span', { className: 'mark', 'aria-hidden': 'true' }),
+      el('span', { className: 'text', title: o.name }, o.name, el('small', { textContent: `${o.count} transfer${o.count === 1 ? '' : 's'}, not counted` })),
+      link('Unmark', () => { askFirst(); moneyDo('own', { action: 'unmark', key: o.key }); }, { k: `own-unmark:${o.key}`, aria: `Unmark ${o.name} as your own account` })),
+    { label: 'Your own accounts', empty: 'None yet: select a transfer on Movements and mark it as yours.' });
     return [head,
       group('Check every', 'How often I look for new bank mails while I run.', null,
         picks('Check every', m.everys.map((n) => [n, `${n} min`]), m.every, (x) => act(`mailevery:${x}`), 'mailevery')),
       el('div', { className: 'group paged', role: 'tabpanel', 'aria-labelledby': 'ytab-accounts' },
         el('div', { className: 'ghead' }, el('h2', { textContent: 'Mail accounts' }), el('p', { textContent: 'Read-only: nothing is moved, marked or deleted.' })), box),
-      foot(null, nav)];
+      foot(null, nav),
+      el('div', { className: 'group paged' },
+        el('div', { className: 'ghead' }, el('h2', { textContent: 'Your own accounts' }), el('p', { textContent: 'Transfers to them are neither spending nor income.' })), obox),
+      foot(null, onav)];
+  }
+
+  // The movements: the filters (or, with rows selected, what to do with them), a page of rows, and the totals of
+  // everything the filters let through.
+  function movesPage() {
+    const v = ui.mview;
+    if (!v) return [el('p', { className: 'empty', textContent: 'Loading…' })];
+    const sel = v.rows.filter((r) => ui.msel.has(r.id));
+    const filtered = ui.mq.month || ui.mq.category !== undefined || ui.mq.group !== 'all' || ui.mq.text.trim();
+    const box = el('div', { className: 'pagebox', 'data-pager': 'moves', id: 'moves-box' },
+      v.rows.length ? el('ul', { className: 'list', 'aria-label': 'Movements' }, v.rows.map(moveRow))
+        : el('p', { className: 'empty wrap', textContent: filtered ? 'Nothing matches these filters.' : 'No movements yet: they come from your bank mails, or add one by hand.' }));
+    const nav = v.pages > 1 ? pager('moves', v.page, v.pages, 'Movements', (pg) => { ui.mpage = pg; clearSel(); moneyAsk(); }) : null;
+    const sums = v.totals.map((t) => [`${t.spent} out`, t.received.endsWith(' 0.00') ? null : `${t.received} in`].filter(Boolean).join(', '));
+    const sum = v.total ? `${v.total} movement${v.total === 1 ? '' : 's'} · ${sums.join(' · ')}` : '';
+    return [
+      el('div', { className: 'group paged', role: 'tabpanel', id: 'moves-panel', 'aria-labelledby': 'ytab-moves' }, sel.length ? selBar(sel) : filters(v), box),
+      foot(sum ? el('p', { className: 'usage', textContent: sum, title: sum }) : null, nav, 'moves-foot'),
+    ];
+  }
+  function moveRow(r) {
+    const on = ui.msel.has(r.id), sign = r.status === 'Income' ? '+' : '';
+    const what = `${r.text}, ${sign}${r.amount}, ${r.date}`;
+    return el('li', { className: 'item mrow' },
+      r.classifiable || r.manual || r.own ? el('button', {
+        className: 'px chord pick', type: 'button', role: 'checkbox', 'aria-checked': String(on), 'aria-label': `Select: ${what}`, 'data-k': `msel:${r.id}`,
+        on: { click: () => { if (on) ui.msel.delete(r.id); else ui.msel.add(r.id); ui.mnew = false; render(`msel:${r.id}`); } },
+      }, el('span', { className: 'px cap', 'aria-hidden': 'true', textContent: on ? '✓' : '' })) : el('span', { className: 'mark', 'aria-hidden': 'true' }),
+      el('span', { className: 'text', title: [r.text, r.note].filter(Boolean).join(' · ') }, r.text, el('small', { textContent: `${r.date} · ${r.kind} · ${r.source}` })),
+      el('span', { className: 'text amt' }, `${sign}${r.amount}`, el('small', { className: r.status === 'Needs review' ? 'late' : '', textContent: r.category ?? r.status })));
+  }
+  function filters(v) {
+    const q = ui.mq, named = typeof q.category === 'string';
+    const set = (patch, k) => { Object.assign(q, patch); ui.mpage = 0; ui.mren = false; moneyAsk(); render(k); };
+    const find = el('span', { className: 'px field' }, el('input', {
+      type: 'search', id: 'find-money', value: q.text, placeholder: 'Search', 'aria-label': 'Search movements', autocomplete: 'off', spellcheck: false, maxLength: 200,
+      on: {
+        input: (e) => { q.text = e.target.value; ui.mpage = 0; clearTimeout(findTimer); findTimer = setTimeout(moneyAsk, 200); },
+        keydown: (e) => { if (e.key === 'Escape' && q.text) { e.preventDefault(); e.stopPropagation(); e.target.value = q.text = ''; moneyAsk(); } },
+      },
+    }));
+    return el('div', { className: 'mtools' },
+      el('div', { className: 'mfilters' },
+        choose('Month', [['', 'All months'], ...v.months.map((x) => [x, monthName(x)])], q.month, (x) => set({ month: x }, 'mmonth'), 'mmonth'),
+        choose('Category', [['', 'All categories'], ['null', 'Not classified'], ...v.categories.map((c) => [JSON.stringify(c), c])], q.category === undefined ? '' : JSON.stringify(q.category),
+          (x) => set({ category: x ? JSON.parse(x) : undefined }, 'mcatf'), 'mcatf'),
+        choose('Kind', [['all', 'Everything'], ['spending', 'Spending'], ['income', 'Income'], ['other', 'Not counted']], q.group, (x) => set({ group: x }, 'mgroup'), 'mgroup')),
+      named && ui.mren ? renameForm(q.category) : el('div', { className: 'keyform' }, find,
+        named ? el('span', { className: 'row-btns mlinks' },
+          link('Rename', () => { ui.mren = true; render('key-mrename'); }, { k: 'mrename', aria: `Rename the category ${q.category}` }),
+          link('Delete', () => { askFirst(); moneyDo('delete_category', { name: q.category }); }, { k: 'mcatdel', danger: true, aria: `Delete the category ${q.category}` })) : null));
+  }
+  // Renaming the category the table is filtered by: the table follows it under its new name.
+  function renameForm(name) {
+    const input = el('input', { type: 'text', id: 'key-mrename', value: name, autocomplete: 'off', spellcheck: false, 'aria-label': `New name for ${name}`, maxLength: 40 });
+    const save = () => {
+      const to = input.value.trim();
+      if (!to || to === name) return input.focus();
+      askFirst(); ui.mren = false; ui.mq.category = to;
+      moneyDo('rename_category', { from: name, to }); render('mrename');
+    };
+    input.addEventListener('keydown', (e) => { if (e.key === 'Enter') save(); else if (e.key === 'Escape') { e.stopPropagation(); ui.mren = false; render('mrename'); } });
+    return el('div', { className: 'keyform' }, el('span', { className: 'px field' }, input), btn('Rename', save, { k: 'mrename-save' }));
+  }
+  // What to do with the rows selected: put them in a category (or a new one typed here), take their category away,
+  // mark a transfer's recipient as the user's own account, delete an entry added by hand.
+  function selBar(sel) {
+    const ids = sel.map((r) => r.id), cls = sel.filter((r) => r.classifiable), named = cls.filter((r) => r.category);
+    const put = () => {
+      const field = $('key-mnewcat'), name = ui.mnew ? field?.value.trim() : ui.mcat;
+      if (!name) return (ui.mnew ? field : document.querySelector('[data-k="mcat"]'))?.focus();
+      if (sel.some((r) => r.category && r.category.toLowerCase() !== name.toLowerCase())) askFirst();
+      moneyDo('classify', { ids, category: name, create: ui.mnew || undefined });
+      clearSel(); render('find-money');
+    };
+    const pick = cls.length < sel.length ? el('p', { className: 'why', textContent: 'Income and what is not counted have no category.' })
+      : el('div', { className: 'keyform' },
+        ui.mnew ? el('span', { className: 'px field' }, el('input', { type: 'text', id: 'key-mnewcat', autocomplete: 'off', spellcheck: false, placeholder: 'New category', 'aria-label': 'New category', maxLength: 40,
+          on: { keydown: (e) => { if (e.key === 'Enter') put(); else if (e.key === 'Escape') { e.stopPropagation(); ui.mnew = false; render('mcat'); } } } }))
+          : choose('Category', [['', 'Pick a category', true], ...(ui.mview?.categories ?? []).map((c) => [JSON.stringify(c), c]), ['new', 'New category…']], ui.mcat ? JSON.stringify(ui.mcat) : '',
+            (x) => { if (x === 'new') { ui.mnew = true; render('key-mnewcat'); } else ui.mcat = JSON.parse(x); }, 'mcat'),
+        btn('Put in', put, { k: 'mput' }));
+    return el('div', { className: 'mtools' }, pick,
+      el('div', { className: 'links mlinks' },
+        el('span', { className: 'usage', textContent: `${sel.length} selected` }),
+        named.length ? link('Remove category', () => { askFirst(); moneyDo('unclassify', { ids: named.map((r) => r.id) }); clearSel(); render('find-money'); }, { k: 'munclass' }) : null,
+        sel.length === 1 && sel[0].own ? link('Mark as mine', () => { moneyDo('own', { action: 'mark', key: sel[0].own }); clearSel(); render('find-money'); }, { k: 'mown', aria: `Mark ${sel[0].text} as your own account: its transfers stop counting` }) : null,
+        sel.length === 1 && sel[0].manual ? link('Delete', () => { askFirst(); moneyDo('delete_entry', { id: sel[0].id }); clearSel(); render('find-money'); }, { k: 'mdel', danger: true, aria: `Delete ${sel[0].text}, added by hand` }) : null,
+        link('Clear', () => { clearSel(); render('find-money'); }, { k: 'mclear', aria: 'Clear the selection' })));
+  }
+  // An expense or income no bank mail reported: what was typed stays while the panel is open.
+  function entryForm() {
+    const f = ui.mform, today = new Date().toLocaleDateString('en-CA');
+    const save = () => {
+      const amount = f.amount.trim(), description = f.description.trim();
+      if (!/^\d{1,9}([.,]\d{1,2})?$/.test(amount) || !Number(amount.replace(',', '.'))) { note('Type the amount like 20.50.', true); return $('key-mamount')?.focus(); }
+      if (!description) return $('key-mdesc')?.focus();
+      moneyDo('add_entry', { kind: f.kind, amount, currency: f.currency, date: f.date || today, description, ...(f.kind === 'expense' && f.category ? { category: f.category } : {}) });
+      f.amount = ''; f.description = ''; render('key-mamount');
+    };
+    const input = (key, props) => el('span', { className: `px field${key === 'date' ? ' mdate' : ''}` }, el('input', {
+      autocomplete: 'off', spellcheck: false, value: f[key], ...props,
+      on: { input: (e) => { f[key] = e.target.value; }, keydown: (e) => { if (e.key === 'Enter') save(); } },
+    }));
+    return group(f.kind === 'income' ? 'Add income' : 'Add an expense', 'What no bank mail tells me about: cash, another card, your salary.', null,
+      picks('Kind', [['expense', 'Expense'], ['income', 'Income']], f.kind, (x) => { f.kind = x; render(`mkind:${x}`); }, 'mkind'),
+      el('div', { className: 'keyform' },
+        input('amount', { type: 'text', id: 'key-mamount', inputMode: 'decimal', placeholder: 'Amount, like 20.50', 'aria-label': 'Amount', maxLength: 13 }),
+        picks('Currency', [['PEN', 'S/'], ['USD', 'US$']], f.currency, (x) => { f.currency = x; render(`mcur:${x}`); }, 'mcur')),
+      el('div', { className: 'keyform' }, input('description', { type: 'text', id: 'key-mdesc', placeholder: f.kind === 'income' ? 'What, like Salary' : 'What or where, like Taxi', 'aria-label': 'Description', maxLength: 200 })),
+      el('div', { className: 'keyform' },
+        input('date', { type: 'date', id: 'key-mdate', value: f.date || today, 'aria-label': 'Date' }),
+        f.kind === 'expense' ? choose('Category', [['', 'No category'], ...(ui.mview?.categories ?? []).map((c) => [c, c])], f.category, (x) => { f.category = x; }, 'mentrycat') : null),
+      el('div', { className: 'links' }, btn('Add', save, { k: 'mentry-save' })));
+  }
+  // A table from the sidecar: kept unless the filters changed since it was asked for (a newer one is on its way).
+  function takeMoney(v) {
+    if (v.dropped !== undefined && ui.mq.category === v.dropped) ui.mq.category = undefined; // that category is gone
+    const now = mquery();
+    if (['month', 'category', 'group', 'text'].some((k) => (v.query?.[k] ?? '') !== (now[k] ?? ''))) return;
+    ui.mview = v; ui.mpage = v.page; ui.masked = null;
+    for (const id of ui.msel) if (!v.rows.some((r) => r.id === id)) ui.msel.delete(id);
+    if (tab !== 'money') return;
+    const f = ui.mfocus; ui.mfocus = null;
+    if (document.activeElement?.id === 'find-money') refreshMoves(); else render(f ?? undefined);
+  }
+  // Searching redraws just the list and its footer, so the search field keeps its focus and caret.
+  function refreshMoves() {
+    const [panel, ft] = movesPage(), box = $('moves-box'), fresh = panel.querySelector?.('#moves-box');
+    if (!box || !fresh) return render();
+    box.replaceWith(fresh);
+    const old = $('moves-foot');
+    if (old && ft) old.replaceWith(ft); else if (old) old.remove(); else if (ft) $('moves-panel').after(ft);
+    fit(); perCheck();
+  }
+  // As many rows as fit: when that changed, the page is asked for again at that size (from the same first row).
+  function perCheck() {
+    const v = ui.mview, per = movesPer();
+    if (tab !== 'money' || ui.ytab !== 'moves' || !v || v.per === per || ui.masked === per) return;
+    ui.masked = per; ui.mpage = Math.floor((v.page * v.per) / per); moneyAsk();
   }
 
   // Wayland: the commands to bind to keys in the desktop's settings (no app may hold its own shortcuts there).
@@ -695,6 +871,7 @@
       clearTimeout(render.t); render.t = setTimeout(() => pane.classList.remove('enter'), 600);
     }
     if (keep) (document.querySelector(`.pane [data-k="${CSS.escape(keep)}"]`) ?? document.getElementById(keep))?.focus();
+    perCheck();
   }
   document.addEventListener('focusout', (e) => { if (deferred && e.target.tagName === 'INPUT') setTimeout(() => deferred && render(), 0); });
   // The window changes size with the screen it opens on: as many rows as fit there.
@@ -717,6 +894,7 @@
     if (!changed && !focus) return;
     tab = name;
     disarm(); ui.key = null;
+    if (name === 'money') moneyAsk();
     for (const t of TABS) {
       if (t === name) navi(t).setAttribute('aria-current', 'page'); else navi(t).removeAttribute('aria-current');
       $(`pane-${t}`).hidden = t !== name;
@@ -740,6 +918,7 @@
   // Radio groups: arrows move the choice, like the setup guide's.
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape' && !e.defaultPrevented && tipFor) { e.preventDefault(); hideTip(); return; }
+    if (e.key === 'Escape' && !e.defaultPrevented && tab === 'money' && (ui.msel.size || ui.mren)) { clearSel(); ui.mren = false; render('find-money'); return; }
     if (e.key === 'Escape' && !e.defaultPrevented) { const was = ui.arm; if (ui.key || disarm()) { ui.key = null; render(was ?? undefined); } else hide(); return; }
     const tl = e.target.closest?.('[role="tablist"]');
     if (tl && (e.key === 'ArrowRight' || e.key === 'ArrowLeft')) {
@@ -800,7 +979,10 @@
       if (state.theme !== themed) { themed = state.theme; THEME?.follow(themed, () => invoke('theme_get')); }
       if (ui.arm && !document.querySelector(`[data-k="${CSS.escape(ui.arm)}"]`)) ui.arm = null;
       render(null, first);
+      // Money's table may have changed with it (a mail read, the agent classifying): asked for again.
+      if (tab === 'money') moneyAsk();
     }
+    else if (m.kind === 'money') takeMoney(m.view);
     else if (m.kind === 'note') note(m.text, m.bad);
     else if (m.kind === 'copied') {
       if (!m.ok && state?.bind?.[m.which]) { ui.bindShown.add(m.which); render(`bind-${m.which}`); }
@@ -864,6 +1046,36 @@
     };
     if (q.has('busy')) Object.assign(s, { busy: true, status: { state: 'busy', text: 'Reading notes.md' } });
     if (q.has('empty')) Object.assign(s, { recent: [], facts: [], commitments: [], usage: null, money: { ...s.money, accounts: [] } });
+    // Money's movements (made up), filtered and paged here as the sidecar does it (money/panel.mjs); changes only show
+    // the table again. None with ?empty.
+    const MOVES = q.has('empty') ? [] : [
+      ['2026-11-10', 'Cafe Central', 'BCP', 'Purchase', 4550, 'PEN', 'Comida', 'Classified'], ['2026-11-10', 'Taxi', 'By hand', 'Purchase', 1800, 'PEN', 'Transporte', 'Classified'],
+      ['2026-11-09', 'Jorge', 'BCP', 'Yape', 2500, 'PEN', null, 'Waiting', 'jorge'], ['2026-11-09', 'Ana Lopez', 'Banco Falabella', 'Own transfer', 30000, 'PEN', null, 'Not counted'],
+      ['2026-11-08', 'Plaza Vea', 'BCP', 'Purchase', 120000, 'PEN', 'Supermercado', 'Classified'], ['2026-11-07', 'Bodega Sol', 'BCP', 'Purchase', 1500, 'PEN', null, 'Needs review'],
+      ['2026-11-06', 'Netflix', 'BCP', 'Purchase', 999, 'USD', 'Entretenimiento', 'Classified'], ['2026-11-05', 'Luis Ramos', 'BCP', 'Received', 50000, 'PEN', null, 'Income', 'luis ramos'],
+      ['2026-11-04', 'Tienda Max', 'BCP', 'Refused', 7000, 'PEN', null, 'Not counted'], ['2026-11-03', 'Mobile Pe', 'Banco Falabella', 'Transfer', 10000, 'PEN', null, 'Waiting', 'mobile pe'],
+      ['2026-11-02', 'Farmacia Universal', 'BCP', 'Purchase', 3590, 'PEN', 'Salud', 'Classified'], ['2026-11-01', 'Sueldo', 'By hand', 'Income', 450000, 'PEN', null, 'Income'],
+      ['2026-10-30', 'Cine Planet', 'BCP', 'Purchase', 4200, 'PEN', 'Entretenimiento', 'Classified'], ['2026-10-28', 'Grifo Primax', 'BCP', 'Purchase', 15000, 'PEN', 'Transporte', 'Classified'],
+      ['2026-10-25', 'Wong', 'BCP', 'Purchase', 23480, 'PEN', 'Supermercado', 'Classified'], ['2026-10-20', 'Cafe Central', 'BCP', 'Purchase', 3000, 'PEN', 'Comida', 'Classified'],
+    ].map(([date, text, source, kind, cents, currency, category, status, own = null], i, all) => ({
+      id: all.length - i, date, time: '12:00', text, note: null, source, kind, cents, currency, category, status,
+      amount: `${currency === 'USD' ? 'US$' : 'S/'} ${(cents / 100).toLocaleString('en-US', { minimumFractionDigits: 2 })}`,
+      classifiable: status !== 'Income' && status !== 'Not counted', manual: source === 'By hand', own,
+    }));
+    const CATS = ['Comida', 'Supermercado', 'Transporte', 'Viajes', 'Servicios', 'Salud', 'Entretenimiento', 'Compras', 'Educación', 'Transferencias', 'Otros'];
+    function moneyView({ query: f = {} }) {
+      const words = (f.text ?? '').toLowerCase().split(/\s+/).filter(Boolean);
+      const hit = MOVES.filter((r) => (!f.month || r.date.startsWith(f.month))
+        && (f.category === undefined || (f.category === null ? r.classifiable && !r.category : r.category === f.category))
+        && (!f.group || f.group === 'all' || (f.group === 'spending' ? r.classifiable : f.group === 'income' ? r.status === 'Income' : r.status === 'Not counted'))
+        && words.every((w) => r.text.toLowerCase().includes(w)));
+      const per = f.per ?? 50, pages = Math.max(1, Math.ceil(hit.length / per)), page = Math.min(f.page ?? 0, pages - 1);
+      const sum = (rows, cur) => `${cur === 'USD' ? 'US$' : 'S/'} ${(rows.reduce((n, r) => n + r.cents, 0) / 100).toLocaleString('en-US', { minimumFractionDigits: 2 })}`;
+      const totals = ['PEN', 'USD'].map((cur) => hit.filter((r) => r.currency === cur)).filter((of) => of.length)
+        .map((of) => ({ currency: of[0].currency, spent: sum(of.filter((r) => r.classifiable), of[0].currency), received: sum(of.filter((r) => r.status === 'Income'), of[0].currency), count: of.length }));
+      return { query: f, rows: hit.slice(page * per, page * per + per), total: hit.length, page, pages, per, totals,
+        months: [...new Set(MOVES.map((r) => r.date.slice(0, 7)))], categories: CATS, own: q.has('empty') ? [] : [{ key: 'ana lopez', name: 'Ana Lopez', count: 3 }] };
+    }
     if (q.has('many')) {
       const things = ['Prefers short answers', 'Drinks oat flat whites', 'Works late on Thursdays', 'Has a cat called Miso', 'Training for a 10k in March', 'Learning Japanese', 'Uses Figma for design', 'Ships on Fridays', 'Allergic to peanuts', 'Sister is called Ana'];
       s.facts = Array.from({ length: 100 }, (_, i) => ({ id: `f${i}`, text: `${things[i % things.length]}${i >= things.length ? ` (${Math.floor(i / things.length) + 1})` : ''}` }));
@@ -878,6 +1090,7 @@
       if (cmd === 'theme_get') return desk;
       if (cmd !== 'sidecar_send') return null;
       console.log('[preview] would send', JSON.stringify(args.msg));
+      if (args.msg?.type === 'panel_money') { setTimeout(() => window.__panel({ kind: 'money', view: moneyView(args.msg) }), 60); return null; }
       // A look change comes back as new state, as from the sidecar, so the Roamie's reaction can be seen.
       const id = args.msg?.id ?? '';
       if (id.startsWith('theme:')) { s.theme = id.slice(6); setTimeout(() => window.__panel({ kind: 'state', state: s }), 120); }

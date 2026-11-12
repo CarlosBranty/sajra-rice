@@ -38,6 +38,7 @@ import { DEFAULT_VOICE, FISH_CHOICES } from './fish.mjs';
 import { createSecrets, retryLoad } from './secrets.mjs';
 import { EVERY as MAIL_EVERY, createMail } from './mail/service.mjs';
 import { openMoney } from './money.mjs';
+import { moneyPanel } from './money/panel.mjs';
 import { moneyTools } from './money/tools.mjs';
 import { createActivity } from './activity.mjs';
 import { bindCommands, canCircle, canSnap, circleWords, hasHands, hasHotkeys, hasVoice, linuxSession, micTrouble, mousePen, needsVoiceModel, platformLine, promptWords, seesPointer, stepWaits } from './platform.mjs';
@@ -777,6 +778,8 @@ const mail = createMail({
 const authorize = createAuthorize({ send, log: logLine });
 protectMoney(DIR);
 tools.push(...moneyTools({ money: () => mail.money(), authorize }));
+// The panel's Money page: the movements table and the same changes, through the same operations and authorize.
+const moneyPage = moneyPanel({ money: () => mail.money(), authorize });
 
 async function pruneLogs() {
   const cutoff = Date.now() - 7 * 864e5;
@@ -1831,6 +1834,11 @@ createInterface({ input: process.stdin }).on('line', (line) => {
     });
   }
   else if (m.type === 'panel_wake' && LINUX) setWakePhrase(m.phrase);
+  // The Money page's table and its changes: every field is checked there (money/panel.mjs); the table comes back.
+  else if (m.type === 'panel_money') moneyPage.handle(m).then((r) => {
+    if (r.view && panelOpen) send({ type: 'panel', msg: { kind: 'money', view: r.view } });
+    if (r.text && (m.op !== 'list' || !r.ok)) panelNote(r.text, !r.ok);
+  });
   else if (m.type === 'answer') { pending.get(m.id)?.(m.text ?? null); pending.delete(m.id); }
   // Only the shell sends these (pages can't: main.rs page_may_send): the prompt is up, and how it went.
   else if (m.type === 'auth_open' || m.type === 'auth_result') authorize.heard(m);

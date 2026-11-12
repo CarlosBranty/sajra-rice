@@ -58,6 +58,12 @@ in a child process with row and time limits (`money/query.mjs`). The agent's too
 `own_from` so unmarking restores it). What undoes a decision of the user's (rename or delete a category, change or
 remove a classification, delete an entry, unmark, mark over classified transfers) first waits for
 `authorize(reason)` and is applied only if, planned again inside the transaction, it is still what was confirmed.
+Those changes are one function each in `money/ops.mjs`, shared by the tools and the panel's Money page
+(`money/panel.mjs`, `panel_money` messages): its Movements tab is the whole table (filters for month, category or not
+classified, spending / income / not counted and full-text search; paged by the sidecar, totals per currency), where rows
+are classified (a new category too), unclassified, marked as the user's own or deleted (added by hand); Add by hand adds
+an expense or income. Every message from the page is checked there (zod, strict); protected ones ask the same
+`authorize`. The panel's browser preview (`?tab=money`, `?empty`) answers with sample movements.
 Income is `transfer_in` and `income`; balance = income − spending. Banks are data, one JSON per bank in `sidecar/banks/`
 (bundled in), and users add or replace them with the same JSON in `<data dir>/banks/` (`otherLabels`: the layout's
 labels that are not read, so an empty value never runs into the next row). Own-account transfers and refused purchases

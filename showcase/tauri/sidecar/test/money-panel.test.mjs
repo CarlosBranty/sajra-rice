@@ -48,4 +48,44 @@ assert.match(page, /link\('Test', \(\) => act\(`mail_test:\$\{a\.id\}`\)/);
 assert.match(page, /picks\('Check every', m\.everys\.map\(\(n\) => \[n, `\$\{n\} min`\]\), m\.every, \(x\) => act\(`mailevery:\$\{x\}`\), 'mailevery'\)/);
 // The browser preview has sample accounts, so the page can be seen without the app.
 assert.match(panel, /money: \{ accounts: \[/);
+
+// The movements table (S11): the sidecar answers the page's messages through money/panel.mjs, whose replies come
+// back as a 'money' message; only its own failures and changes are said in the note.
+assert.match(side, /import \{ moneyPanel \} from '\.\/money\/panel\.mjs';/);
+assert.match(side, /const moneyPage = moneyPanel\(\{ money: \(\) => mail\.money\(\), authorize \}\);/, 'the same store and the same authorize as the agent\'s tools');
+assert.match(side, /else if \(m\.type === 'panel_money'\) moneyPage\.handle\(m\)\.then\(\(r\) => \{\n\s+if \(r\.view && panelOpen\) send\(\{ type: 'panel', msg: \{ kind: 'money', view: r\.view \} \}\);\n\s+if \(r\.text && \(m\.op !== 'list' \|\| !r\.ok\)\) panelNote\(r\.text, !r\.ok\);/);
+// The tabs: the movements first, adding by hand, then the mail accounts as before.
+assert.match(page, /tabBtn\('moves', 'Movements'\), tabBtn\('entry', 'Add by hand'\), tabBtn\('accounts', 'Accounts'\), tabBtn\('add', 'Add account'\)/);
+assert.match(panel, /ytab: 'moves'/, 'the movements open first');
+// Filters: month, category (with not classified), kind group and a search; a change asks the sidecar from page 1.
+assert.match(page, /choose\('Month', \[\['', 'All months'\], \.\.\.v\.months\.map/);
+assert.match(page, /choose\('Category', \[\['', 'All categories'\], \['null', 'Not classified'\], \.\.\.v\.categories\.map/);
+assert.match(page, /choose\('Kind', \[\['all', 'Everything'\], \['spending', 'Spending'\], \['income', 'Income'\], \['other', 'Not counted'\]\]/);
+assert.match(page, /type: 'search', id: 'find-money'/);
+assert.match(panel, /const moneyDo = \(op, args = \{\}\) => send\(\{ type: 'panel_money', op, \.\.\.args, query: mquery\(\) \}\);/, 'every message carries the query, so the table comes back as it is shown');
+// Rows: selectable (keyboard: a checkbox button) when something can be done with them, amounts, category or status.
+assert.match(page, /role: 'checkbox', 'aria-checked': String\(on\), 'aria-label': `Select: \$\{what\}`/);
+assert.match(page, /'No movements yet: they come from your bank mails, or add one by hand\.'/, 'an empty database says where they come from');
+assert.match(page, /'Nothing matches these filters\.'/);
+// The selection's actions: a category (or a new one), removing it, marking a recipient as one's own, deleting an entry
+// added by hand; protected ones say where the prompt is.
+assert.match(page, /moneyDo\('classify', \{ ids, category: name, create: ui\.mnew \|\| undefined \}\)/);
+assert.match(page, /\['new', 'New category…'\]/);
+assert.match(page, /moneyDo\('unclassify', \{ ids: /);
+assert.match(page, /moneyDo\('own', \{ action: 'mark', key: sel\[0\]\.own \}\)/);
+assert.match(page, /moneyDo\('delete_entry', \{ id: sel\[0\]\.id \}\)/);
+assert.match(page, /moneyDo\('rename_category', \{ from: name, to \}\)/);
+assert.match(page, /moneyDo\('delete_category', \{ name: q\.category \}\)/);
+assert.match(panel, /const askFirst = \(\) => note\('Confirm it is you: the prompt is by your Roamie\.'\);/);
+// Adding by hand: expense or income, amount, currency (soles first), what, date (today first), category for expenses.
+assert.match(page, /picks\('Kind', \[\['expense', 'Expense'\], \['income', 'Income'\]\]/);
+assert.match(page, /picks\('Currency', \[\['PEN', 'S\/'\], \['USD', 'US\$'\]\]/);
+assert.match(panel, /mform: \{ kind: 'expense', amount: '', currency: 'PEN', description: '', date: '', category: '' \}/);
+assert.match(page, /moneyDo\('add_entry', \{ kind: f\.kind, amount, currency: f\.currency, date: f\.date \|\| today, description,/);
+// Own accounts on the Accounts tab, each with Unmark.
+assert.match(page, /moneyDo\('own', \{ action: 'unmark', key: o\.key \}\)/);
+// The preview answers the page's messages with sample movements (made up), and none with ?empty.
+const pre = panel.slice(panel.indexOf('function preview()'));
+assert.match(pre, /if \(args\.msg\?\.type === 'panel_money'\) \{ setTimeout\(\(\) => window\.__panel\(\{ kind: 'money', view: moneyView\(args\.msg\) \}\), 60\); return null; \}/);
+assert.match(pre, /const MOVES = q\.has\('empty'\) \? \[\] : \[/);
 console.log('money panel: ok');
