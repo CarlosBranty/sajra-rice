@@ -20,7 +20,7 @@ PanelWindow {
 
     property int sel: 0
     signal wallRequested // обои — свой экран (wall/Walls), его открывает shell.qml
-    readonly property var sections: ["HOME", "DECK", "BAR", "LOOK", "STYLE", "WINDOWS", "DISPLAY", "AUDIO", "POWER", "INPUT", "IDLE", "SHELL"]
+    readonly property var sections: ["HOME", "DECK", "BAR", "LOOK", "STYLE", "WINDOWS", "DISPLAY", "AUDIO", "POWER", "INPUT", "IDLE", "SHELL", "SPEAKERS"]
     readonly property string moves: "shift ←→ move · ↵ swap · del drop · drag"
     readonly property string rings: "drag round the rings · scroll"
     readonly property var hints: [moves, moves, moves, "", "hover to preview · ↵ or click sets it", rings, "drag a screen to move it · " + rings, "click or ←→ a device", "↵ or click a mode", rings, "drag the marks", ""]
@@ -1353,6 +1353,13 @@ PanelWindow {
                 Act { icon: "\u{F0450}"; text: "reload"; onHit: Quickshell.reload(false) }
                 Toggle { text: "do not disturb"; on: Theme.state.dnd; onFlip: Theme.state.dnd = !Theme.state.dnd }
             }
+        }
+
+        // ---- SPEAKERS: x1sound — Dolby profile, bass/treble/gain, loudness, top/bottom balance (prefs/Speakers) ----
+        Page {
+            k: 12
+            caption: spk.caption
+            Speakers { id: spk }
         }
     }
 
