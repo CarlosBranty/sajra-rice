@@ -1,0 +1,8 @@
+#!/bin/sh
+# una sola vez: permiso para que glyph (Ajustes → POWER → charge limit) cambie el límite de carga de la batería
+set -e
+sudo install -m 644 "$HOME/.local/share/glyph-charge/90-glyph-charge.rules" /etc/udev/rules.d/90-glyph-charge.rules
+sudo udevadm control --reload
+sudo udevadm trigger --action=add --subsystem-match=power_supply
+ls -l /sys/class/power_supply/BAT0/charge_control_*_threshold
+echo "listo: abre Ajustes (Super+I) → POWER → charge limit"

@@ -1175,6 +1175,32 @@ PanelWindow {
             }
             Lb { text: Rules.store.ultra ? `ultra · ${Rules.rates[0]} hz, no motion, no blur, no shadows — your settings come back when you leave` : "cpu profile only · hz, motion and looks stay yours" }
             Lb { visible: !PowerProfiles.hasPerformanceProfile; text: "no performance profile on this machine" }
+
+            // límite de carga (services/Charge): la batería para en N %, como "conservación" de Lenovo. 100 — sin límite
+            Item { width: 1; height: 24; visible: Charge.supported }
+            Row {
+                visible: Charge.supported
+                spacing: 32
+                onVisibleChanged: if (visible) Charge.read() // por si se acaba de dar el permiso (regla udev)
+                Dial {
+                    id: chg
+                    anchors.verticalCenter: parent.verticalCenter
+                    size: 150; n: 40; label: "charge limit"; from: 50; to: 100; step: 5
+                    enabled: Charge.writable
+                    opacity: Charge.writable ? 1 : 0.4
+                    value: Charge.limit
+                    onMoved: v => Theme.state.chargeLimit = v
+                }
+                Column {
+                    anchors.verticalCenter: parent.verticalCenter
+                    spacing: 10
+                    Lb { text: !Charge.writable ? "limit needs permission once · run glyph-charge-setup in a terminal"
+                        : chg.v >= 100 ? "no limit · charges to 100 %"
+                        : `stops at ${chg.v} % · charges again below ${chg.v - 5} %` }
+                    Lb { text: `battery now · ${Charge.start} → ${Charge.end} %`; color: Theme.grey; px: 10 }
+                    Lb { text: "80 keeps the battery healthy on the desk · 100 before a trip"; color: Theme.grey; px: 10 }
+                }
+            }
         }
 
         // ---- INPUT: держишь клавишу — первая точка сразу, пауза delay, дальше rate в секунду; по живым кольцам ----
