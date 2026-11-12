@@ -110,7 +110,7 @@ export function createMail({ secrets, settings, save, openMoney, dir, server = n
       const addr = String(email ?? '').trim().toLowerCase();
       if (!validEmail(addr)) return { ok: false, text: 'That is not an email address.' };
       const key = String(pass ?? '').replace(/\s+/g, ''); // shown in groups of four with spaces
-      if (!/^[\x21-\x7e]{8,200}$/.test(key)) return { ok: false, text: 'Paste the app password the provider made for Roamies.' };
+      if (!/^[\x21-\x7e]{8,200}$/.test(key)) return { ok: false, text: 'Paste the app password the provider made for Hanami.' };
       const id = accountId(provider, addr);
       if (accounts().some((a) => a.id === id)) return { ok: false, text: `${label({ provider, email: addr })} is already added.` };
       try { await secrets.set(id, key); } catch (e) {

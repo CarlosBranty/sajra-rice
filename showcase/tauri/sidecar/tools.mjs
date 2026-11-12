@@ -137,7 +137,7 @@ export const doneBeat = (beats) => { const w = beats.flatMap((b, i) => (b.wait ?
  *  computer can do (platform.mjs drawWords: hands, waits); the rest is the same everywhere. */
 export function drawDescription(can) {
   const words = drawWords(can);
-  return `Draw on the user's screen while you talk. Your Roamie turns into its cursor and draws with its tip, each beat's marks paced to its spoken line (also shown as a caption). One call holds a whole explanation or walkthrough.
+  return `Draw on the user's screen while you talk. Your Hanami turns into its cursor and draws with its tip, each beat's marks paced to its spoken line (also shown as a caption). One call holds a whole explanation or walkthrough.
 beats: [{say, marks, wait?}]. say: one short line, under 20 words, spoken while that beat's marks draw (don't repeat it in your reply). Keep 1 to 4 marks per beat, in the order you mention them.
 ${words.places}
 Which mark: one control they should click: target (with wait 'click' in a walkthrough); one thing to notice: ring (follows its shape; r sets the corner radius); a small spot or icon: point; a region or panel: frame; key words: underline (outdated ones: strike); right or wrong: check, cross; order of steps: num; a name beside something: label (text) or label on any mark; how two things relate: connect (at → to); an odd-shaped group: trace (points); scroll here: scroll (dir); one thing above all else: spotlight (sparingly); something to hover: hover with wait 'hover'; big words: write (text, size).
@@ -244,7 +244,7 @@ const GIT_SAFE = {
 // askShell: Linux asks the app itself for screenshots and copying ({type:'screenshot'|'clipboard', …} → its answer).
 // waits: how a drawing's beat waits here (this computer's way unless a test says otherwise).
 // winSource: where windows are without the helper ({ windows(), front() }, as WINDOWS; null: nowhere).
-export function createTools({ allowActions, ui, ask, openUrl, onCommitments, showList, fmtWhen, commitmentsText, userName, onPlan = () => {}, speak = () => false, onHandoff = () => {}, watchClicks = () => {}, onInkGone = () => {}, askShell = async () => ({ ok: false, error: 'Roamies isn\'t running.' }), waits = WAITS, winSource = WINDOWS }) {
+export function createTools({ allowActions, ui, ask, openUrl, onCommitments, showList, fmtWhen, commitmentsText, userName, onPlan = () => {}, speak = () => false, onHandoff = () => {}, watchClicks = () => {}, onInkGone = () => {}, askShell = async () => ({ ok: false, error: 'Hanami isn\'t running.' }), waits = WAITS, winSource = WINDOWS }) {
   let axNudged = 0;
   let lastShot = null; // how the latest screenshot's pixels map to screen points (see pointing.mjs)
   let lastRead = null; // { win, controls } from the latest read_window, to catch ids that went stale
@@ -274,7 +274,7 @@ export function createTools({ allowActions, ui, ask, openUrl, onCommitments, sho
     };
   }
   async function hands(...args) {
-    if (!HANDS) throw new Error('This needs the Roamies app.');
+    if (!HANDS) throw new Error('This needs the Hanami app.');
     // Acting in an app may take the real cursor: meanwhile clicks go through the overlay, even where the Sidekick or
     // its bubble sits on the spot being clicked.
     const acting = args[0] === 'act';
@@ -295,7 +295,7 @@ export function createTools({ allowActions, ui, ask, openUrl, onCommitments, sho
       if (process.platform === 'darwin' && /Accessibility/i.test(res.error ?? '')) {
         // Open the exact Settings pane (once a minute at most) so the fix is one click away.
         if (Date.now() - axNudged > 60_000) { axNudged = Date.now(); openUrl('x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility'); }
-        throw new Error('Accessibility is off for Roamies, so I can\'t read or control other apps yet. I just opened System Settings → Privacy & Security → Accessibility: switch on Roamies there, then ask again. Tell the user exactly that, briefly.');
+        throw new Error('Accessibility is off for Hanami, so I can\'t read or control other apps yet. I just opened System Settings → Privacy & Security → Accessibility: switch on Hanami there, then ask again. Tell the user exactly that, briefly.');
       }
       throw new Error(res.error || 'That did not work.');
     }
@@ -489,7 +489,7 @@ export function createTools({ allowActions, ui, ask, openUrl, onCommitments, sho
         return (await hands('ocr-find', where, String(find), 'all').catch(() => null))?.matches ?? [];
       },
       async findText(find) {
-        if (!HANDS) throw new Error('Finding words on screen needs the Roamies app; take a screenshot and give x, y instead.');
+        if (!HANDS) throw new Error('Finding words on screen needs the Hanami app; take a screenshot and give x, y instead.');
         // Text read off the screen: one match, or where each of several is, so the right one can be picked with within.
         const readOne = async () => {
           const all = await this.textAll(find);
@@ -514,7 +514,7 @@ export function createTools({ allowActions, ui, ask, openUrl, onCommitments, sho
         }
       },
       async id(n) {
-        if (!HANDS) throw new Error('read_window ids need the Roamies app; give x, y from a screenshot instead.');
+        if (!HANDS) throw new Error('read_window ids need the Hanami app; give x, y from a screenshot instead.');
         live ??= await liveControls(spec);
         const c = live(n);
         if (c.offscreen) throw new Error(`"${c.label || c.role}" is further down the page. Use its text instead; that scrolls to it.`);
@@ -588,7 +588,7 @@ export function createTools({ allowActions, ui, ask, openUrl, onCommitments, sho
       else if (m.kind === 'open') { await tools.find((x) => x.name === 'open').execute({ target: m.url }); }
       else if (m.kind === 'handoff') onHandoff(m.task || m.text || m.label || 'a task');
       else if (m.kind === 'type') {
-        if (!HANDS) throw new Error('Typing into apps needs the Roamies app.');
+        if (!HANDS) throw new Error('Typing into apps needs the Hanami app.');
         const src = m.at.src, app = t === 'front' || t === 'screen' ? {} : { app: t };
         const steps = src.text != null ? [{ do: 'fill', field: src.text, text: m.text }]
           : src.id != null ? [{ do: 'click', id: m.at.live }, { do: 'type', text: m.text }]
@@ -607,7 +607,7 @@ export function createTools({ allowActions, ui, ask, openUrl, onCommitments, sho
     // Clicks and hovers in other apps can't be seen here (Wayland): the beats play one after another instead. Unless
     // the overlay is a layer surface: a beat that waits then shows a Next button to press (ink.js waitFor).
     const beats = (args.beats ?? []).map((b) => (waits !== 'none' || !b.wait ? b : { ...b, wait: undefined }));
-    if (beats.some((b, i) => b !== (args.beats ?? [])[i])) notes.push("This desktop doesn't let Roamies see clicks in other apps, so the beats played one after another instead of waiting for clicks.");
+    if (beats.some((b, i) => b !== (args.beats ?? [])[i])) notes.push("This desktop doesn't let Hanami see clicks in other apps, so the beats played one after another instead of waiting for clicks.");
     for (const e of edits) if (e.do !== 'clear' && !parts.has(e.part)) throw new Error(`There's no ${e.part} on screen now${parts.ids.length ? ` (there is: ${parts.describe()})` : ' (nothing is drawn)'}. Draw it again instead.`);
     // A new drawing in a later request replaces the old one (cards too), unless it's editing what's there.
     if (ink.turn !== turn && !edits.length && parts.ids.length) clearAllInk();

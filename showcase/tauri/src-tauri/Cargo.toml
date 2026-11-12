@@ -3,9 +3,16 @@ name = "roamies"
 version = "0.1.33"
 edition = "2021"
 license = "AGPL-3.0-only"
-description = "Roamies: AI desktop companions"
+description = "Hanami: AI desktop companions, a modified version of Roamies"
+# The original project (Hanami's own repository is FORK_REPO in src/main.rs).
 repository = "https://github.com/KenKaiii/Roamies"
 homepage = "https://github.com/KenKaiii/Roamies"
+
+# The crate keeps its upstream name (easier merges); the program is `hanami`, so the Linux packages install
+# /usr/bin/hanami and `cargo build` makes target/<profile>/hanami.
+[[bin]]
+name = "hanami"
+path = "src/main.rs"
 
 [build-dependencies]
 tauri-build = { version = "=2.7.4", features = [] }

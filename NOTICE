@@ -1,0 +1,28 @@
+Hanami
+A modified version of Roamies by Ken Kai (https://github.com/KenKaiii/Roamies).
+
+Original work: Roamies, copyright Ken Kai and the Roamies contributors, licensed under the
+GNU Affero General Public License, version 3 only (AGPL-3.0-only). The full licence text is in
+LICENSE, unchanged.
+
+Modified work: Hanami, copyright its authors for their changes, licensed under the same terms
+(AGPL-3.0-only). Hanami is not made or endorsed by Ken Kai or the Roamies project.
+
+Notice of changes (AGPL-3.0 section 5(a)):
+
+2026-11-12  Renamed the app from Roamies to Hanami: the product name, window titles, tray and
+            menu text, panel, setup guide and notification copy, the default character's name,
+            the agent's description of itself and the app, and the About page, which credits
+            the original project, its author and its licence. The program installed on Linux is
+            `hanami`; the app identifier is com.hanami.assistant. Internal names (code
+            identifiers, ROAMIES_* environment variables, the roamies-voice and roamies-hands
+            helpers, data folders, the keyring service com.kenkai.roamies) are unchanged.
+            In-app updates were switched off until Hanami's own repository is set
+            (FORK_REPO in showcase/tauri/src-tauri/src/main.rs), so this build never
+            installs upstream Roamies releases.
+
+Earlier changes made in this repository on top of upstream Roamies (Linux desktop actions,
+dictation, voice answers to permission questions, money tracking from bank mails and others)
+are recorded in its git history.
+
+Third-party components keep their own licences: see THIRD_PARTY_NOTICES.md.

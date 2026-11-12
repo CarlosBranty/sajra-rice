@@ -29,6 +29,13 @@ use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder,
 use sidecar::spawn_sidecar;
 use voice::{init_hotkeys, set_esc, set_hotkey, start_voice, stop_voice, to_voice, voice_binary};
 
+/// Hanami's own GitHub repository, as "OWNER/REPO": the one place to set it once the fork is published.
+/// It drives in-app updates (latest.json on its newest release, else its `updates` branch), the releases page a
+/// .deb or .rpm copy opens, the issue link in diagnostics and the source link in About (the sidecar gets it as
+/// ROAMIES_REPO). Empty: no update check runs at all, so this build never installs another project's releases.
+/// Setting it also needs `plugins.updater.pubkey` in tauri.conf.json to be the fork's own signing key.
+pub(crate) const FORK_REPO: &str = "";
+
 static GENERATION: AtomicUsize = AtomicUsize::new(0);
 /// The overlay window the sidekick lives in. It moves to whichever screen the cursor is on.
 static SIDEKICK_OVERLAY: Mutex<Option<String>> = Mutex::new(None);
@@ -799,7 +806,7 @@ fn show_panel(app: &AppHandle, rect: Option<tauri::Rect>, toggle: bool) {
         Some(w) => w,
         None => {
             let b = WebviewWindowBuilder::new(app, PANEL_LABEL, WebviewUrl::App("panel/index.html".into()))
-                .title("Roamies")
+                .title("Hanami")
                 .inner_size(PANEL_W, PANEL_H)
                 .resizable(false)
                 .maximizable(false)
@@ -966,7 +973,7 @@ fn open_onboarding(app: &AppHandle, mode: Option<&str>) {
     }
     let url = if chat { "onboarding/index.html?mode=chat" } else { "onboarding/index.html" };
     let mut b = WebviewWindowBuilder::new(app, ONBOARDING_LABEL, WebviewUrl::App(url.into()))
-        .title(if chat { "Get to know you" } else { "Welcome to Roamies" })
+        .title(if chat { "Get to know you" } else { "Welcome to Hanami" })
         .inner_size(780.0, 540.0)
         .resizable(false)
         .maximizable(false)
@@ -1213,7 +1220,7 @@ fn build_overlays(app: &AppHandle) -> tauri::Result<()> {
             }
         }
         let w = WebviewWindowBuilder::new(app, label, WebviewUrl::App("desktop.html".into()))
-            .title("Roamies")
+            .title("Hanami")
             .transparent(true)
             .decorations(false)
             .shadow(false)
@@ -1473,8 +1480,8 @@ fn fallback_menu(app: &AppHandle, status: &str) {
     set_menu(app, &[
         json!({ "id": "status", "label": status, "enabled": false }),
         json!({ "sep": true }),
-        json!({ "id": "restart", "label": "Restart Roamies" }),
-        json!({ "id": "quit", "label": "Quit Roamies" }),
+        json!({ "id": "restart", "label": "Restart Hanami" }),
+        json!({ "id": "quit", "label": "Quit Hanami" }),
     ]);
 }
 
@@ -1508,7 +1515,7 @@ fn login_item(app: &AppHandle, set: Option<bool>) {
     #[cfg(target_os = "macos")]
     let (supported, on, approval) = {
         use objc2_service_management::{SMAppService, SMAppServiceStatus};
-        let in_apps = exe_s.starts_with("/Applications/") || exe_s.contains("/Applications/Roamies.app/");
+        let in_apps = exe_s.starts_with("/Applications/") || exe_s.contains("/Applications/Hanami.app/");
         if !objc2::available!(macos = 13.0) || !installed || !in_apps {
             (false, false, false)
         } else {
@@ -1535,11 +1542,11 @@ fn login_item(app: &AppHandle, set: Option<bool>) {
             (false, false, false)
         } else {
             match set {
-                Some(true) => { let v = format!("\"{}\"", exe.display()); reg(&["add", KEY, "/v", "Roamies", "/t", "REG_SZ", "/d", &v, "/f"]); }
-                Some(false) => { reg(&["delete", KEY, "/v", "Roamies", "/f"]); }
+                Some(true) => { let v = format!("\"{}\"", exe.display()); reg(&["add", KEY, "/v", "Hanami", "/t", "REG_SZ", "/d", &v, "/f"]); }
+                Some(false) => { reg(&["delete", KEY, "/v", "Hanami", "/f"]); }
                 None => {}
             }
-            (true, reg(&["query", KEY, "/v", "Roamies"]), false)
+            (true, reg(&["query", KEY, "/v", "Hanami"]), false)
         }
     };
     #[cfg(target_os = "linux")]
@@ -1571,7 +1578,11 @@ fn update(app: &AppHandle, install: bool) {
             }
             to_sidecar(&app, &m);
         };
-        let found = match app.updater() {
+        // No repository set (FORK_REPO): nothing to check against, and no other project's feed is used.
+        let Some(endpoints) = update_endpoints(FORK_REPO) else {
+            return status("off", json!({}));
+        };
+        let found = match app.updater_builder().endpoints(endpoints).and_then(|b| b.build()) {
             Ok(u) => u.check().await,
             Err(e) => Err(e),
         };
@@ -1597,6 +1608,20 @@ fn update(app: &AppHandle, install: bool) {
             Err(e) => status("error", json!({ "error": e.to_string() })),
         }
     });
+}
+
+/// The signed update feeds for a GitHub repository ("OWNER/REPO"): latest.json on its newest release, then the copy
+/// on its `updates` branch. None for an empty or malformed repository.
+fn update_endpoints(repo: &str) -> Option<Vec<tauri::Url>> {
+    let (owner, name) = repo.split_once('/')?;
+    let ok = |s: &str| !s.is_empty() && s.chars().all(|c| c.is_ascii_alphanumeric() || "-_.".contains(c));
+    if !ok(owner) || !ok(name) {
+        return None;
+    }
+    [format!("https://github.com/{repo}/releases/latest/download/latest.json"), format!("https://raw.githubusercontent.com/{repo}/updates/latest.json")]
+        .iter()
+        .map(|u| tauri::Url::parse(u).ok())
+        .collect()
 }
 
 async fn tokio_sleep(d: Duration) {
@@ -1808,12 +1833,12 @@ fn main() {
                 app.set_menu(Menu::default(app.handle())?)?;
             }
 
-            let starting = MenuItem::with_id(app, "status", "Starting Roamies…", false, None::<&str>)?;
-            let quit = MenuItem::with_id(app, "quit", "Quit Roamies", true, None::<&str>)?;
+            let starting = MenuItem::with_id(app, "status", "Starting Hanami…", false, None::<&str>)?;
+            let quit = MenuItem::with_id(app, "quit", "Quit Hanami", true, None::<&str>)?;
             let menu = Menu::with_items(app, &[&starting, &quit])?;
             // Left click opens the panel; right click shows the short menu.
             let mut tray = TrayIconBuilder::with_id("roamies")
-                .tooltip("Roamies")
+                .tooltip("Hanami")
                 .menu(&menu)
                 .show_menu_on_left_click(false)
                 .on_tray_icon_event(|tray, e| {
@@ -1849,7 +1874,7 @@ fn main() {
             Ok(())
         })
         .build(tauri::generate_context!())
-        .expect("failed to run Roamies")
+        .expect("failed to run Hanami")
         .run(|_, e| {
             if matches!(e, tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit) {
                 sidecar::QUITTING.store(true, Ordering::SeqCst);
@@ -1865,6 +1890,19 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn updates_come_only_from_the_forks_own_repository() {
+        assert_eq!(update_endpoints(""), None, "no repository set: no update check");
+        assert_eq!(update_endpoints("no-slash"), None);
+        assert_eq!(update_endpoints("a/b c"), None);
+        let e = update_endpoints("someone/hanami").expect("feeds");
+        assert_eq!(e.iter().map(|u| u.as_str()).collect::<Vec<_>>(), [
+            "https://github.com/someone/hanami/releases/latest/download/latest.json",
+            "https://raw.githubusercontent.com/someone/hanami/updates/latest.json",
+        ]);
+        assert!(FORK_REPO.is_empty() || update_endpoints(FORK_REPO).is_some(), "FORK_REPO is empty or OWNER/REPO");
+    }
 
     #[test]
     fn a_second_launch_says_what_it_wants_with_one_flag() {

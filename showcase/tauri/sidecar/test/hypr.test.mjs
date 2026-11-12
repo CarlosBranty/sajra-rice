@@ -54,6 +54,7 @@ const mons = (special) => copy(REAL.monitors).map((m, i) => (i === 0 && special 
     mk('0xx11', 3, { xwayland: true, monitor: 1, at: [2400, 100], size: [800, 600], focusHistoryID: 1 }),
     mk('0xpin', 5, { pinned: true, floating: true, monitor: 0, at: [50, 900], size: [300, 200], focusHistoryID: 7 }),
     mk('0xroamies', 1, { class: 'roamies', initialClass: 'roamies', focusHistoryID: 0 }),
+    mk('0xhanami', 1, { class: 'hanami', initialClass: 'hanami', focusHistoryID: 0 }),
     mk('0xself', 1, { pid: 4242, class: 'something', focusHistoryID: 0 }),
   ];
   const ids = hyprWindows(clients, REAL.monitors, [4242]).map((w) => w.id);

@@ -27,7 +27,7 @@ export function moneyTools({ money: open, today = localDay, authorize }) {
   return [
     {
       name: 'spending',
-      description: "The user's spending in a month, from the bank and wallet notification mails Roamies reads and the expenses they added by hand: totals, by category, top merchants, the month before, how many expenses wait to be classified, and the dates the records cover. Use it for questions like \"what did I spend this month\" or \"how much on food in October\"; use balance for income, and query_expenses for anything they don't answer. Money received, income, transfers between their own accounts and refused purchases are not spending.",
+      description: "The user's spending in a month, from the bank and wallet notification mails Hanami reads and the expenses they added by hand: totals, by category, top merchants, the month before, how many expenses wait to be classified, and the dates the records cover. Use it for questions like \"what did I spend this month\" or \"how much on food in October\"; use balance for income, and query_expenses for anything they don't answer. Money received, income, transfers between their own accounts and refused purchases are not spending.",
       parameters: z.object({ month: z.string().optional().describe('YYYY-MM; the current month if left out') }),
       execute: async ({ month }) => {
         const m = open();

@@ -45,7 +45,7 @@ export function shownWorkspaces(monitors) {
 }
 
 /** Roamies' own windows (an X11 overlay, the panel) are clients too: never a window to draw round, nor the front. */
-const isSelf = (c, self) => self.includes(c.pid) || /^roamies$/i.test(String(c.class ?? '')) || /^roamies$/i.test(String(c.initialClass ?? ''));
+const isSelf = (c, self) => self.includes(c.pid) || /^(roamies|hanami)$/i.test(String(c.class ?? '')) || /^(roamies|hanami)$/i.test(String(c.initialClass ?? ''));
 
 /** The open windows on screen now, front to back: the ones on a shown workspace (or pinned), mapped, not hidden and
  *  not Roamies', as { id (address), app (class), bounds [x, y, w, h], workspace, focus, pinned, monitor }. Hyprland gives no stacking

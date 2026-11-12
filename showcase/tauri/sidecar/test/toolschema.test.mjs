@@ -99,14 +99,14 @@ if (process.platform === 'darwin') {
 }
 
 // The draw tool's description. With the hands helper it is, to the letter, what it was before the words about
-// places depended on the helper (its length and SHA-256, taken from that text), with and without the Wayland note.
+// places depended on the helper (its length and SHA-256, taken from that text; "Roamie" now reads "Hanami"), with and without the Wayland note.
 {
   const { createHash } = await import('node:crypto');
   const { drawDescription } = await import('../tools.mjs');
   const { hasHands, linuxSession, stepWaits } = await import('../platform.mjs');
   const pin = (d) => [d.length, createHash('sha256').update(d).digest('hex')];
-  assert.deepEqual(pin(drawDescription({ hands: true, waits: 'pointer' })), [3516, '6e983847d82b2d40679d4f1ca9d1d41ad804016694dde55ab7bb535ed4d86b72'], 'with the helper: unchanged');
-  assert.deepEqual(pin(drawDescription({ hands: true, waits: 'none' })), [3704, '0b1b643bf3fb784ef434c532138c7e60b14cb7ab029a7f464c1a4c674993c601'], 'with the helper on Wayland: unchanged');
+  assert.deepEqual(pin(drawDescription({ hands: true, waits: 'pointer' })), [3516, 'c5cf143e8f5af591ec23cc9c87eb0d946011bc7204374af2fbe8240a73aaa927'], 'with the helper: unchanged');
+  assert.deepEqual(pin(drawDescription({ hands: true, waits: 'none' })), [3704, 'e344e4c2193322261504f09fd1d312ea03f36419d8590d40f7f8c38fbf717b72'], 'with the helper on Wayland: unchanged');
   // Without it: places by position, and nothing that sends the agent to words or ids.
   for (const waits of ['pointer', 'none']) {
     const d = drawDescription({ hands: false, waits });

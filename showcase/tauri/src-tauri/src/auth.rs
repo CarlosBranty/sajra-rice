@@ -267,7 +267,7 @@ pub(crate) fn private_dir(p: &Path) -> std::io::Result<()> {
     let m = fs::symlink_metadata(p)?;
     let me = unsafe { libc::geteuid() };
     if !m.file_type().is_dir() || m.uid() != me || m.mode() & 0o077 != 0 {
-        return Err(std::io::Error::new(std::io::ErrorKind::PermissionDenied, "the runtime folder for Roamies isn't private"));
+        return Err(std::io::Error::new(std::io::ErrorKind::PermissionDenied, "the runtime folder for Hanami isn't private"));
     }
     Ok(())
 }

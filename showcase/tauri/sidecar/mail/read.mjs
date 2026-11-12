@@ -23,7 +23,7 @@ export function clientOptions({ provider, email, password, server = null }) {
   const where = server ?? { host: p.host, port: p.port, secure: true };
   return {
     host: where.host, port: where.port, secure: where.secure,
-    auth: { user: email, pass: password }, logger: false, emitLogs: false, disableAutoIdle: true, clientInfo: { name: 'Roamies' },
+    auth: { user: email, pass: password }, logger: false, emitLogs: false, disableAutoIdle: true, clientInfo: { name: 'Hanami' },
     connectionTimeout: 30_000, greetingTimeout: 15_000, socketTimeout: 60_000,
   };
 }

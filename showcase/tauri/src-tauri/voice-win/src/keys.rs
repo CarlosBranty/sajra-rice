@@ -132,7 +132,7 @@ mod imp {
         X11.get_or_init(|| {
             let env = |k: &str| std::env::var(k).ok();
             if !x11_session(env("XDG_SESSION_TYPE").as_deref(), env("WAYLAND_DISPLAY").as_deref(), env("DISPLAY").as_deref()) {
-                crate::log("not an X11 session: the talk keys can't be watched (use roamies --talk)");
+                crate::log("not an X11 session: the talk keys can't be watched (use hanami --talk)");
                 return None;
             }
             let (conn, screen) = x11rb::connect(None).map_err(|e| crate::log(&format!("X11: {e}"))).ok()?;

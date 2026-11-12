@@ -134,7 +134,7 @@ function migrate(db) {
   const row = db.prepare('SELECT version FROM schema_version').get();
   if (!row) db.exec('INSERT INTO schema_version (version) VALUES (0)');
   const from = row?.version ?? 0;
-  if (from > SCHEMA_VERSION) throw new Error(`money.db is at schema ${from}, newer than this Roamies (${SCHEMA_VERSION})`);
+  if (from > SCHEMA_VERSION) throw new Error(`money.db is at schema ${from}, newer than this Hanami (${SCHEMA_VERSION})`);
   for (let v = from; v < SCHEMA_VERSION; v++) {
     transaction(db, () => {
       MIGRATIONS[v](db, new Date().toISOString());

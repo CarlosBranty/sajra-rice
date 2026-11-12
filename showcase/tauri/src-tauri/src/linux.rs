@@ -157,7 +157,7 @@ pub(crate) fn init() {
         if env("DISPLAY").is_some_and(|d| !d.is_empty()) {
             std::env::set_var("GDK_BACKEND", "x11");
         } else {
-            eprintln!("Roamies needs XWayland on a Wayland session (no DISPLAY is set): windows can't be placed or kept on top without it");
+            eprintln!("Hanami needs XWayland on a Wayland session (no DISPLAY is set): windows can't be placed or kept on top without it");
         }
     }
 }
@@ -852,7 +852,7 @@ fn shot_keep(dir: &Path, file: &str, shot: &Shot) {
 /// ROAMIES_SHOT_DIR and nowhere else (the sidecar hears nothing). Main thread only.
 #[cfg(debug_assertions)]
 pub(crate) fn shot_probe(app: &AppHandle) {
-    let Some(dir) = shot_dir() else { return eprintln!("--shot: start Roamies with ROAMIES_SHOT_DIR=<dir> first") };
+    let Some(dir) = shot_dir() else { return eprintln!("--shot: start Hanami with ROAMIES_SHOT_DIR=<dir> first") };
     let file = dir.join(format!(".probe-{}.jpg", std::process::id()));
     let _ = std::fs::create_dir_all(&dir);
     let made = file.clone();
@@ -1351,7 +1351,7 @@ fn exec_quoted(path: &str) -> Option<String> {
 /// The XDG autostart entry that starts Roamies when the user logs in.
 fn autostart_entry(program: &str) -> Option<String> {
     let exec = exec_quoted(program)?;
-    Some(format!("[Desktop Entry]\nType=Application\nName=Roamies\nComment=AI desktop companions\nExec={exec}\nIcon=roamies\nTerminal=false\nX-GNOME-Autostart-enabled=true\n"))
+    Some(format!("[Desktop Entry]\nType=Application\nName=Hanami\nComment=AI desktop companions\nExec={exec}\nIcon=hanami\nTerminal=false\nX-GNOME-Autostart-enabled=true\n"))
 }
 
 /// Whether an autostart entry is switched on: desktops' own "startup apps" settings switch one off by adding
@@ -1391,11 +1391,11 @@ pub(crate) fn login_item(set: Option<bool>, installed: bool) -> (bool, bool) {
     (true, std::fs::read_to_string(&file).is_ok_and(|e| autostart_on(&e)))
 }
 
-/// The program as a shell word, for commands people bind to keys (`<this> --talk`): plain `roamies` when that's
+/// The program as a shell word, for commands people bind to keys (`<this> --talk`): plain `hanami` when that's
 /// what the package installed on PATH, else the AppImage or binary's full path, single-quoted if it needs it.
 fn launch_word(program: &str) -> String {
-    if program == "/usr/bin/roamies" || program == "/usr/local/bin/roamies" {
-        return "roamies".into();
+    if program == "/usr/bin/hanami" || program == "/usr/local/bin/hanami" {
+        return "hanami".into();
     }
     if program.chars().all(|c| c.is_ascii_alphanumeric() || "/._-+".contains(c)) {
         return program.into();
@@ -1404,14 +1404,19 @@ fn launch_word(program: &str) -> String {
 }
 
 pub(crate) fn launch_command() -> String {
-    let program = appimage().or_else(|| std::env::current_exe().ok()).map(|p| p.to_string_lossy().into_owned()).unwrap_or_else(|| "roamies".into());
+    let program = appimage().or_else(|| std::env::current_exe().ok()).map(|p| p.to_string_lossy().into_owned()).unwrap_or_else(|| "hanami".into());
     launch_word(&program)
 }
 
 /// Where a copy installed from a .deb or .rpm gets its update: the package manager owns those files, so the app
 /// can't swap itself as an AppImage can.
+/// Hanami's own (FORK_REPO in main.rs); nothing opens while that isn't set.
 pub(crate) fn open_releases_page() {
-    let _ = std::process::Command::new("xdg-open").arg("https://github.com/KenKaiii/Roamies/releases/latest").stdin(std::process::Stdio::null()).spawn();
+    if crate::FORK_REPO.is_empty() {
+        return;
+    }
+    let url = format!("https://github.com/{}/releases/latest", crate::FORK_REPO);
+    let _ = std::process::Command::new("xdg-open").arg(url).stdin(std::process::Stdio::null()).spawn();
 }
 
 // ---------- other apps' sound ----------
@@ -2149,7 +2154,7 @@ mod tests {
     #[test]
     fn the_autostart_entry_quotes_the_program() {
         let e = autostart_entry("/home/kai/Apps/Roamies 0.1.33.AppImage").expect("an entry");
-        assert!(e.starts_with("[Desktop Entry]\nType=Application\nName=Roamies\n"));
+        assert!(e.starts_with("[Desktop Entry]\nType=Application\nName=Hanami\n"));
         assert!(e.contains("\nExec=\"/home/kai/Apps/Roamies 0.1.33.AppImage\"\n"), "{e}");
         assert_eq!(exec_quoted("/usr/bin/roamies").as_deref(), Some("\"/usr/bin/roamies\""));
         // Characters a shell or the desktop would act on stay literal.
@@ -2161,7 +2166,7 @@ mod tests {
 
     #[test]
     fn the_command_to_bind_names_this_copy() {
-        assert_eq!(launch_word("/usr/bin/roamies"), "roamies", "the package's own command");
+        assert_eq!(launch_word("/usr/bin/hanami"), "hanami", "the package's own command");
         assert_eq!(launch_word("/home/kai/Apps/Roamies_0.1.33_amd64.AppImage"), "/home/kai/Apps/Roamies_0.1.33_amd64.AppImage");
         assert_eq!(launch_word("/home/kai/My Apps/Roamies.AppImage"), "'/home/kai/My Apps/Roamies.AppImage'");
         assert_eq!(launch_word("/home/kai/it's/Roamies"), "'/home/kai/it'\\''s/Roamies'");

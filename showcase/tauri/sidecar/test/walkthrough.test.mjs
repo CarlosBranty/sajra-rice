@@ -77,7 +77,7 @@ if (process.platform === 'linux' && !process.env.ROAMIES_HANDS) {
   // Wayland without one, as it was: the waits are dropped, every beat plays, and the model is told.
   const none = await walk('none', [step('Open the File menu.', 40), step('Choose Save.', 80)], 'next');
   assert.deepEqual(none.segs.map((e) => e.beats[0].wait), [null, null], 'no beat waits');
-  assert.match(none.said, /This desktop doesn't let Roamies see clicks in other apps, so the beats played one after another instead of waiting for clicks\./);
+  assert.match(none.said, /This desktop doesn't let Hanami see clicks in other apps, so the beats played one after another instead of waiting for clicks\./);
   assert.equal(none.description, drawDescription({ hands: false, waits: 'none' }));
 
   // Where the pointer is seen, as it was: the wait is kept and the real click ends it, with nothing new in what

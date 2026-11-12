@@ -3,7 +3,7 @@
 // Run: npm test
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { desktopModel, desktopTools, describeDesktop, kittySocket, parseCombo } from '../desktop.mjs';
+import { desktopModel, desktopTools, describeDesktop, handsOff, kittySocket, parseCombo } from '../desktop.mjs';
 
 const MONITORS = [
   { id: 1, name: 'HDMI-A-1', description: 'Some Monitor', x: 2304, y: 0, width: 1920, height: 1080, scale: 1, focused: false, activeWorkspace: { id: 4, name: '4' }, specialWorkspace: { id: 0, name: '' } },
@@ -171,4 +171,10 @@ test('text goes only into the window that took the keyboard', async () => {
   await assert.rejects(d.tools.window_type.execute({ window: '0xbb2', text: 'hola', enter: true }), /didn't take the keyboard/);
   assert.equal(d.acted().filter(([f]) => f === 'wtype').length, 0, 'nothing typed');
   assert.deepEqual(d.acted().at(-1), ['hyprctl', 'eval', 'hl.dispatch(hl.dsp.focus({ window = "address:0xcc3" }))'], 'and the user is put back');
+});
+
+test("the app's own windows are never typed into, under its old and its new name", () => {
+  assert.equal(handsOff({ class: 'hanami' }), true);
+  assert.equal(handsOff({ class: 'roamies' }), true);
+  assert.equal(handsOff({ class: 'kitty' }), false);
 });

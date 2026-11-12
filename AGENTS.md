@@ -1,6 +1,18 @@
 # AGENTS.md
 
-Roamies: a Tauri 2 desktop app (Rust shell in `showcase/tauri/src-tauri`), a Node sidecar that runs the
+Hanami is a modified version of Roamies by Ken Kai (KenKaiii/Roamies, AGPL-3.0-only; credits in `NOTICE` and the
+panel's About page, which must keep showing the original project, its author and the licence). The rename is
+user-facing only: the product name, window and menu text, copy, the default look's name ("Hanami"), the agent's
+prompt, the Linux program `hanami` (`[[bin]]` in `src-tauri/Cargo.toml`; the crate stays `roamies`) and the
+identifier `com.hanami.assistant` (the webview's local storage under the old `com.kenkai.roamies` isn't carried over;
+it only held per-viewer conveniences). Internal names stay as upstream's to ease merges: JS globals (`window.Roamie`,
+`R.*`, `__roamie*`), file and function names, `ROAMIES_*` variables, the `roamies-voice` and `roamies-hands` helpers,
+the keyring service `com.kenkai.roamies`, `~/.gg/...`, the layer-shell namespaces `roamies` and `roamies-panel`.
+Hanami's own GitHub repository goes in one place, `FORK_REPO` (`"OWNER/REPO"`) in `src-tauri/src/main.rs`: empty,
+no update check runs and nothing links to a repository of its own; set, it drives the updater's feeds, the
+releases page, the diagnostics issue link and About's source link (the sidecar gets it as `ROAMIES_REPO`).
+
+Roamies (Hanami): a Tauri 2 desktop app (Rust shell in `showcase/tauri/src-tauri`), a Node sidecar that runs the
 agent (`showcase/tauri/sidecar`), shared browser JS in `showcase/roamies`, macOS Swift helpers built by
 `src-tauri/build.rs`, and two Windows helpers built by `build.sh` for Windows targets: voice
 (`src-tauri/voice-win`, Rust + Parakeet; `--transcribe <wav>` and `--test-audio <wav>` test speech without a
@@ -10,7 +22,7 @@ commands and JSON, over Win32, UI Automation and Windows OCR). Only hands-win's 
 From a Mac, `cargo xwin check --target x86_64-pc-windows-msvc` type-checks the Windows code with the real SDK.
 
 Linux (beta) uses the same voice helper (`voice-win` builds for Linux too: ALSA mic, talk keys over X11, and a
-`toggle` command for `roamies --talk` on Wayland) and no hands helper. Its shell code is `src-tauri/src/linux.rs`,
+`toggle` command for `hanami --talk` on Wayland) and no hands helper. Its shell code is `src-tauri/src/linux.rs`,
 which picks one of two ways to make windows before GTK starts. On a Wayland compositor with layer-shell (Hyprland,
 Sway, KDE; it is asked over its socket) GTK runs on Wayland itself: each overlay is a layer surface over its monitor
 (namespace `roamies`, on the overlay layer, the keyboard only while something is typed to the Roamie), the panel
@@ -24,7 +36,7 @@ capture the same way), copying, Open at Login and AppImage-only updates live the
 picked, the overlay's click areas and what each screenshot was cut to, `ROAMIES_LAYER_SHELL=0` keeps the X11 windows
 and `ROAMIES_LAYER_SHELL=1` takes layer surfaces on any Wayland session, and in debug builds
 `ROAMIES_TEST_AUDIO=<wav>` stands in for the microphone and `ROAMIES_SHOT_DIR=<dir>` keeps a copy of every
-screenshot handed to the agent there, with its pixels and bounds in a `.json` beside it (`roamies --shot` takes one
+screenshot handed to the agent there, with its pixels and bounds in a `.json` beside it (`hanami --shot` takes one
 without asking the agent anything; they show your screen, so delete them after).
 `ROAMIES_LATENCY=1` (any build) times each spoken question on the wall clock: the Windows and Linux voice helper sends
 when the voice stopped, the take closed (and why) and its words were ready with the words, the
@@ -102,7 +114,7 @@ through `classifyCommand` like run_command (refused, or asked first); password m
 A yes/no question (Allow / Don't allow) can be answered by voice: while one is open a take doesn't interrupt the
 request or close the bubble (host.js), and its words go to `answerByVoice` (sidekick.mjs, `speech.mjs` `spokenChoice`:
 "sí", "dale", "permite"… allow; "no", "cancela"… decline; anything else leaves the question open).
-Dictation (Linux): `roamies --dictate` on a key's press and `roamies --dictate-end` on its release (two compositor
+Dictation (Linux): `hanami --dictate` on a key's press and `hanami --dictate-end` on its release (two compositor
 binds, `{ release = true }` on the second) hold a take in the running voice helper (`hold` and `release` commands;
 pauses don't end it, MAX_HELD does if the release never comes) whose words are typed where the keyboard is with
 `wtype` (`voice.rs` `dictate`, `dictation_text`), not sent to the agent: no model or process of its own.
@@ -154,8 +166,10 @@ stopping the release; `latest.json` lists Linux only when its AppImage is there.
   (tested in `test/safety.test.mjs`); the hands helpers also refuse to type or click in the apps in `HANDS_OFF`
   (by bundle id in `hands/main.swift`, by program name in `hands-win/src/logic.rs`).
   Add a test case with every rule change.
-- In-app updates read `latest.json` from the newest published release, signed with the key in the
-  `TAURI_SIGNING_PRIVATE_KEY` secret. Keep `plugins.updater.pubkey` in `tauri.conf.json` matching it.
+- In-app updates read `latest.json` from the newest published release of `FORK_REPO` (none while it's empty; the
+  feeds are built in `update_endpoints`, `plugins.updater.endpoints` stays empty), signed with the key in the
+  `TAURI_SIGNING_PRIVATE_KEY` secret. Keep `plugins.updater.pubkey` in `tauri.conf.json` matching it (it is still
+  upstream's until the fork has its own key).
   When GitHub's release links fail, the updater falls back to the copy on the `updates` branch, which
   `.github/workflows/update-feed.yml` writes whenever a release is published; downloads go through the API.
 

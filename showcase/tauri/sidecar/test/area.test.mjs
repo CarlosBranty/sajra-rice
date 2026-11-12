@@ -28,13 +28,13 @@ assert.match(read('../../src-tauri/src/main.rs'), /Some\("area"\) => \{[^}]*linu
 // The prompt: on Wayland the snap is a command they bind, not Ctrl+Alt+A, and it is no longer among what needs the app.
 assert.match(side, /\$\{BIND\.talk\} \(talk\)\$\{BIND\.snap \? `, \$\{BIND\.snap\} \(ask about an area\)` : ''\} and \$\{BIND\.panel\} \(the panel\)/);
 assert.match(side, /\$\{SNAP_OK && HOTKEYS_OK \? `; ask about an area \$\{keyWords\(keys\(\)\.snap\)\}` : ''\}/, 'with shortcuts (macOS, Windows): as before');
-assert.match(side, /\$\{HANDS_OK \? '' : ` \$\{SNAP_OK \? 'Reading' : 'Asking about an area, reading'\} app windows, finding things on screen by their words and working other apps need the Roamies app/);
+assert.match(side, /\$\{HANDS_OK \? '' : ` \$\{SNAP_OK \? 'Reading' : 'Asking about an area, reading'\} app windows, finding things on screen by their words and working other apps need the Hanami app/);
 // The tray menu shows the snap's shortcut only where there are shortcuts.
 assert.match(side, /\.\.\.\(SNAP_OK \? \[\{ id: 'snap', label: 'Ask About an Area…', \.\.\.\(HOTKEYS_OK \? \{ accel: keys\(\)\.snap \} : \{\}\) \}\] : \[\]\),/);
 // The panel lists it with the other commands, and so does the README, which no longer says it's missing.
 assert.match(read('../../../panel/panel.js'), /const BIND_ROWS = \[[^\n]*\['snap', 'Ask about an area'\]/);
 const readme = read('../../../../README.md');
-assert.match(readme, /\| `roamies --snap` +\| /, 'the README\'s commands table');
+assert.match(readme, /\| `hanami --snap` +\| /, 'the README\'s commands table');
 assert.ok(!/Not yet:[^\n]*Ask About an Area/.test(readme), 'no longer listed as missing');
 // The setup guide lists the commands to bind as the panel does, the area one included (it shows only those it is sent).
 {

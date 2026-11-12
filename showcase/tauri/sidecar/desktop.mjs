@@ -22,7 +22,7 @@ import { ASK, BLOCK, classifyCommand, isYes } from './safety.mjs';
 // `--class dropterm` is still kitty).
 const TERMINAL = /^(kitty|foot|footclient|alacritty|wezterm|wezterm-gui|org\.wezfurlong\.wezterm|ghostty|com\.mitchellh\.ghostty|konsole|org\.kde\.konsole|xterm|uxterm|st|st-256color|urxvt|rxvt|org\.gnome\.(console|terminal|ptyxis)|kgx|ptyxis|gnome-terminal(-server)?|tilix|com\.gexperts\.tilix|terminator|xfce4-terminal|lxterminal|qterminal|sakura|terminology|rio|contour|cool-retro-term|blackbox|com\.raggesilver\.blackbox|warp|dev\.warp\.warp)$/i;
 /** Windows nothing is ever typed or pressed into: password managers, unlock and permission prompts, Roamies itself. */
-const HANDS_OFF = /keepass|bitwarden|1password|pinentry|gcr-prompter|polkit|seahorse|kwallet|proton.?pass|enpass|hyprlock|swaylock|roamies/i;
+const HANDS_OFF = /keepass|bitwarden|1password|pinentry|gcr-prompter|polkit|seahorse|kwallet|proton.?pass|enpass|hyprlock|swaylock|roamies|hanami/i;
 /** In a terminal these run what is typed, as Enter does. */
 const SUBMITS = (c) => /^(return|enter|kp_enter|iso_enter|linefeed)$/i.test(c.key) || (/\bCTRL\b/.test(c.mods) && /^[mjo]$/i.test(c.key));
 /** Control characters other than tab and line ends: a terminal acts on them (Ctrl-O runs the line in bash). */

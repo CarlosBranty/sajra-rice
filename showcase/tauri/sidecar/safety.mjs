@@ -112,7 +112,7 @@ const MONEY_DIRS = new Set(['~/.gg/sidekick']);
 /** Another data folder whose money files are kept the same way (sidekick.mjs: ROAMIES_DATA_DIR). */
 export function protectMoney(dir) { if (dir) MONEY_DIRS.add(slash(dir)); }
 const MONEY_FILE = /^(money|mail)\.db(-wal|-shm|-journal)?$/;
-const MONEY_WHY = (p) => `${p} is Roamies' money data: it changes only through its money tools, after you confirm it's you.`;
+const MONEY_WHY = (p) => `${p} is Hanami's money data: it changes only through its money tools, after you confirm it's you.`;
 // 'data': a money file, the banks folder or something in it; 'above': a folder that holds them; null: neither.
 function moneyKind(abs, home) {
   for (const a of bothOf(abs)) {

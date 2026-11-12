@@ -47,7 +47,7 @@ const plural = (n, w) => `${n} ${w}${n === 1 ? '' : 's'}`;
 export function usageTools({ file, now = Date.now, route }) {
   return [{
     name: 'token_usage',
-    description: "How many tokens Roamies has used answering the user (today, yesterday, the last 7 days, this month or everything kept, about 90 days), per model, and how it answers now: the AI provider and model, and whether through the user's subscription or an API key. Input tokens are new text sent; from cache are tokens re-read from the prompt cache (much cheaper); output tokens are what the model wrote.",
+    description: "How many tokens Hanami has used answering the user (today, yesterday, the last 7 days, this month or everything kept, about 90 days), per model, and how it answers now: the AI provider and model, and whether through the user's subscription or an API key. Input tokens are new text sent; from cache are tokens re-read from the prompt cache (much cheaper); output tokens are what the model wrote.",
     parameters: z.object({ period: z.enum(['today', 'yesterday', 'week', 'month', 'all']).optional().describe('today if left out') }),
     execute: async ({ period = 'today' }) => {
       const t = now(), today = day(t);

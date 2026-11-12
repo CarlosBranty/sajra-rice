@@ -180,12 +180,14 @@
   function updateButton() {
     const u = state.update, b = $('head-update'), v = u.available;
     const fresh = u.result?.ok && Date.now() - (u.result.at ?? 0) < FRESH;
+    // No repository set for this build (FORK_REPO in src-tauri/src/main.rs): updates are off, so no button.
+    if (u.off) { b.hidden = true; b.title = ''; return; }
     const [label, aria, kind, off] =
-      u.done ? ['Done', `Roamies ${u.done} is installed. Restarting`, 'ghost', true]
-      : u.installing ? ['Updating…', `Installing Roamies ${v}`, 'ghost', true]
-      : v ? (u.page ? [`Get ${v}`, `Open the download page for Roamies ${v}`, 'primary', false] : [`Update to ${v}`, `Install Roamies ${v} and restart`, 'primary', false])
+      u.done ? ['Done', `Hanami ${u.done} is installed. Restarting`, 'ghost', true]
+      : u.installing ? ['Updating…', `Installing Hanami ${v}`, 'ghost', true]
+      : v ? (u.page ? [`Get ${v}`, `Open the download page for Hanami ${v}`, 'primary', false] : [`Update to ${v}`, `Install Hanami ${v} and restart`, 'primary', false])
       : u.checking ? ['Checking…', 'Checking for updates', 'ghost', true]
-      : fresh ? ['Up to date', `Roamies ${state.version} is up to date`, 'ghost', true]
+      : fresh ? ['Up to date', `Hanami ${state.version} is up to date`, 'ghost', true]
       : u.result ? ['Check again', "Couldn't check for updates. Check again", 'ghost', false]
       : ['Check for updates', 'Check for updates', 'ghost', false];
     b.hidden = false; b.textContent = label; b.disabled = off;
@@ -199,10 +201,10 @@
   // Quit asks first: the first press turns it into Confirm for 4 s, the second quits.
   const quitB = $('head-quit');
   let quitTimer = 0;
-  const unarmQuit = () => { clearTimeout(quitTimer); quitB.setAttribute('aria-pressed', 'false'); quitB.setAttribute('aria-label', 'Quit Roamies'); };
+  const unarmQuit = () => { clearTimeout(quitTimer); quitB.setAttribute('aria-pressed', 'false'); quitB.setAttribute('aria-label', 'Quit Hanami'); };
   quitB.addEventListener('click', () => {
     if (quitB.getAttribute('aria-pressed') === 'true') { unarmQuit(); act('quit'); return; }
-    quitB.setAttribute('aria-pressed', 'true'); quitB.setAttribute('aria-label', 'Confirm: quit Roamies');
+    quitB.setAttribute('aria-pressed', 'true'); quitB.setAttribute('aria-label', 'Confirm: quit Hanami');
     quitTimer = setTimeout(unarmQuit, 4000);
   });
   function mark(page, why) {
@@ -298,7 +300,7 @@
     if (seen.look && state.look !== seen.look) { avatar.setLook(state.look); avatar.act('wave'); quip(QUIPS[state.look] ?? 'Hi!'); }
     else avatar.setLook(state.look);
     avatar.setForm(state.size);
-    if (state.update.available && state.update.available !== seen.update && seen.look) { avatar.act('hype'); quip(`Roamies ${state.update.available} is here!`); }
+    if (state.update.available && state.update.available !== seen.update && seen.look) { avatar.act('hype'); quip(`Hanami ${state.update.available} is here!`); }
     seen.look = state.look; seen.update = state.update.available;
   }
 
@@ -617,8 +619,8 @@
   // provider's way to an app password. Tabs: the panel doesn't scroll.
   const MAIL_HELP = {
     gmail: 'Gmail needs an app password: turn on 2-Step Verification in your Google Account, then create one at myaccount.google.com/apppasswords. Revoke it there at any time; changing your Google password revokes it too.',
-    yahoo: 'Yahoo needs an app password: Account Info, Account Security, Generate app password. Revoke it there at any time: it keeps working after you change your Yahoo password, so revoke it when you stop using Roamies.',
-    outlook: "Coming soon: Outlook.com no longer takes app passwords and needs a Microsoft sign-in, which Roamies doesn't have yet.",
+    yahoo: 'Yahoo needs an app password: Account Info, Account Security, Generate app password. Revoke it there at any time: it keeps working after you change your Yahoo password, so revoke it when you stop using Hanami.',
+    outlook: "Coming soon: Outlook.com no longer takes app passwords and needs a Microsoft sign-in, which Hanami doesn't have yet.",
   };
   const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
   const monthName = (m) => `${MONTHS[Number(m.slice(5)) - 1]} ${m.slice(0, 4)}`;
@@ -629,7 +631,7 @@
   const moneyDo = (op, args = {}) => send({ type: 'panel_money', op, ...args, query: mquery() });
   const moneyAsk = () => moneyDo('list');
   // Before a protected change (the sidecar asks for the password or fingerprint): where the prompt shows.
-  const askFirst = () => note('Confirm it is you: the prompt is by your Roamie.');
+  const askFirst = () => note('Confirm it is you: the prompt is by your Hanami.');
   const clearSel = () => { ui.msel.clear(); ui.mnew = false; };
   const choose = (label, list, value, pick, k) => dropdown(label, [{ items: list }], value, pick, k);
   let findTimer = 0;
@@ -846,12 +848,13 @@
           link('Copy', () => send({ type: 'copy_bind', which: k }), { k: `bind-${k}`, aria: `Copy the command for ${label.toLowerCase()}` })))) : null,
     ];
   }
-  // Who made Roamies: Ken, live (he's drawn like the looks but isn't one), and where to find him.
+  // Who made Roamies, the app Hanami is a modified version of: Ken, live (he's drawn like the looks but isn't one),
+  // and where to find him. The licence and the original's credits stay in About (AGPL-3.0-only, NOTICE).
   const KEN = [
     ['Skool', 'Learn with Ken, or support him', 'https://www.skool.com/kenkai', "Open Ken Kai's Skool community"],
     ['YouTube', '@kenkaidoesai', 'https://www.youtube.com/@kenkaidoesai', "Open Ken Kai's YouTube channel"],
     ['TikTok', '@ggkenkai', 'https://www.tiktok.com/@ggkenkai', "Open Ken Kai's TikTok"],
-    ['Source code', 'Open source under AGPL-3.0', 'https://github.com/KenKaiii/Roamies', 'Open the Roamies source code on GitHub'],
+    ['Roamies source code', 'The original, open source under AGPL-3.0', 'https://github.com/KenKaiii/Roamies', 'Open the original Roamies source code on GitHub'],
   ];
   let ken = null;
   function maker() {
@@ -866,9 +869,23 @@
     }
     return ken;
   }
+  // Hanami's own repository (ROAMIES_REPO from the app), '' until the fork's is set.
+  const repoUrl = () => (state.repo ? `https://github.com/${state.repo}` : null);
   function aboutPage() {
+    const src = repoUrl();
     return [
-      group('Made by', null, null, maker(),
+      group('Hanami', 'Hanami — a modified version of Roamies by Ken Kai (KenKaiii/Roamies).', null,
+        el('div', { className: 'setting' },
+          el('span', {}, 'License', el('small', { textContent: 'AGPL-3.0-only. The full text is in the LICENSE file that comes with the source; what changed is in NOTICE.' })),
+          link('Read', () => send({ type: 'open_link', url: 'https://www.gnu.org/licenses/agpl-3.0.html' }), { k: 'license', aria: 'Read the GNU Affero General Public License, version 3' })),
+        el('div', { className: 'setting' },
+          el('span', {}, 'Copyright', el('small', { textContent: 'Roamies: copyright Ken Kai and the Roamies contributors. Hanami changes: copyright their authors. All under AGPL-3.0-only.' }))),
+        el('div', { className: 'setting' },
+          el('span', {}, 'Source code', el('small', { textContent: src ? `Hanami's source is available at github.com/${state.repo}` : "Hanami's source is available from whoever gave you this copy; its repository link shows here once set." })),
+          src ? link('Open', () => send({ type: 'open_link', url: src }), { k: 'source', aria: "Open Hanami's source code on GitHub" }) : null),
+        state.update?.off ? el('div', { className: 'setting' },
+          el('span', {}, 'Updates', el('small', { textContent: "Updates come from Hanami's own releases once its repository is set. This copy doesn't check for updates." }))) : null),
+      group('Original author', null, null, maker(),
         KEN.map(([label, hint, url, aria]) => el('div', { className: 'setting' },
           el('span', {}, label, el('small', { textContent: hint })),
           link('Open', () => send({ type: 'open_link', url }), { k: `ken-${label.toLowerCase()}`, aria })))),
@@ -1033,7 +1050,7 @@
 
   // ---------------------------------------------------------------- browser preview
   function preview() {
-    document.title = 'Roamies panel (preview with sample data)';
+    document.title = 'Hanami panel (preview with sample data)';
     const at = Date.now(), q = new URLSearchParams(location.search);
     // ?theme=light, dark or note: the desktop this preview pretends to have (note: the colours a light shell leaves
     // in its note). The Colors setting is then System and the shell's answer is that desktop's, as in the app.
@@ -1062,9 +1079,9 @@
         { at: at - 9.4 * 60e3, kind: 'ask', text: 'what does this error mean' },
       ],
       usage: { requests: 14, tokens: 31240 },
-      facts: [{ id: 'f1', text: 'Prefers short answers in the morning' }, { id: 'f2', text: 'Working on the Roamies 1.0 launch, due end of month' }, { id: 'f3', text: 'Has a cat called Miso' }],
+      facts: [{ id: 'f1', text: 'Prefers short answers in the morning' }, { id: 'f2', text: 'Working on the Hanami 1.0 launch, due end of month' }, { id: 'f3', text: 'Has a cat called Miso' }],
       commitments: [{ id: 'c1', text: 'Send the launch email', when: 'Fri 7 Nov, 10:00', overdue: false }, { id: 'c2', text: 'Book the dentist', when: 'Mon 3 Nov, 09:00', overdue: true }],
-      name: 'Roamie', look: 'classic', looks: [['classic', 'Roamie'], ['jarvis', 'JARVIS'], ['anime', 'Anime Girl'], ['sarah', 'Sarah'], ['adrian', 'Adrian']],
+      name: 'Hanami', look: 'classic', looks: [['classic', 'Hanami'], ['jarvis', 'JARVIS'], ['anime', 'Anime Girl'], ['sarah', 'Sarah'], ['adrian', 'Adrian']],
       size: 'default', sizes: [['default', 'Default'], ['small', 'Small'], ['cursor', 'Cursor']],
       theme: desk ? 'system' : 'classic', themes: [['classic', 'Classic'], ['system', 'System']],
       replies: 'voice', fishKey: true, fishModel: 'drama-3', fishFree: false,

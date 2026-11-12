@@ -40,11 +40,11 @@ const BACKOFF_SECS: [u64; 3] = [1, 3, 10];
 
 pub(crate) fn spawn_sidecar(app: &AppHandle) {
     let Some(node) = find_node() else {
-        fallback_menu(app, "Roamies is missing a part; reinstall it");
+        fallback_menu(app, "Hanami is missing a part; reinstall it");
         return;
     };
     let Some(script) = sidecar_script(app) else {
-        fallback_menu(app, "Roamies is missing a part; reinstall it");
+        fallback_menu(app, "Hanami is missing a part; reinstall it");
         return;
     };
     let generation = GENERATION.fetch_add(1, Ordering::SeqCst) + 1;
@@ -53,6 +53,7 @@ pub(crate) fn spawn_sidecar(app: &AppHandle) {
     hide_console(&mut cmd);
     cmd.arg(&script)
         .env("ROAMIES_VERSION", app.package_info().version.to_string())
+        .env("ROAMIES_REPO", crate::FORK_REPO)
         .env("ROAMIES_HANDS", helper_binary("roamies-hands").map(|p| p.to_string_lossy().into_owned()).unwrap_or_default())
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -73,7 +74,7 @@ pub(crate) fn spawn_sidecar(app: &AppHandle) {
     let mut child = match cmd.spawn() {
         Ok(c) => c,
         Err(e) => {
-            fallback_menu(app, &format!("Roamies failed to start: {e}"));
+            fallback_menu(app, &format!("Hanami failed to start: {e}"));
             return;
         }
     };
@@ -99,7 +100,7 @@ pub(crate) fn spawn_sidecar(app: &AppHandle) {
         };
         let app2 = app.clone();
         if attempt > BACKOFF_SECS.len() {
-            let _ = app.run_on_main_thread(move || fallback_menu(&app2, "Roamies stopped"));
+            let _ = app.run_on_main_thread(move || fallback_menu(&app2, "Hanami stopped"));
             return;
         }
         thread::sleep(Duration::from_secs(BACKOFF_SECS[attempt - 1]));

@@ -76,7 +76,7 @@ assert.match(page, /moneyDo\('own', \{ action: 'mark', key: sel\[0\]\.own \}\)/)
 assert.match(page, /moneyDo\('delete_entry', \{ id: sel\[0\]\.id \}\)/);
 assert.match(page, /moneyDo\('rename_category', \{ from: name, to \}\)/);
 assert.match(page, /moneyDo\('delete_category', \{ name: q\.category \}\)/);
-assert.match(panel, /const askFirst = \(\) => note\('Confirm it is you: the prompt is by your Roamie\.'\);/);
+assert.match(panel, /const askFirst = \(\) => note\('Confirm it is you: the prompt is by your Hanami\.'\);/);
 // Adding by hand: expense or income, amount, currency (soles first), what, date (today first), category for expenses.
 assert.match(page, /picks\('Kind', \[\['expense', 'Expense'\], \['income', 'Income'\]\]/);
 assert.match(page, /picks\('Currency', \[\['PEN', 'S\/'\], \['USD', 'US\$'\]\]/);
