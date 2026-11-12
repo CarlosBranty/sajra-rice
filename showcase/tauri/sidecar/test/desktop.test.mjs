@@ -20,11 +20,16 @@ const CLIENTS = [
 const ACTIVE = { address: '0xcc3' };
 const KITTY_LS = [{ is_focused: false, tabs: [{ is_focused: true, windows: [{ id: 7, is_focused: true, title: 'build' }] }] }];
 
-function fakeDesktop({ kitty = true, yes = true } = {}) {
+function fakeDesktop({ kitty = true, yes = true, allow = true, focusTakes = true, programs = {} } = {}) {
   const ran = [], asked = [];
   const run = async (file, args, opts = {}) => {
     ran.push([file, ...args, ...(opts.input != null ? [`<<${opts.input}`] : [])]);
-    if (file === 'hyprctl' && args[0] === '-j') return JSON.stringify({ monitors: MONITORS, workspaces: WORKSPACES, clients: CLIENTS, activewindow: ACTIVE }[args[1]]);
+    if (file === 'hyprctl' && args[0] === '-j') {
+      // After a focus, the active window is the one focused last (or stays, when the focus doesn't take).
+      const focused = [...ran].reverse().find(([f, a, lua]) => f === 'hyprctl' && a === 'eval' && /focus\(\{ window/.test(lua ?? ''));
+      const active = focusTakes && focused ? { address: /address:(0x[0-9a-f]+)/.exec(focused[2])[1] } : ACTIVE;
+      return JSON.stringify({ monitors: MONITORS, workspaces: WORKSPACES, clients: CLIENTS, activewindow: active }[args[1]]);
+    }
     if (file === 'hyprctl' && args[0] === 'eval') return args[1].includes('0xbad') ? 'warning: =[C]:-1: send_shortcut: window not found' : 'ok';
     if (file === 'kitten') {
       if (!kitty) throw new Error('connection refused');
@@ -34,13 +39,16 @@ function fakeDesktop({ kitty = true, yes = true } = {}) {
     }
     return '';
   };
-  const tools = Object.fromEntries(desktopTools({ run, home: '/home/u', wait: async () => {}, ask: async (q) => { asked.push(q.placeholder); return yes ? 'Allow' : "Don't allow"; } }).map((t) => [t.name, t]));
+  const tools = Object.fromEntries(desktopTools({
+    run, home: '/home/u', wait: async () => {}, allowActions: () => allow, actionsOff: 'switched off', programOf: (pid) => programs[pid] ?? '',
+    ask: async (q) => { asked.push(q.placeholder); return yes ? 'Allow' : "Don't allow"; },
+  }).map((t) => [t.name, t]));
   const acted = () => ran.filter(([f, a]) => !(f === 'hyprctl' && a === '-j'));
   return { tools, ran, asked, acted };
 }
 
 test('screens left to right, the laptop told apart; every window with its workspace and screen', () => {
-  const m = desktopModel({ monitors: MONITORS, workspaces: WORKSPACES, clients: CLIENTS, active: ACTIVE });
+  const m = desktopModel({ monitors: MONITORS, workspaces: WORKSPACES, clients: CLIENTS, active: ACTIVE, programOf: () => '' });
   assert.deepEqual(m.screens.map((s) => [s.n, s.name, s.laptop, s.workspace, s.width]), [[1, 'eDP-1', true, '2', 2304], [2, 'HDMI-A-1', false, '4', 1920]]);
   const w = Object.fromEntries(m.windows.map((x) => [x.id, x]));
   assert.deepEqual([w['0xaa1'].screen, w['0xaa1'].shown, w['0xbb2'].shown, w['0xcc3'].focused], [1, false, true, true]);
@@ -122,4 +130,45 @@ test('what the compositor refuses comes back as an error', async () => {
   CLIENTS.push({ address: '0xbad', mapped: true, class: 'zen', title: 'x', pid: 1, workspace: { id: 4, name: '4' }, monitor: 1 });
   await assert.rejects(d.tools.window_keys.execute({ window: '0xbad', keys: 'CTRL + R' }), /The desktop said: warning/);
   CLIENTS.pop();
+});
+
+test('acting in windows needs the "Allow File Edits & Commands" switch; looking does not', async () => {
+  const d = fakeDesktop({ allow: false });
+  await assert.rejects(d.tools.window_type.execute({ window: '0xaa1', text: 'git push -f', enter: true }), /switched off/);
+  await assert.rejects(d.tools.window_keys.execute({ window: '0xbb2', keys: 'CTRL + R' }), /switched off/);
+  assert.match(await d.tools.desktop_windows.execute({}), /Screens/);
+  assert.deepEqual(d.acted(), [], 'nothing sent');
+});
+
+test('what runs a typed line in a terminal is held to the command check: Ctrl+M, Ctrl+J, Ctrl+O, other Enters, control characters', async () => {
+  const d = fakeDesktop();
+  for (const keys of ['CTRL + M', 'CTRL + j', 'CTRL + O', 'ISO_Enter', 'Linefeed', 'KP_Enter', 'CTRL + SHIFT + M']) {
+    await assert.rejects(d.tools.window_keys.execute({ window: '0xaa1', keys }), /runs what is typed there/, keys);
+  }
+  for (const text of ['rm -rf ~\x0f', 'ls\x03', 'a\x1b[200~b', 'x\x7f']) {
+    await assert.rejects(d.tools.window_type.execute({ window: '0xaa1', text }), /control characters/, JSON.stringify(text));
+  }
+  assert.deepEqual(d.acted(), [], 'nothing sent');
+  // Elsewhere those keys are ordinary.
+  await d.tools.window_keys.execute({ window: '0xbb2', keys: 'CTRL + M' });
+});
+
+test('a terminal is told by its class, its first class or the program behind it', async () => {
+  CLIENTS.push({ address: '0xff6', mapped: true, class: 'dropterm', initialClass: 'dropterm', title: 'zsh', pid: 777, workspace: { id: 1, name: '1' }, monitor: 0 });
+  try {
+    const d = fakeDesktop({ yes: false, programs: { 777: 'kitty' } });
+    await assert.rejects(d.tools.window_type.execute({ window: '0xff6', text: 'rm -rf ~', enter: true }), /won't run that/);
+    await assert.rejects(d.tools.window_keys.execute({ window: '0xff6', keys: 'CTRL + M' }), /runs what is typed/);
+    assert.deepEqual(d.acted(), []);
+    const tilix = fakeDesktop({ yes: false });
+    CLIENTS.at(-1).class = 'com.gexperts.Tilix';
+    await assert.rejects(tilix.tools.window_type.execute({ window: '0xff6', text: 'rm notes.txt', enter: true }), /said no/);
+  } finally { CLIENTS.pop(); }
+});
+
+test('text goes only into the window that took the keyboard', async () => {
+  const d = fakeDesktop({ focusTakes: false });
+  await assert.rejects(d.tools.window_type.execute({ window: '0xbb2', text: 'hola', enter: true }), /didn't take the keyboard/);
+  assert.equal(d.acted().filter(([f]) => f === 'wtype').length, 0, 'nothing typed');
+  assert.deepEqual(d.acted().at(-1), ['hyprctl', 'eval', 'hl.dispatch(hl.dsp.focus({ window = "address:0xcc3" }))'], 'and the user is put back');
 });

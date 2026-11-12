@@ -26,7 +26,7 @@ import {
 import { foldInput, foldPrompt, memoryInput, memoryPrompt, oneShot, parseBrain, transcript } from './brain.mjs';
 import { EMOTES, EchoFilter, ReplyStream } from './reply.mjs';
 import { downloadModel, isReady, modelDir, sizeLabel, totalBytes } from './voicemodel.mjs';
-import { createTools, expand, fitImage, imageBlock, winOpen } from './tools.mjs';
+import { actionsOff as ACTIONS_OFF, createTools, expand, fitImage, imageBlock, winOpen } from './tools.mjs';
 import { describeMarks } from './marks.mjs';
 import { faviconFor } from './draw.mjs';
 import { QUESTIONS, openNote, answerTurn, wantsSkip, endsChat, splitTurn, plain, stripNote, tourBeats, goalFrom, showcaseBeats } from './intro.mjs';
@@ -818,7 +818,7 @@ const answeringRoute = () => {
 tools.push(...usageTools({ file: USAGE_FILE, route: answeringRoute }));
 // Hyprland with a Lua config (the glyph dotfiles): the user's own shortcuts, read from keybinds.lua and used by voice.
 // and the screens, workspaces and windows, acting in any of them without the user going there (desktop.mjs).
-if (onHyprland(process.platform)) tools.push(...shortcutTools(), ...desktopTools({ ask }));
+if (onHyprland(process.platform)) tools.push(...shortcutTools({ allowActions: () => config.allowActions, actionsOff: ACTIONS_OFF }), ...desktopTools({ ask, allowActions: () => config.allowActions, actionsOff: ACTIONS_OFF }));
 function logUsage(rec) {
   const day = new Date().toDateString();
   if (usageToday.day !== day) Object.assign(usageToday, { day, requests: 0, tokens: 0 });

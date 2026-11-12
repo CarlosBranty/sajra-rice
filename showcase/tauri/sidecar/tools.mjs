@@ -120,7 +120,7 @@ async function openLinuxApp(name) {
   if (r.err?.code === 'ENOENT') return { err: r.err, stdout: '', stderr: `Found ${app.entry.Name}, but this computer has neither gio nor gtk-launch to start it.` };
   return { ...r, app };
 }
-const actionsOff = `File edits and commands are switched off. Tell the user to turn on "Allow File Edits & Commands" in the ${process.platform === 'darwin' ? 'menu bar' : 'system tray'} menu if they want this.`;
+export const actionsOff = `File edits and commands are switched off. Tell the user to turn on "Allow File Edits & Commands" in the ${process.platform === 'darwin' ? 'menu bar' : 'system tray'} menu if they want this.`;
 
 // "hands": the bundled helper that captures one window or area and reads/controls other apps (hands/main.swift on
 // macOS, hands-win on Windows; same commands and JSON). A .mjs one (a test's fake) runs on this Node.

@@ -12,24 +12,32 @@
 // Reads are `hyprctl -j` (clients, monitors, workspaces, activewindow); the parsing and planning are pure
 // (test/desktop.test.mjs).
 import { execFile } from 'node:child_process';
+import { readFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { z } from 'zod';
 import { ASK, BLOCK, classifyCommand, isYes } from './safety.mjs';
 
-const TERMINAL = /^(kitty|foot|footclient|alacritty|wezterm|org\.wezfurlong\.wezterm|ghostty|com\.mitchellh\.ghostty|konsole|org\.kde\.konsole|xterm|org\.gnome\.(console|terminal)|gnome-terminal(-server)?|tilix|terminator)$/i;
-/** Windows nothing is ever typed or pressed into: password managers, unlock and permission prompts. */
-const HANDS_OFF = /keepass|bitwarden|1password|pinentry|gcr-prompter|polkit|seahorse|kwallet|proton.?pass|enpass|hyprlock|swaylock/i;
+// A terminal, by its window class or initial class, or by the program behind the window (a kitty started with
+// `--class dropterm` is still kitty).
+const TERMINAL = /^(kitty|foot|footclient|alacritty|wezterm|wezterm-gui|org\.wezfurlong\.wezterm|ghostty|com\.mitchellh\.ghostty|konsole|org\.kde\.konsole|xterm|uxterm|st|st-256color|urxvt|rxvt|org\.gnome\.(console|terminal|ptyxis)|kgx|ptyxis|gnome-terminal(-server)?|tilix|com\.gexperts\.tilix|terminator|xfce4-terminal|lxterminal|qterminal|sakura|terminology|rio|contour|cool-retro-term|blackbox|com\.raggesilver\.blackbox|warp|dev\.warp\.warp)$/i;
+/** Windows nothing is ever typed or pressed into: password managers, unlock and permission prompts, Roamies itself. */
+const HANDS_OFF = /keepass|bitwarden|1password|pinentry|gcr-prompter|polkit|seahorse|kwallet|proton.?pass|enpass|hyprlock|swaylock|roamies/i;
+/** In a terminal these run what is typed, as Enter does. */
+const SUBMITS = (c) => /^(return|enter|kp_enter|iso_enter|linefeed)$/i.test(c.key) || (/\bCTRL\b/.test(c.mods) && /^[mjo]$/i.test(c.key));
+/** Control characters other than tab and line ends: a terminal acts on them (Ctrl-O runs the line in bash). */
+const CONTROL = /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/;
 const ADDRESS = /^0x[0-9a-f]{1,16}$/i;
 const MODS = new Set(['SUPER', 'CTRL', 'ALT', 'SHIFT']);
 
-export const isTerminal = (w) => TERMINAL.test(w?.class ?? '');
+const comm = (pid) => { try { return readFileSync(`/proc/${pid}/comm`, 'utf8').trim(); } catch { return ''; } };
+export const isTerminal = (w) => [w?.class, w?.initialClass, w?.program].some((n) => TERMINAL.test(n ?? ''));
 export const handsOff = (w) => HANDS_OFF.test(`${w?.class ?? ''} ${w?.initialClass ?? ''}`);
 /** The laptop's own panel, by its connector (eDP, LVDS, DSI). */
 export const isLaptop = (m) => /^(eDP|LVDS|DSI)/i.test(m?.name ?? '');
 
 /** hyprctl's JSON → { screens, windows }: screens left to right, numbered from 1; windows with where they are. */
-export function desktopModel({ monitors = [], workspaces = [], clients = [], active = null }) {
+export function desktopModel({ monitors = [], workspaces = [], clients = [], active = null, programOf = comm }) {
   const screens = [...monitors].sort((a, b) => a.x - b.x || a.y - b.y).map((m, i) => ({
     n: i + 1, name: m.name, laptop: isLaptop(m), focused: !!m.focused, description: m.description ?? '',
     width: Math.round(m.width / (m.scale || 1)), height: Math.round(m.height / (m.scale || 1)),
@@ -41,7 +49,7 @@ export function desktopModel({ monitors = [], workspaces = [], clients = [], act
     const ws = c.workspace?.name ?? String(c.workspace?.id ?? '');
     const screen = screenOf(wsMonitor.get(ws)) ?? screens.find((s) => monitors.find((m) => m.name === s.name)?.id === c.monitor);
     const shown = !!screen && (screen.workspace === ws || screen.special === ws);
-    return { id: c.address, class: c.class ?? '', initialClass: c.initialClass ?? '', title: c.title ?? '', pid: c.pid, workspace: ws, screen: screen?.n ?? null, shown, focused: c.address === active?.address };
+    return { id: c.address, class: c.class ?? '', initialClass: c.initialClass ?? '', program: programOf(c.pid), title: c.title ?? '', pid: c.pid, workspace: ws, screen: screen?.n ?? null, shown, focused: c.address === active?.address };
   });
   return { screens, windows };
 }
@@ -107,13 +115,16 @@ const execRun = (file, args, { input, timeout = 5000 } = {}) => new Promise((res
 const hyprRead = async (run, what) => { try { return JSON.parse(await run('hyprctl', ['-j', what])); } catch { return null; } };
 
 /** run(file, args, { input }): a program's stdout (a test's fake); ask: the sidecar's yes/no bubble; home: for the
- *  command rules; wait(ms): a pause (focus has to land before keys). */
-export function desktopTools({ run = execRun, ask, home = os.homedir(), wait = (ms) => new Promise((r) => setTimeout(r, ms)) } = {}) {
+ *  command rules; wait(ms): a pause (focus has to land before keys); allowActions(): the "Allow File Edits &
+ *  Commands" switch, which acting in windows needs as run_command does; actionsOff: what to say when it's off;
+ *  programOf(pid): the program behind a window (/proc). */
+export function desktopTools({ run = execRun, ask, home = os.homedir(), wait = (ms) => new Promise((r) => setTimeout(r, ms)), allowActions = () => false, actionsOff = 'Acting in other windows is switched off.', programOf = comm } = {}) {
   const look = async () => {
     const [monitors, workspaces, clients, active] = await Promise.all(['monitors', 'workspaces', 'clients', 'activewindow'].map((w) => hyprRead(run, w)));
     if (!monitors || !clients) throw new Error("The desktop didn't answer (this works on Hyprland).");
-    return desktopModel({ monitors, workspaces: workspaces ?? [], clients, active });
+    return desktopModel({ monitors, workspaces: workspaces ?? [], clients, active, programOf });
   };
+  const allowed = () => { if (!allowActions()) throw new Error(actionsOff); };
   const find = async (id) => {
     if (!ADDRESS.test(id)) throw new Error(`${id} isn't a window id: desktop_windows lists them (0x…).`);
     const model = await look();
@@ -154,10 +165,11 @@ export function desktopTools({ run = execRun, ask, home = os.homedir(), wait = (
       description: 'Send a key combination to one window, wherever it is, without bringing it up or moving anything on screen (e.g. "CTRL + R" to reload a browser tab, "CTRL + C" to stop a terminal\'s command, "CTRL + SHIFT + T"). Modifiers: SUPER, CTRL, ALT, SHIFT. Not for typing text (window_type) or Enter in a terminal (window_type with enter).',
       parameters: z.object({ window: z.string().min(3).max(20).describe('its id from desktop_windows'), keys: z.string().min(1).max(40) }),
       execute: async ({ window, keys }) => {
+        allowed();
         const combo = parseCombo(keys);
         if (!combo) throw new Error(`"${keys}" isn't modifiers and one key, like "CTRL + R".`);
         const { w } = await find(window);
-        if (isTerminal(w) && /^(return|enter|kp_enter)$/i.test(combo.key)) throw new Error('Enter in a terminal runs what is typed there: use window_type with enter, so the command is checked.');
+        if (isTerminal(w) && SUBMITS(combo)) throw new Error(`${keys} in a terminal runs what is typed there, as Enter does: use window_type with enter, so the command is checked.`);
         await hypr(shortcutLua(w.id, combo));
         return `Sent ${keys} to ${where(w)}.`;
       },
@@ -167,6 +179,8 @@ export function desktopTools({ run = execRun, ask, home = os.homedir(), wait = (
       description: "Type text into one window, wherever it is, and press Enter after it if asked (enter: true; in a terminal that runs it as a command, checked like run_command and asked first when risky). A kitty terminal gets it in the background, nothing moves; any other window has to be focused for a moment (Wayland), and the user is put back where they were right after. Type into a field that already has the cursor in that window; window_keys can move it first.",
       parameters: z.object({ window: z.string().min(3).max(20).describe('its id from desktop_windows'), text: z.string().min(1).max(4000), enter: z.boolean().optional() }),
       execute: async ({ window, text, enter = false }, ctx) => {
+        allowed();
+        if (CONTROL.test(text)) throw new Error('The text has control characters; type plain text (a key combination goes with window_keys).');
         const { w, model } = await find(window);
         const runs = isTerminal(w) && (enter || /[\r\n]/.test(text));
         if (runs) await allowCommand(w, text.replace(/[\r\n]+$/, ''), ctx?.signal);
@@ -184,6 +198,9 @@ export function desktopTools({ run = execRun, ask, home = os.homedir(), wait = (
         await hypr(focusWindowLua(w.id));
         await wait(120);
         try {
+          // Only into that window: if the keyboard didn't go there, the text would land wherever it is.
+          const now = await hyprRead(run, 'activewindow');
+          if (now?.address?.toLowerCase() !== w.id.toLowerCase()) throw new Error(`${w.class} didn't take the keyboard, so nothing was typed.`);
           await run('wtype', ['--', text]);
           if (enter) await run('wtype', ['-k', 'Return']);
         } finally {

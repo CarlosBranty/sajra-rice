@@ -163,7 +163,9 @@ const runFile = (file, args) => new Promise((resolve, reject) => {
 });
 
 /** read(): { binds: [keybinds.lua, user.lua], vars: [variables.lua, user.lua] } or null; run(file, args): runs a program (no shell). */
-export function shortcutTools({ read = readConfig, run = runFile } = {}) {
+/** allowActions(): the "Allow File Edits & Commands" switch, which using a shortcut needs (it acts in other apps);
+ *  actionsOff: what to say when it's off. */
+export function shortcutTools({ read = readConfig, run = runFile, allowActions = () => false, actionsOff = 'Using desktop shortcuts is switched off.' } = {}) {
   const usable = async () => {
     const c = await read();
     return c ? parseBinds(c.binds, c.vars).filter((b) => checkShortcut(b).level !== BLOCK) : null;
@@ -186,6 +188,7 @@ export function shortcutTools({ read = readConfig, run = runFile } = {}) {
       description: "Use one of the user's desktop shortcuts (from desktop_shortcuts) for them: opens or closes what that shortcut does. Pass its keys exactly as listed, e.g. \"SUPER + A\".",
       parameters: z.object({ keys: z.string().min(1).max(60) }),
       execute: async ({ keys }) => {
+        if (!allowActions()) throw new Error(actionsOff);
         const c = await read();
         const want = normKeys(keys).toUpperCase();
         const b = c && parseBinds(c.binds, c.vars).find((x) => x.keys.toUpperCase() === want);

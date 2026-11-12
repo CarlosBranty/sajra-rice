@@ -117,7 +117,7 @@ test("a bind's own actions run in the compositor's Lua, with the config's vars a
 test('the tools list the shortcuts and use one: run, failed or refused', async () => {
   const ran = [];
   const tools = shortcutTools({
-    read: async () => ({ binds: BINDS, vars: [VARS, USER] }),
+    read: async () => ({ binds: BINDS, vars: [VARS, USER] }), allowActions: () => true,
     run: async (file, args) => { ran.push([file, ...args]); return args[1].includes('nope') ? 'Error: [string "…"]:4: attempt to call a nil value' : 'ok'; },
   });
   const [list, use] = tools;
@@ -133,13 +133,16 @@ test('the tools list the shortcuts and use one: run, failed or refused', async (
   assert.deepEqual(ran.pop(), ['hyprctl', 'eval', luaRun(['fn.toggle_special("music")'])]);
   await use.execute({ keys: 'SUPER + 3' });
   assert.deepEqual(ran.pop(), ['hyprctl', 'eval', luaRun(['(function(i) return fn.wsaction("focus", "", i) end)(3)'])]);
-  const failing = shortcutTools({ read: async () => ({ binds: 'hl.bind("SUPER + J", nope())', vars: [] }), run: async (f, a) => { ran.push([f, ...a]); return 'Error: [string "…"]:4: attempt to call a nil value'; } })[1];
+  const failing = shortcutTools({ read: async () => ({ binds: 'hl.bind("SUPER + J", nope())', vars: [] }), allowActions: () => true, run: async (f, a) => { ran.push([f, ...a]); return 'Error: [string "…"]:4: attempt to call a nil value'; } })[1];
   await assert.rejects(failing.execute({ keys: 'SUPER + J' }), /SUPER \+ J didn't run: Error/, 'what the compositor said goes back');
   ran.pop();
   await assert.rejects(use.execute({ keys: 'SUPER + SHIFT + U' }), /can't be used/);
   await assert.rejects(use.execute({ keys: 'SUPER + J' }), /No shortcut SUPER \+ J/);
   assert.equal(ran.length, 0, 'nothing run for a refused or unknown shortcut');
 
+  const off = shortcutTools({ read: async () => ({ binds: BINDS, vars: [VARS, USER] }), run: async (f, a) => { ran.push([f, ...a]); } })[1];
+  await assert.rejects(off.execute({ keys: 'SUPER + A' }), /switched off/, 'the "Allow File Edits & Commands" switch is off by default');
+  assert.equal(ran.length, 0);
   const none = shortcutTools({ read: async () => null, run: async () => {} });
   assert.match(await none[0].execute({}), /No Hyprland Lua keybinds/);
 });
