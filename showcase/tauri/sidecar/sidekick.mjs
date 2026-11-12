@@ -30,7 +30,7 @@ import { actionsOff as ACTIONS_OFF, createTools, expand, fitImage, imageBlock, w
 import { describeMarks } from './marks.mjs';
 import { faviconFor } from './draw.mjs';
 import { QUESTIONS, openNote, answerTurn, wantsSkip, endsChat, splitTurn, plain, stripNote, tourBeats, goalFrom, showcaseBeats } from './intro.mjs';
-import { SpeechText, CueFilter, VOICE_CUES, endsWithQuestion, spokenChoice, LANGUAGES, languageOf, languageLine, DUCK_LEVELS, duckOf, duckLevel, WAKE_MIN, WAKE_MAX, wakePhrase, wakeOf, wakeFor, THEMES, themeOf } from './speech.mjs';
+import { SpeechText, CueFilter, VOICE_CUES, endsWithQuestion, spokenChoice, LANGUAGES, languageOf, languageLine, DUCK_LEVELS, duckOf, duckLevel, WAKE_MIN, WAKE_MAX, wakePhrase, wakeOf, wakeFor, THEMES, themeOf, bargeOf, askLanguage, relayVoice, createVoiceAsk } from './speech.mjs';
 import { createSpeaker } from './speaker.mjs';
 import { createLatency } from './latency.mjs';
 import { LOCAL_VOICE, createLocalEngine, localModel } from './localvoice.mjs';
@@ -104,6 +104,7 @@ const DEFAULTS = {
   duckOthers: false, duckLevel: 30, // Linux: other apps' sound goes down to this percentage while it listens and speaks (speech.mjs duckOf)
   micDevice: '', speakerDevice: '', micGain: 100, // Linux: micGain, how much louder Hanami hears the microphone (%); the microphone and speaker Hanami uses ('' = the system's default; audiodev.mjs)
   wakeWord: false, wakePhrase: '', // Linux: saying the phrase starts listening, with no key; the microphone stays on for it (speech.mjs wakeOf)
+  bargeIn: true, // Linux: talking over a reply stops it, only with an echo-cancelled microphone (speech.mjs bargeOf)
   penMouse: true, // Linux on a layer surface: while it listens, the mouse draws on the screen (platform.mjs mousePen)
   theme: 'classic', // the interface's colours: 'classic', or 'system' to follow the desktop's light or dark and its colours (speech.mjs themeOf)
   // Money: the mail accounts bank notifications are read from ({ provider, email }; their app passwords are only in the
@@ -882,8 +883,9 @@ async function prompt(text, image = null, note = '', byVoice = false) {
   agent.setSignal(controller.signal);
   ui({ kind: 'agent', e: { type: 'start' } });
   // Voice: the socket opens now, while the model thinks; sentences are spoken as soon as each is ready.
-  const voice = VOICE_ON() ? speech.start() : (speech.stop(), null);
-  turnVoice = voice;
+  // A relay: a yes/no asked mid-reply is said on it, and the reply goes on on a fresh voice after (speech.mjs).
+  const voice = VOICE_ON() ? relayVoice(() => speech.start()) : (speech.stop(), null);
+  turnVoice = voice; turnByVoice = byVoice; turnText = text;
   if (voice && intro) guideVoices.add(voice.id);
   const lt = byVoice ? asked : null;
   if (byVoice) asked = null;
@@ -1007,7 +1009,7 @@ async function prompt(text, image = null, note = '', byVoice = false) {
     }
   } finally {
     watch?.stop();
-    busy = false; turnVoice = null;
+    busy = false; turnVoice = null; turnByVoice = false;
     // The summary waits for the page to say the first audio played; a reply never spoken has none to wait for.
     if (lt) setTimeout(() => lt.done(), voice ? 20_000 : 0);
     // A tool cut off by Stop never reports back: end its tag too, or the Sidekick kept showing it ("looking at
@@ -1034,6 +1036,25 @@ let askSeq = 0;
 const pending = new Map();
 // The yes/no questions open now (Allow / Don't allow), which a spoken answer can close (onVoice, spokenChoice).
 const choiceAsks = new Map();
+// A yes/no in a request asked by voice, or while replies are spoken, is also said out loud, and the mic opens for the
+// answer once it has been heard (host.js ask_listen); unclear, it is asked once more, then the buttons are left. Never
+// for the password or fingerprint prompt (authorize), which isn't an ask.
+let turnByVoice = false, turnText = '';
+const voiceAskOn = () => VOICE_OK && !!config.voice && voiceReady() && !intro && !onboarding && (VOICE_ON() || turnByVoice);
+const voiceAsk = createVoiceAsk({
+  speak: (text) => {
+    const id = busy && typeof turnVoice?.interject === 'function' ? turnVoice.interject(text) : null;
+    if (id || !VOICE_ON()) return id;
+    const v = speech.start();
+    if (!v) return null;
+    v.say(text); v.end();
+    return v.id;
+  },
+  show: (id, speechId) => ui({ kind: 'ask_listen', id, speech: speechId }),
+  listen: () => send({ type: 'listen' }),
+  cancel: () => send({ type: 'listen_cancel' }),
+  log: logLine,
+});
 function ask(opts, signal) {
   const id = `a${++askSeq}`;
   const to = onboarding ? ob : ui;
@@ -1041,10 +1062,11 @@ function ask(opts, signal) {
   // The setup guide has no buttons: its answer box takes a typed y.
   if (onboarding && opts.choices) opts = { ...opts, placeholder: `${opts.placeholder} Type y to allow.` };
   to({ kind: 'ask', id, ...opts });
+  if (opts.choices?.length === 2 && voiceAskOn()) voiceAsk.open(id, opts.prompt || opts.placeholder || '', askLanguage(languageOf(config.language), turnText));
   return new Promise((resolve) => {
     pending.set(id, resolve);
     // Another route finished first (e.g. the OAuth callback server): close the input bubble.
-    signal?.addEventListener('abort', () => { pending.delete(id); choiceAsks.delete(id); to({ kind: 'cancel_ask', id }); resolve(null); }, { once: true });
+    signal?.addEventListener('abort', () => { pending.delete(id); choiceAsks.delete(id); voiceAsk.done(id); to({ kind: 'cancel_ask', id }); resolve(null); }, { once: true });
   });
 }
 
@@ -1428,6 +1450,8 @@ function panelState() {
     language: languageOf(config.language), languages: LANGUAGES,
     duck: LINUX ? { ...duckOf(config), levels: DUCK_LEVELS } : null,
     wake: LINUX && VOICE_OK ? wakeOf(config) : null,
+    // Barge-in (menu id 'bargein'): on only with an echo-cancelled microphone; aec says whether the one picked is.
+    barge: LINUX && VOICE_OK ? bargeOf(config, deviceName(config.micDevice)) : null,
     audio: LINUX && audioDevices ? { ...audioDevices, mic: deviceName(config.micDevice), speaker: deviceName(config.speakerDevice), gain: micGain(config), gains: MIC_GAINS } : null,
     pen: PEN_MOUSE ? { on: penOn() } : null,
     voice: VOICE_OK ? {
@@ -1446,7 +1470,7 @@ function panelState() {
 
 // duck (Linux): the percentage other apps' sound is lowered to while it listens and speaks, 0 when that's off.
 // wake (Linux): the phrase the voice helper listens for to start a take, '' when the wake word is off.
-const voiceConfig = () => send({ type: 'voice_config', enabled: VOICE_OK && config.voice && voiceReady(), mute: config.muteWhileTalking !== false, sound: !!config.sound, ...(NEEDS_MODEL ? { model: MODEL_DIR } : {}), ...(LINUX ? { duck: duckLevel(config), wake: wakeFor(config), mic: deviceName(config.micDevice), speaker: deviceName(config.speakerDevice), micGain: micGain(config) } : {}) });
+const voiceConfig = () => send({ type: 'voice_config', enabled: VOICE_OK && config.voice && voiceReady(), mute: config.muteWhileTalking !== false, sound: !!config.sound, ...(NEEDS_MODEL ? { model: MODEL_DIR } : {}), ...(LINUX ? { duck: duckLevel(config), wake: wakeFor(config), mic: deviceName(config.micDevice), speaker: deviceName(config.speakerDevice), micGain: micGain(config), barge: config.bargeIn !== false } : {}) });
 // Linux: the microphones and speakers there are, for the Voice page; asked again now and then (one plugged in or out).
 async function refreshAudio() {
   if (!LINUX) return;
@@ -1514,9 +1538,9 @@ function answerByVoice(text) {
   const [id, { choices, to }] = [...choiceAsks].at(-1);
   const pick = spokenChoice(text);
   logLine('ask_by_voice', { pick: pick ?? 'unclear', chars: text.length });
-  if (!pick) return;
+  if (!pick) { voiceAsk.unclear(id); return; }
   const resolve = pending.get(id);
-  pending.delete(id); choiceAsks.delete(id);
+  pending.delete(id); choiceAsks.delete(id); voiceAsk.done(id, { byVoice: true });
   to({ kind: 'cancel_ask', id });
   resolve?.(pick === 'yes' ? choices[0] : choices[1]);
 }
@@ -1532,8 +1556,11 @@ function onVoice(m) {
     if (choiceAsks.size) return answerByVoice(m.text.trim());
     onSpoken(m.text.trim(), m.area);
   }
-  else if (m.type === 'voice_state' && m.state === 'idle' && snap?.waitingVoice) snap.waitingVoice = false;
+  else if (m.type === 'voice_state' && m.state === 'idle') { voiceAsk.heard(); if (snap?.waitingVoice) snap.waitingVoice = false; }
+  else if (m.type === 'voice_barge') logLine('barge', {});
   else if (m.type === 'voice_error') {
+    // A yes/no said out loud and nothing heard for it: asked once more, else the buttons are left (nothing said over them).
+    if (m.code === 'nothing_heard' && voiceAsk.current) { voiceAsk.unclear(); return; }
     if (m.code === 'nothing_heard' && snap) { snap.waitingVoice = false; return; }
     if (m.code === 'model_missing') startVoiceDownload();
     else if (m.code === 'permission' && !MAC) {
@@ -1653,6 +1680,8 @@ async function onMenu(id) {
   else if (id.startsWith('speaker:') && LINUX) { config.speakerDevice = deviceName(id.slice(8)); saveConfig(); voiceConfig(); menu(); }
   else if (id === 'duck' && LINUX) { config.duckOthers = !duckOf(config).on; saveConfig(); voiceConfig(); menu(); }
   else if (id.startsWith('ducklevel:') && LINUX && DUCK_LEVELS.includes(Number(id.slice(10)))) { config.duckLevel = Number(id.slice(10)); saveConfig(); voiceConfig(); menu(); }
+  // Only with an echo-cancelled microphone: elsewhere the switch is off and can't be turned on (the Devices tab).
+  else if (id === 'bargein' && LINUX) { if (bargeOf(config, deviceName(config.micDevice)).aec) { config.bargeIn = config.bargeIn === false; saveConfig(); voiceConfig(); menu(); } }
   else if (id === 'wake' && LINUX) { config.wakeWord = !wakeOf(config).on; saveConfig(); voiceConfig(); menu(); }
   else if (id === 'pen' && PEN_MOUSE) { config.penMouse = !penOn(); saveConfig(); ui({ kind: 'pen', on: penOn() }); menu(); }
   else if (id === 'voicedl') startVoiceDownload();
@@ -1902,7 +1931,7 @@ createInterface({ input: process.stdin }).on('line', (line) => {
     if (r.view && panelOpen) send({ type: 'panel', msg: { kind: 'money', view: r.view } });
     if (r.text && (m.op !== 'list' || !r.ok)) panelNote(r.text, !r.ok);
   });
-  else if (m.type === 'answer') { pending.get(m.id)?.(m.text ?? null); pending.delete(m.id); choiceAsks.delete(m.id); }
+  else if (m.type === 'answer') { pending.get(m.id)?.(m.text ?? null); pending.delete(m.id); choiceAsks.delete(m.id); voiceAsk.done(m.id); }
   // Only the shell sends these (pages can't: main.rs page_may_send): the prompt is up, and how it went.
   else if (m.type === 'auth_open' || m.type === 'auth_result') authorize.heard(m);
   else if (m.type === 'ui_ready') {
@@ -1923,7 +1952,9 @@ createInterface({ input: process.stdin }).on('line', (line) => {
     logLine('auto_listen', { turn: m.turn });
     send({ type: 'listen' });
   }
-  else if (m.type === 'listen_cancel') { autoTurn = null; send({ type: 'listen_cancel' }); } // Esc while the mic is on
+  else if (m.type === 'listen_cancel') { autoTurn = null; voiceAsk.done(voiceAsk.current, { byVoice: true }); send({ type: 'listen_cancel' }); } // Esc while the mic is on
+  // The overlay heard a yes/no said out loud: the mic opens for its answer, if it is still open.
+  else if (m.type === 'ask_listen') { if (choiceAsks.has(String(m.id))) voiceAsk.ready(String(m.id)); }
   // A link clicked on the research card: web and mail links only.
   else if (m.type === 'open_link') { const v = checkLink(m.url); if (v.level === SAFE) openUrl(String(m.url)); else console.error('open_link blocked:', v.reason); }
   else if (m.type === 'list_toggle') toggleItem(String(m.id)).catch((e) => console.error('list', e));

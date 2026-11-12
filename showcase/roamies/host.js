@@ -316,6 +316,26 @@
     autoListen = me;
   }
 
+  // A yes/no said out loud (sidecar voiceAsk): once the voice has said it, and a short pause, the sidecar is told so
+  // and opens the mic for the answer. The question going first (a click, a typed key, Esc) drops it.
+  let askListen = null;
+  function waitThenAnswer(m) {
+    if (askListen) clearInterval(askListen.t);
+    const t0 = Date.now(), me = { quietAt: 0 };
+    me.t = setInterval(() => {
+      if (askListen !== me) return;
+      const drop = () => { clearInterval(me.t); askListen = null; };
+      if (Date.now() - t0 > 30_000 || ask?.id !== m.id || !ask.choices) return drop();
+      const done = Roamie.voiceOut ? Roamie.voiceOut.finished(m.speech ?? null) : true;
+      if (!done) { me.quietAt = 0; return; }
+      me.quietAt ||= Date.now();
+      if (Date.now() - me.quietAt < 300) return;
+      drop();
+      send({ type: 'ask_listen', id: m.id });
+    }, 100);
+    askListen = me;
+  }
+
   async function playTools() {
     if (current) return;
     while (jobs.length) {
@@ -593,6 +613,7 @@
     }
     if (m.kind === 'say') { if (!ask) getAgent().say(m.text, { mood: m.mood ?? null }); }
     else if (m.kind === 'ask') openAsk(m);
+    else if (m.kind === 'ask_listen') waitThenAnswer(m);
     else if (m.kind === 'auth') openAuth(m);
     else if (m.kind === 'auth_state') { if (ask?.auth && ask.auth === m.id) ask.h.state(m); }
     else if (m.kind === 'auth_end') {

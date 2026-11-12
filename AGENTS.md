@@ -114,6 +114,12 @@ through `classifyCommand` like run_command (refused, or asked first); password m
 A yes/no question (Allow / Don't allow) can be answered by voice: while one is open a take doesn't interrupt the
 request or close the bubble (host.js), and its words go to `answerByVoice` (sidekick.mjs, `speech.mjs` `spokenChoice`:
 "sí", "dale", "permite"… allow; "no", "cancela"… decline; anything else leaves the question open).
+In a request asked by voice, or while replies are spoken, the yes/no is also said out loud (`speech.mjs` `askLine`: the
+question, then "¿Lo permito?" / "Should I allow it?" in the reply language; mid-reply on the reply's own voice,
+`relayVoice`, which goes on on a fresh one after), and once the overlay has played it (host.js `waitThenAnswer`,
+`ask_listen`) the mic opens hands-free for the answer (`createVoiceAsk`). Unclear or nothing heard: "¿Sí o no?" once,
+then only the buttons. A click or key answers at any time and drops the listening. The password/fingerprint prompt
+(`authorize`) is never said nor answered by voice.
 Native panel (Linux, `src-tauri/src/panel_socket.rs`): a client such as the glyph dotfiles' Quickshell panel connects to
 `$XDG_RUNTIME_DIR/roamies/panel.sock` (in auth.rs's private 0700 folder, refused if it isn't private; the socket 0600, a
 stale one removed at start). One JSON object per line both ways (other lines ignored; a line over 1 MiB drops the
@@ -141,6 +147,18 @@ restarts it), and Roamies' own playback streams are moved to the speaker with `p
 changes and whenever a reply starts playing (`linux.rs` `set_speaker`, `route_own`). The microphone boost (100–400 %)
 is applied by the helper to what it hears only (`voice-win/src/audio.rs` `amplify`, the `gain` command), not to the
 microphone's level for other apps.
+Barge-in (Linux; Talking tab "Interrupt me by talking", config `bargeIn`, panel state `barge: { on, aec }`, menu id
+`bargein`): talking over a reply stops it, only with an echo-cancelled microphone picked (a name with `echo-cancel` or
+`aec`, e.g. `hanami_aec_source`; `voice.rs` `echo_cancelled`, `speech.mjs` `echoCancelled`), else the switch is off and
+disabled. The shell then sends the helper `{"cmd":"barge","on":true}` and `speaking`; while a reply plays the helper keeps
+the mic on and starts a hands-free take from where the voice began (emitting `{"type":"barge"}`) only after 0.8 s of the
+reply (the canceller converging), ≥ 0.5 s of VAD voice whose level is ≥ 10 dB over the echo floor (the loudest quarter
+of the last 3 s outside such voice, never under -40 dBFS) and a Parakeet read of ≥ 2 words (`main.rs` `barge_vad`). The
+take's "listening" stops the reply as the talk keys do. `roamies-voice --bench-listen <wav> --barge <s>` plays a WAV as
+what the echo-cancelled mic hears during a reply. The echo-cancelled microphone is PipeWire's module-echo-cancel (WebRTC,
+monitor mode, so nothing is rerouted), set up by the user in `~/.config/pipewire/pipewire.conf.d/hanami-echo-cancel.conf`
+(source `hanami_aec_source`, "Microphone (echo cancelled)"; remove the file and restart pipewire to undo); some of the
+reply's echo is left in it, about 20 dB under the raw mic once converged.
 Usage (`sidecar/usage.mjs`): the agent's `token_usage` tool sums `~/.gg/sidekick/usage.jsonl` (one line per request:
 provider, route, model, token counts, never what was said) for today, yesterday, the last 7 days, this month or all,
 and says how it answers now: Anthropic signed in with Claude (Claude Code, the user's subscription), another

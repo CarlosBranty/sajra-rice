@@ -18,6 +18,9 @@
 // read, about once a second at most. When the phrase is in what was read a hands-free take starts right after it, as
 // {"cmd":"toggle"} starts one. {"cmd":"speaking","on":true} (a spoken reply is playing) stops that meanwhile, and for a
 // moment after; with the VAD, a voice in the FOLLOW_UP seconds after that is the next question, without the phrase.
+// Barge-in (Linux, {"cmd":"barge","on":true}, sent only when the microphone is echo-cancelled): while a reply plays the
+// microphone stays on, and a voice that is clearly the user's, not what is left of the reply's echo (see barge_vad),
+// emits {"type":"barge"} and starts a hands-free take from where that voice began. Off, a reply is never listened to.
 //
 // roamies-voice --model <dir> [--chord control,option]   normal use (Roamies starts it)
 // roamies-voice --perms                                   prints {"type":"perms","mic":…}
@@ -26,11 +29,13 @@
 // roamies-voice --model <dir> --test-audio <wav>          dev: a file stands in for the mic ({"cmd":"listen"} starts;
 //                                                         after {"cmd":"wake",…} it plays once, to say the phrase)
 // roamies-voice --speak <voice.onnx> [--speaker 1] [--threads 2]   the local voice: text in, speech out (speak.rs)
-// roamies-voice --model <dir> --bench-listen <wav> [--phrase "hey jarvis"] [--listen] [--no-vad] [--turn <p>]
+// roamies-voice --model <dir> --bench-listen <wav> [--phrase "hey jarvis"] [--listen] [--no-vad] [--turn <p>] [--barge <s>]
 //     dev: what listening costs. The WAV stands in for the mic at real speed while the wake word waits for the phrase
 //     (or, with --listen, as a hands-free take); then prints {"type":"bench"} with the CPU seconds used (Linux), the
 //     speech model's reads (wake_reads, take_reads), when the phrase woke it and how the take ended (seconds from the
 //     start). --no-vad keeps the level gate; --turn answers every end-of-turn check with p after 60 ms (a stand-in).
+//     --barge <s>: barge-in on, and a reply "playing" for the first s seconds of the WAV (the WAV is then what an
+//     echo-cancelled microphone hears: the reply's echo left over, and maybe the user over it); woke_at is the barge.
 
 mod audio;
 mod ink;
@@ -431,6 +436,69 @@ struct Wake {
     cap: f64,
 }
 
+// ---------- barge-in: the user talks over a reply ----------
+// Only with an echo-cancelled microphone (the shell decides, and says {"cmd":"barge"}); even so some of the reply is
+// left in what it hears, so a voice counts as the user's only when every one of these holds:
+// the canceller has had BARGE_SETTLE to converge since the reply started (meanwhile what it hears is only learned as
+// the echo); the VAD hears a voice for BARGE_VOICE (counting windows within BARGE_SOFT of the margin, gaps under
+// BARGE_GAP included); that voice is on average BARGE_MARGIN dB or more over the echo's level (the floor: the level the
+// loudest FLOOR_SHARE of the windows heard in the last FLOOR_SPAN outside such a stretch reach, the settling ones
+// included, never under BARGE_FLOOR); and a read of it has BARGE_WORDS words or more. Then the take keeps the audio
+// from where it began.
+const BARGE_SETTLE: f64 = 0.8;
+const BARGE_VOICE: f64 = 0.5;
+const BARGE_GAP: f64 = 0.3;
+const BARGE_MARGIN: f64 = 10.0;
+const BARGE_SOFT: f64 = 6.0;
+const BARGE_FLOOR: f64 = -40.0;
+const BARGE_WORDS: usize = 2;
+// Where the take begins: where the VAD heard this voice start, when that was at most BARGE_ONSET before its first loud
+// window (it says voice a moment after a voice starts); otherwise (a voice over the echo, which the VAD heard as one
+// already) BARGE_PRE before that window, so little of the reply's last words is in it.
+const BARGE_ONSET: f64 = 0.5;
+const BARGE_PRE: f64 = 0.1;
+// A read with too few words: the next one waits for this much more voice. A stretch this long that never had the
+// words is not the user (music, a video): it is dropped.
+const BARGE_REREAD: f64 = 0.6;
+const BARGE_LONGEST: f64 = 4.0;
+// How much of the microphone is kept while a reply plays.
+const BARGE_KEEP: f64 = 6.0;
+// The floor's span (VAD windows of 32 ms: 3 s) and share: the echo's loud syllables, not swayed by the first syllables
+// of a voice over it (a fast envelope was: it rose with them and the voice was never louder than it), nor by the gaps
+// between sentences.
+const FLOOR_SPAN: usize = 94;
+const FLOOR_SHARE: f64 = 0.25;
+
+#[derive(Clone, Copy, Debug)]
+struct Run {
+    // Where the take would begin (stream samples), where its first loud window began and where the last strong one ended.
+    from: u64,
+    first: u64,
+    end: u64,
+    // Voiced windows, their summed power, consecutive windows without voice, and where the last read reached.
+    n: u32,
+    power: f64,
+    gap: u32,
+    read_to: u64,
+}
+
+#[derive(Default)]
+struct Barge {
+    on: bool,
+    // When the reply started, and the echo's level heard since (dBFS).
+    since: f64,
+    floor: f64,
+    // Where the VAD last heard a voice start (stream samples), while it lasts.
+    onset: Option<u64>,
+    levels: std::collections::VecDeque<f32>,
+    run: Option<Run>,
+    // A read out for a stretch: its take number and where the stretch begins.
+    reading: Option<(u64, u64)>,
+    // This opened the microphone (for the reply), so this closes it after; and when to try again if it failed.
+    opened: bool,
+    retry_at: f64,
+}
+
 // ---------- the talk session (port of the Voice class in voice/main.swift) ----------
 
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -545,6 +613,7 @@ struct Voice {
     final_until: Option<f64>,
     test_audio: Option<PathBuf>,
     wake: Wake,
+    barge: Barge,
     ink: ink::Ink,
     tx: Sender<Ev>,
     t0: Instant,
@@ -597,6 +666,7 @@ impl Voice {
             final_until: None,
             test_audio,
             wake: Wake::default(),
+            barge: Barge::default(),
             ink: ink::Ink::default(),
             tx,
             t0: Instant::now(),
@@ -1107,9 +1177,184 @@ impl Voice {
     fn set_speaking(&mut self, on: bool, now: f64) {
         if self.wake.speaking && !on {
             self.wake.quiet_until = now + WAKE_AFTER_SPEECH;
-            self.wake.follow_until = self.wake.quiet_until + FOLLOW_UP;
+            // A reply stopped by a take (talked over, or the talk keys) is answered by that take: no follow-up.
+            if self.phase == Phase::Idle {
+                self.wake.follow_until = self.wake.quiet_until + FOLLOW_UP;
+            }
+        }
+        if on && !self.wake.speaking {
+            // A new reply: its echo is learned afresh.
+            (self.barge.since, self.barge.floor, self.barge.run, self.barge.onset) = (now, BARGE_FLOOR, None, None);
+            self.barge.levels.clear();
+        }
+        if !on {
+            self.barge.run = None;
         }
         self.wake.speaking = on;
+    }
+
+    /// {"cmd":"barge"}: the microphone is echo-cancelled and talking over a reply may stop it.
+    fn set_barge(&mut self, on: bool) {
+        if on != self.barge.on {
+            log(if on { "barge-in on" } else { "barge-in off" });
+        }
+        self.barge.on = on;
+        if !on {
+            self.barge.run = None;
+        }
+    }
+
+    // A reply is playing, nothing else is being heard, and a voice over it may be the user's.
+    fn barge_listening(&self) -> bool {
+        self.barge.on && self.wake.speaking && self.phase == Phase::Idle && self.vad.is_some() && self.engine.is_some()
+    }
+
+    /// Every tick: the microphone on while a reply plays (barge-in on), and off after unless the wake word keeps it.
+    fn barge_tick(&mut self, now: f64) {
+        if self.barge_listening() {
+            // The dev WAV stands in once (see wake_open).
+            if self.source.is_some() || now < self.barge.retry_at || !keys::mic_allowed() || (self.test_audio.is_some() && self.wake.played) {
+                return;
+            }
+            match self.open_audio() {
+                Ok(()) => {
+                    (self.barge.opened, self.wake.played, self.wake.dropped) = (true, true, 0);
+                    (self.wake.seg, self.wake.next, self.wake.deferred) = (None, None, false);
+                }
+                // Nobody asked to talk: only the log hears of it, and it is tried again later.
+                Err(e) => {
+                    log(&format!("barge-in: audio: {} ({})", e.detail, e.reason));
+                    self.barge.retry_at = now + WAKE_RETRY;
+                }
+            }
+        } else if self.barge.opened && self.phase == Phase::Idle {
+            self.barge.opened = false;
+            self.barge.run = None;
+            if !self.wake_waiting() {
+                self.stop_audio();
+                self.buf.lock().unwrap().clear();
+            }
+        }
+    }
+
+    // A window heard outside a stretch of the user's voice: the echo's level (floor) is worked out again with it.
+    fn barge_floor(&mut self, db: f32) {
+        let b = &mut self.barge;
+        if b.levels.len() == FLOOR_SPAN {
+            b.levels.pop_front();
+        }
+        b.levels.push_back(db);
+        let mut sorted: Vec<f32> = b.levels.iter().copied().collect();
+        sorted.sort_by(|x, y| y.total_cmp(x));
+        let at = ((sorted.len() as f64 * FLOOR_SHARE) as usize).min(sorted.len() - 1);
+        b.floor = (sorted[at] as f64).max(BARGE_FLOOR);
+    }
+
+    /// The VAD's verdicts while a reply plays (barge_listening): a loud stretch of voice is read, see on_barge_read.
+    fn barge_vad(&mut self, steps: &[vad::Step], now: f64) {
+        let rate = RATE as f64;
+        let w = vad::WINDOW as u64;
+        let settle = now < self.barge.since + BARGE_SETTLE;
+        for s in steps {
+            let db = s.db as f64;
+            match s.edge {
+                Some(vad::Edge::Start(at)) => self.barge.onset = Some(at),
+                Some(vad::Edge::End(_)) => self.barge.onset = None,
+                None => {}
+            }
+            if settle {
+                self.barge.run = None;
+                self.barge_floor(s.db);
+                continue;
+            }
+            let loud = db >= self.barge.floor + BARGE_MARGIN;
+            // Inside a stretch a softer syllable still counts; the echo alone (or a cough's tail into it) does not.
+            let strong = s.voice && db >= self.barge.floor + BARGE_MARGIN - BARGE_SOFT;
+            match self.barge.run.as_mut() {
+                Some(r) if strong => {
+                    (r.n, r.power, r.gap, r.end) = (r.n + 1, r.power + 10f64.powf(db / 10.0), 0, s.at);
+                }
+                Some(r) => {
+                    r.gap += 1;
+                    if r.gap as f64 * w as f64 / rate > BARGE_GAP {
+                        self.barge.run = None;
+                    }
+                }
+                None if s.voice && loud => {
+                    let loud_at = s.at - w;
+                    let from = match self.barge.onset {
+                        Some(at) if loud_at.saturating_sub(at) as f64 <= BARGE_ONSET * rate => at,
+                        _ => loud_at.saturating_sub((BARGE_PRE * rate) as u64),
+                    };
+                    self.barge.run = Some(Run { from, first: s.at - w, end: s.at, n: 1, power: 10f64.powf(db / 10.0), gap: 0, read_to: 0 });
+                }
+                None => self.barge_floor(s.db),
+            }
+        }
+        // Only a few seconds are kept: enough for a stretch and what came before it.
+        {
+            let keep = ((BARGE_KEEP * rate) as usize).max(self.barge.run.map_or(0, |r| (self.wake.dropped + self.buf.lock().unwrap().len() as u64).saturating_sub(r.from) as usize));
+            let mut buf = self.buf.lock().unwrap();
+            if buf.len() > keep + (WAKE_SLACK * rate) as usize {
+                let cut = buf.len() - keep;
+                buf.drain(..cut);
+                self.wake.dropped += cut as u64;
+            }
+        }
+        let Some(r) = self.barge.run else { return };
+        // From its first loud window to its last strong one (gaps under BARGE_GAP are part of talking).
+        let voiced = (r.end - r.first) as f64 / rate + w as f64 / rate;
+        if voiced >= BARGE_LONGEST {
+            log("barge-in: a long voice without words, not the user's");
+            self.barge.run = None;
+            return;
+        }
+        let mean = 10.0 * (r.power / r.n as f64).log10();
+        let fresh = r.read_to == 0 || (r.end - r.read_to) as f64 / rate >= BARGE_REREAD;
+        if voiced < BARGE_VOICE || mean < self.barge.floor + BARGE_MARGIN || self.barge.reading.is_some() || !fresh {
+            return;
+        }
+        let Some(engine) = &self.engine else { return };
+        let audio = {
+            let buf = self.buf.lock().unwrap();
+            let at = |p: u64| (p.saturating_sub(self.wake.dropped) as usize).min(buf.len());
+            buf[at(r.from)..at(r.end).max(at(r.from))].to_vec()
+        };
+        if engine.send(Job { take: self.take, audio, last: false, wake: false }).is_ok() {
+            self.barge.reading = Some((self.take, r.from));
+            if let Some(run) = self.barge.run.as_mut() {
+                run.read_to = r.end;
+            }
+        }
+    }
+
+    /// A stretch heard over the reply was read: with words enough it is the user talking, and a take starts from where
+    /// that voice began (the reply is stopped as the talk keys stop it: the take's "listening"). Fewer: the stretch
+    /// goes on being heard, and is read again if it lasts. What was heard is never logged.
+    fn on_barge_read(&mut self, text: String, now: f64) {
+        let Some((_, from)) = self.barge.reading.take() else { return };
+        if !self.barge_listening() {
+            return;
+        }
+        if plain_words(&text).len() < BARGE_WORDS {
+            return;
+        }
+        log("barge-in: the user is talking over the reply");
+        emit(json!({ "type": "barge" }));
+        self.barge.run = None;
+        self.barge.opened = false;
+        self.begin_take(now);
+        {
+            let mut buf = self.buf.lock().unwrap();
+            let cut = (from.saturating_sub(self.wake.dropped) as usize).min(buf.len());
+            buf.drain(..cut);
+        }
+        (self.wake.seg, self.wake.next, self.wake.deferred) = (None, None, false);
+        self.spoke = true;
+        self.best = text;
+        self.phase = Phase::HandsFree;
+        self.blocked = true;
+        self.show_listening("handsfree", now);
     }
 
     // The microphone is the wake word's: it is on, and no take is being heard.
@@ -1124,6 +1369,7 @@ impl Voice {
 
     /// Every tick: keeps the microphone on while waiting for the phrase, and has what it hears read now and then.
     fn wake_tick(&mut self, now: f64) {
+        self.barge_tick(now);
         if !self.wake_waiting() {
             return;
         }
@@ -1179,7 +1425,8 @@ impl Voice {
 
     /// A bit of sound came in while waiting for the phrase: only the last few seconds are kept, and a voice is noted.
     fn wake_level(&mut self, v: f64, now: f64) {
-        if !self.wake_waiting() || self.source.is_none() {
+        // While a reply plays with barge-in on, barge_vad keeps what is heard.
+        if !self.wake_waiting() || self.source.is_none() || self.barge_listening() {
             return;
         }
         // Sound is coming in, so the microphone works: its next failure is a new one.
@@ -1249,7 +1496,9 @@ impl Voice {
             tap.clear();
         }
         let voiced = steps.iter().any(|s| s.voice);
-        if self.wake_waiting() && self.source.is_some() {
+        if self.barge_listening() && self.source.is_some() {
+            self.barge_vad(&steps, now);
+        } else if self.wake_waiting() && self.source.is_some() {
             self.wake_vad(&steps, now);
         }
         self.steps = steps;
@@ -1413,6 +1662,7 @@ impl Voice {
                     let now = self.now();
                     self.set_speaking(msg.get("on").and_then(Value::as_bool) == Some(true), now);
                 }
+                Some("barge") => self.set_barge(msg.get("on").and_then(Value::as_bool) == Some(true)),
                 Some("gain") => audio::set_gain(msg.get("value").and_then(Value::as_f64).unwrap_or(1.0)),
                 Some("chord") => {
                     let mods: Vec<String> = msg.get("mods").and_then(Value::as_array).map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_owned)).collect()).unwrap_or_default();
@@ -1432,6 +1682,10 @@ impl Voice {
                     let now = self.now();
                     self.wake_mic_failed(&e, now);
                 }
+            }
+            Ev::Text { take, text, last: false } if self.barge.reading.is_some_and(|(t, _)| t == take) => {
+                let now = self.now();
+                self.on_barge_read(text, now);
             }
             Ev::Text { take, text, last } => self.on_text(take, text, last),
             Ev::Snippet { take, words } => {
@@ -1507,9 +1761,14 @@ fn bench_listen(dir: &Path, wav: &Path, args: &[String]) {
         voice.turn = Some(spawn_turn(Box::new(move || Some(Box::new(Fixed(p)) as Box<dyn TurnCheck>)), tx.clone()));
     }
     let listen = args.iter().any(|a| a == "--listen");
+    let barge = arg(args, "--barge").and_then(|s| s.parse::<f64>().ok());
     let secs = samples.len() as f64 / RATE as f64;
     let (cpu0, t0) = (cpu_seconds(), Instant::now());
-    if listen {
+    if barge.is_some() {
+        voice.set_barge(true);
+        let now = voice.now();
+        voice.set_speaking(true, now);
+    } else if listen {
         voice.listen_now();
     } else {
         voice.set_wake(true, &arg(args, "--phrase").unwrap_or_else(|| "hey jarvis".into()));
@@ -1518,6 +1777,11 @@ fn bench_listen(dir: &Path, wav: &Path, args: &[String]) {
     while t0.elapsed().as_secs_f64() < secs + 2.0 && !pump(&mut voice, &rx) {
         if !listen && woke.is_none() && voice.phase != Phase::Idle {
             woke = Some(t0.elapsed().as_secs_f64());
+        }
+        // The reply ends (or, talked over, is stopped as the app stops it).
+        if barge.is_some_and(|b| voice.wake.speaking && (t0.elapsed().as_secs_f64() >= b || voice.phase != Phase::Idle)) {
+            let now = voice.now();
+            voice.set_speaking(false, now);
         }
     }
     let reads = |i: usize| READS[i].load(std::sync::atomic::Ordering::Relaxed);
@@ -2551,6 +2815,179 @@ mod tests {
         for wav in [wav, wav2, wav3] {
             let _ = std::fs::remove_file(wav);
         }
+    }
+
+    // ---- barge-in ----
+
+    // What is left of a reply's echo in an echo-cancelled microphone (about -24 dBFS here; the VAD takes it for a
+    // voice), and the user talking over it, about 14 dB louder.
+    fn echo(secs: f64) -> Vec<f32> {
+        vec![0.06; (secs * RATE as f64) as usize]
+    }
+
+    fn user(secs: f64) -> Vec<f32> {
+        vec![0.3; (secs * RATE as f64) as usize]
+    }
+
+    // A reply that started playing at 1.0 s, with barge-in on (or not), the microphone hearing only what is fed.
+    fn replying(barge: bool) -> (Voice, Receiver<Job>, PathBuf) {
+        let (mut v, jobs, wav) = gated();
+        if barge {
+            v.handle(Ev::Cmd(json!({ "cmd": "barge", "on": true })));
+        }
+        v.set_speaking(true, 1.0);
+        let _ = said();
+        (v, jobs, wav)
+    }
+
+    #[test]
+    fn without_barge_in_a_reply_is_never_listened_to() {
+        let (mut v, jobs, wav) = replying(false);
+        let at = feed(&mut v, &echo(1.5), 1.0);
+        feed(&mut v, &user(2.0), at);
+        assert!(jobs.try_recv().is_err() && v.phase == Phase::Idle && said().is_empty(), "deaf, as before");
+        let _ = std::fs::remove_file(wav);
+    }
+
+    #[test]
+    fn the_echo_of_the_reply_never_barges_in() {
+        let (mut v, jobs, wav) = replying(true);
+        feed(&mut v, &echo(5.0), 1.0);
+        assert!(jobs.try_recv().is_err() && v.phase == Phase::Idle, "a voice at the echo's level is the echo");
+        assert!((v.barge.floor - 20.0 * 0.06f64.log10()).abs() < 1.0, "the floor is the echo's level: {}", v.barge.floor);
+        // Louder echo (the volume went up): the floor follows it, and a voice a few dB over it is still the echo.
+        let at = feed(&mut v, &vec![0.15; RATE as usize * 2], 6.0);
+        feed(&mut v, &user(2.0), at);
+        assert!(jobs.try_recv().is_err() && v.phase == Phase::Idle, "floor {}", v.barge.floor);
+        let _ = std::fs::remove_file(wav);
+    }
+
+    #[test]
+    fn nothing_barges_in_while_the_canceller_settles() {
+        let (mut v, jobs, wav) = replying(true);
+        // Loud from the first moment (the canceller hasn't converged): learned as the echo, never read.
+        let at = feed(&mut v, &user(BARGE_SETTLE - 0.05), 1.0);
+        feed(&mut v, &hush(1.0), at);
+        assert!(jobs.try_recv().is_err() && v.phase == Phase::Idle);
+        let _ = std::fs::remove_file(wav);
+    }
+
+    #[test]
+    fn a_short_loud_sound_is_not_the_user_talking() {
+        let (mut v, jobs, wav) = replying(true);
+        let at = feed(&mut v, &echo(1.5), 1.0);
+        // A cough over the reply, the echo going on after it.
+        let at = feed(&mut v, &user(BARGE_VOICE - 0.15), at);
+        feed(&mut v, &echo(2.0), at);
+        assert!(jobs.try_recv().is_err() && v.phase == Phase::Idle);
+        let _ = std::fs::remove_file(wav);
+    }
+
+    #[test]
+    fn the_user_talking_over_the_reply_starts_a_take_with_their_first_words() {
+        let (mut v, jobs, wav) = replying(true);
+        let at = feed(&mut v, &echo(1.5), 1.0);
+        let at = feed(&mut v, &user(0.8), at);
+        let job = jobs.try_recv().expect("half a second of a loud voice is read");
+        assert!(!job.wake && !job.last);
+        assert_eq!(job.audio.iter().position(|&s| s == 0.3).map(|i| i < (BARGE_PRE * RATE as f64) as usize + 512), Some(true), "from just before the voice");
+        // A read with one word ("Yeah.", a stray sound): not yet, and not read again until it has gone on a while.
+        v.handle(Ev::Text { take: job.take, text: "Yeah.".into(), last: false });
+        assert_eq!(v.phase, Phase::Idle);
+        assert!(said().is_empty());
+        let at = feed(&mut v, &user(0.2), at);
+        assert!(jobs.try_recv().is_err(), "too soon for another read");
+        feed(&mut v, &user(0.6), at);
+        let again = jobs.try_recv().expect("read again as it goes on");
+        assert_eq!(again.audio[..job.audio.len()], job.audio[..], "the same start");
+        v.handle(Ev::Text { take: again.take, text: "Espera, para un momento".into(), last: false });
+        assert_eq!(v.phase, Phase::HandsFree, "the user's turn");
+        assert_eq!(said()[..2], [json!({ "type": "barge" }), json!({ "type": "state", "state": "listening", "mode": "handsfree" })]);
+        let buf = v.buf.lock().unwrap().clone();
+        let first = buf.iter().position(|&s| s == 0.3).expect("their words are in the take");
+        assert!(first < (BARGE_PRE * RATE as f64) as usize + 512 && buf.len() >= first + RATE as usize * 3 / 2, "from where the voice began: {first} of {}", buf.len());
+        assert!(v.spoke && v.best == "Espera, para un momento");
+        let _ = std::fs::remove_file(wav);
+    }
+
+    #[test]
+    fn a_voice_that_starts_softly_is_not_taken_for_the_echo() {
+        // Its first syllables are near the echo's level: they must not lift the floor until the voice never clears it.
+        let (mut v, jobs, wav) = replying(true);
+        let at = feed(&mut v, &echo(1.5), 1.0);
+        let ramp: Vec<f32> = (0..RATE as usize / 8).map(|i| 0.06 + 0.2 * i as f32 / (RATE as f32 / 8.0)).collect();
+        let at = feed(&mut v, &ramp, at);
+        feed(&mut v, &user(0.7), at);
+        assert!(jobs.try_recv().is_ok(), "read: floor {}", v.barge.floor);
+        let _ = std::fs::remove_file(wav);
+    }
+
+    #[test]
+    fn a_voice_in_a_quiet_moment_of_the_reply_keeps_its_first_syllable() {
+        // Between two sentences: the VAD hears it start a moment before it says voice; the take starts there.
+        let (mut v, jobs, wav) = replying(true);
+        let at = feed(&mut v, &echo(1.2), 1.0);
+        let at = feed(&mut v, &hush(0.6), at);
+        let at = feed(&mut v, &user(0.8), at);
+        let job = jobs.try_recv().expect("read");
+        let first = job.audio.iter().position(|&s| s == 0.3).unwrap();
+        assert!(first < 2 * 512 + (vad::tests::PAD_SECS * RATE as f64) as usize, "the read starts where the voice did: {first}");
+        v.handle(Ev::Text { take: job.take, text: "una pregunta".into(), last: false });
+        feed(&mut v, &hush(0.1), at);
+        assert_eq!(v.phase, Phase::HandsFree);
+        let _ = std::fs::remove_file(wav);
+    }
+
+    #[test]
+    fn a_long_voice_that_never_has_words_is_dropped_and_a_late_read_is_for_nobody() {
+        let (mut v, jobs, wav) = replying(true);
+        let at = feed(&mut v, &echo(1.5), 1.0);
+        let at = feed(&mut v, &user(0.6), at);
+        let job = jobs.try_recv().expect("read");
+        // The reply ended before the read came back: nobody talked over anything.
+        v.set_speaking(false, at);
+        v.handle(Ev::Text { take: job.take, text: "uno dos tres".into(), last: false });
+        assert_eq!(v.phase, Phase::Idle);
+        assert!(said().is_empty());
+        // Music over a reply: loud, never words, dropped after BARGE_LONGEST.
+        v.set_speaking(true, at);
+        let mut now = feed(&mut v, &echo(1.0), at);
+        for _ in 0..12 {
+            now = feed(&mut v, &user(0.5), now);
+            if let Ok(j) = jobs.try_recv() {
+                v.handle(Ev::Text { take: j.take, text: String::new(), last: false });
+            }
+        }
+        assert!(v.barge.run.is_none_or(|r| ((r.end - r.first) as f64) / (RATE as f64) <= BARGE_LONGEST), "dropped at the longest");
+        assert_eq!(v.phase, Phase::Idle);
+        let _ = std::fs::remove_file(wav);
+    }
+
+    #[test]
+    fn barge_in_opens_the_microphone_only_for_the_reply() {
+        let (mut v, _jobs, wav) = voice();
+        with_vad(&mut v);
+        v.wake.played = true; // never the stand-in WAV: tested as a microphone that can't open here
+        v.handle(Ev::Cmd(json!({ "cmd": "barge", "on": true })));
+        v.wake_tick(0.5);
+        assert!(v.source.is_none(), "no reply: off");
+        // Opened while a reply plays (the stand-in WAV this time), then let go.
+        v.wake.played = false;
+        v.set_speaking(true, 1.0);
+        v.wake_tick(1.0);
+        assert!(v.source.is_some() && v.barge.opened);
+        v.set_speaking(false, 3.0);
+        v.wake_tick(3.0);
+        assert!(v.source.is_none(), "off again with the wake word off");
+        // Switched off mid-reply: the same.
+        v.wake.played = false;
+        v.set_speaking(true, 4.0);
+        v.wake_tick(4.0);
+        assert!(v.source.is_some());
+        v.handle(Ev::Cmd(json!({ "cmd": "barge", "on": false })));
+        v.wake_tick(4.1);
+        assert!(v.source.is_none());
+        let _ = std::fs::remove_file(wav);
     }
 
     // A hands-free take with the VAD and a stand-in turn check (the test answers its questions): one second of talk.

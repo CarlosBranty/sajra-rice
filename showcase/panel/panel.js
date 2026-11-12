@@ -63,6 +63,12 @@
   const group = (title, desc, n, ...kids) => el('div', { className: 'group' },
     el('div', { className: 'ghead' }, el('h2', {}, title, n != null ? el('span', { className: 'n', textContent: String(n) }) : null), desc ? el('p', { textContent: desc }) : null),
     ...kids);
+  // Barge-in (state.barge { on, aec }, menu id 'bargein'): switched off and not switchable without the echo-cancelled microphone.
+  const bargeToggle = (b, voiceOn) => {
+    const row = toggle('Interrupt me by talking', !voiceOn ? 'Needs Voice control on' : b.aec ? 'Talk over me and I stop to listen' : 'Needs the echo-cancelled microphone (Devices)', b.on, () => { if (b.aec) act('bargein'); }, 'bargein');
+    if (!b.aec) { const sw = row.querySelector('button'); sw.disabled = true; sw.setAttribute('aria-disabled', 'true'); }
+    return row;
+  };
   const toggle = (label, hint, on, onflip, k) => el('div', { className: 'setting' },
     el('span', { id: `lbl-${k}` }, label, hint ? el('small', { textContent: hint }) : null),
     el('button', { className: 'px switch', type: 'button', role: 'switch', 'aria-checked': String(!!on), 'aria-labelledby': `lbl-${k}`, 'data-k': k, on: { click: onflip } }));
@@ -581,7 +587,9 @@
         v.download && v.download.status !== 'downloading' ? el('div', { className: 'links' }, link(v.download.status === 'error' ? 'Retry the download' : `Download (${v.download.size})`, () => act('voicedl'), { k: 'voicedl' })) : null,
         v.mac ? toggle('Mute Mac while talking', 'Other sounds go quiet while you talk', v.mute, () => act('mutetalk'), 'mutetalk') : null,
         // Linux on a layer surface: the mouse circles or underlines things while I listen, and has every click meanwhile.
-        state.pen ? toggle('Draw with the mouse while I listen', 'Drag round what you mean; a click without dragging stops it', state.pen.on, () => act('pen'), 'pen') : null) : null,
+        state.pen ? toggle('Draw with the mouse while I listen', 'Drag round what you mean; a click without dragging stops it', state.pen.on, () => act('pen'), 'pen') : null,
+        // Linux: talking over a reply stops it, only where the microphone takes my own voice out (else I'd stop myself).
+        state.barge ? bargeToggle(state.barge, v.on) : null) : null,
       // Linux: saying the phrase starts listening, as the talk shortcut does. The microphone stays on to hear it.
       state.wake ? group('Wake word', 'Say a phrase and I listen, no key needed. The microphone stays on to hear it; nothing leaves this computer until you say it.', null,
         toggle('Wake word', !v?.on ? 'Needs Voice control on' : state.wake.phrase ? `Say "${state.wake.phrase}" to talk to me` : 'Pick a phrase to call me with', state.wake.on, () => {

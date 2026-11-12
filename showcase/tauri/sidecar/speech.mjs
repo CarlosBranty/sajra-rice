@@ -234,3 +234,99 @@ export function spokenChoice(text) {
   if (YES_WORDS.has(w[0]) || (w[0] === 'de' && w[1] === 'acuerdo')) return 'yes';
   return null;
 }
+
+// ---------- yes/no questions said out loud, and talking over a reply ----------
+
+/** Whether a microphone's name (Linux) is an echo-cancelled source: Hanami's PipeWire setup (`hanami_aec_source`), or
+ *  any other whose name says echo-cancel or aec. Only there may talking over a reply stop it (the shell checks the same). */
+export function echoCancelled(name) {
+  const m = String(name ?? '').toLowerCase();
+  return m.includes('echo-cancel') || m.includes('echo_cancel') || m.split(/[^a-z0-9]+/).includes('aec');
+}
+
+/** Barge-in on the Voice page: wanted unless switched off, and only with an echo-cancelled microphone. */
+export const bargeOf = (c, mic) => ({ on: c?.bargeIn !== false && echoCancelled(mic), aec: echoCancelled(mic) });
+
+const SPANISH = /[ñ¿¡áéíóú]|\b(?:que|qué|el|los|las|una?|por|para|como|cómo|puedes|quiero|está|esto|eso|dime|abre|busca|hazlo|mis?|tus?|del|con)\b/gi;
+/** The language a yes/no is said in: the reply language when one is picked, else what the request sounded like. */
+export function askLanguage(picked, asked) {
+  if (picked === 'es' || picked === 'en') return picked;
+  return (String(asked ?? '').match(SPANISH) ?? []).length >= 2 ? 'es' : 'en';
+}
+
+/** What is said for a yes/no (Allow / Don't allow): its question, short and speakable, then whether to allow it. */
+export function askLine(question, lang) {
+  let q = speakable(question).replace(/[?？]+$/, '');
+  if (q.length > 140) q = `${q.slice(0, 140).replace(/\s+\S*$/, '')}…`;
+  const ask = lang === 'es' ? '¿Lo permito?' : 'Should I allow it?';
+  return q ? `${q}. ${ask}` : ask;
+}
+
+/** Said once when the spoken answer was neither yes nor no. */
+export const askAgainLine = (lang) => (lang === 'es' ? '¿Sí o no?' : 'Yes or no?');
+
+/** A request's voice that a spoken yes/no can break into. interject(text) says it after what was said so far and lets
+ *  that voice end, so the overlay can tell when it has been heard (voice-out.js finished); whatever the reply says
+ *  after that starts a fresh voice (start()). Returns the id the line is spoken under, or null when nothing speaks. */
+export function relayVoice(start, first = start()) {
+  if (!first) return null;
+  let v = first, paused = false, closed = false;
+  const live = () => {
+    if (paused && !closed) { const n = start(); if (!n) return null; v = n; paused = false; }
+    return paused || closed ? null : v;
+  };
+  return {
+    get id() { return v.id; },
+    say(s) { live()?.say(s); },
+    beat() { return live()?.beat() ?? false; },
+    end() { if (closed) return; closed = true; if (!paused) v.end(); },
+    abort() { closed = true; v.abort(); },
+    interject(text) {
+      const x = live();
+      if (!x) return null;
+      x.say(text); x.end(); paused = true;
+      return x.id;
+    },
+  };
+}
+
+/** A yes/no said out loud and answered by voice: open() says it (speak(text) → the id it plays under, or null) and has
+ *  the overlay wait for it (show(id, speech)); ready(id), once the overlay heard it out, opens the mic (listen()).
+ *  An unclear answer (or none) is asked again once, then the buttons are left; answered or closed another way, it
+ *  ends (cancel() drops a take it opened that is still listening). */
+export function createVoiceAsk({ speak, show, listen, cancel, log = () => {} }) {
+  let cur = null;
+  const say = (text) => { cur.state = 'saying'; show(cur.id, speak(text)); };
+  return {
+    open(id, question, lang) {
+      cur = { id, lang, tries: 0, state: 'saying' };
+      log('ask_voice', { phase: 'said' });
+      say(askLine(question, lang));
+    },
+    ready(id) {
+      if (cur?.id !== id || cur.state !== 'saying') return false;
+      cur.state = 'listening';
+      listen();
+      return true;
+    },
+    // The take it opened ended (its words, if any, came first).
+    heard() { if (cur?.state === 'listening') cur.state = 'heard'; },
+    // Neither yes nor no, or nothing heard: true when it is asked again.
+    unclear(id = cur?.id) {
+      if (!cur || cur.id !== id || cur.state === 'saying') return false;
+      if (cur.tries >= 1) { log('ask_voice', { phase: 'buttons' }); cur = null; return false; }
+      cur.tries++;
+      log('ask_voice', { phase: 'again' });
+      say(askAgainLine(cur.lang));
+      return true;
+    },
+    // Answered (by voice: the take is over) or closed another way (a click, Esc, the request stopping).
+    done(id, { byVoice = false } = {}) {
+      if (!cur || cur.id !== id) return;
+      const listening = cur.state === 'listening';
+      cur = null;
+      if (listening && !byVoice) cancel();
+    },
+    get current() { return cur?.id ?? null; },
+  };
+}

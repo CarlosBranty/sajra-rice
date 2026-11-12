@@ -124,6 +124,56 @@ pub(crate) fn set_mic(app: &AppHandle, mic: String) {
     stop_voice(app);
 }
 
+/// Barge-in (Linux, the Voice page's "Interrupt me by talking"): the user's setting. It only takes effect on an
+/// echo-cancelled microphone (echo_cancelled): on any other, the reply's own voice would be the user talking over it.
+#[cfg(target_os = "linux")]
+static BARGE: AtomicBool = AtomicBool::new(false);
+
+/// Whether a microphone's name is an echo-cancelled source: the one Hanami's PipeWire setup makes
+/// (`hanami_aec_source`), or any other whose name says echo-cancel or aec (module-echo-cancel's own names).
+#[cfg(target_os = "linux")]
+pub(crate) fn echo_cancelled(mic: &str) -> bool {
+    let m = mic.to_ascii_lowercase();
+    m.contains("echo-cancel") || m.contains("echo_cancel") || m.split(|c: char| !c.is_ascii_alphanumeric()).any(|w| w == "aec")
+}
+
+/// The setting in voice_config (missing: off, as an older sidecar).
+#[cfg(target_os = "linux")]
+pub(crate) fn barge_of(msg: &Value) -> bool {
+    msg.get("barge").and_then(Value::as_bool) == Some(true)
+}
+
+/// Barge-in as the helper must have it: wanted, and the microphone echo-cancelled.
+#[cfg(target_os = "linux")]
+fn barge_on() -> bool {
+    BARGE.load(Ordering::Relaxed) && echo_cancelled(&MIC.lock().unwrap())
+}
+
+/// What the helper hears when barge-in changes: on, with whether a reply is playing (it is told that only while the
+/// wake word or barge-in is on); or off.
+#[cfg(target_os = "linux")]
+fn barge_cmds(on: bool, speaking: bool) -> Vec<Value> {
+    if on {
+        vec![json!({ "cmd": "barge", "on": true }), json!({ "cmd": "speaking", "on": speaking })]
+    } else {
+        vec![json!({ "cmd": "barge", "on": false })]
+    }
+}
+
+/// The sidecar's barge-in setting: kept for the helpers that start later, and told to the one running when what it
+/// must do changed. A changed microphone restarts the helper (set_mic), which start_voice tells.
+#[cfg(target_os = "linux")]
+pub(crate) fn set_barge(app: &AppHandle, on: bool) {
+    let before = barge_on();
+    BARGE.store(on, Ordering::Relaxed);
+    let after = barge_on();
+    if before != after {
+        for cmd in barge_cmds(after, WAKE.lock().unwrap().1) {
+            to_voice(app, &cmd);
+        }
+    }
+}
+
 /// The microphone boost (Linux, the Voice page), in percent: 100 is as the microphone comes.
 #[cfg(target_os = "linux")]
 static MIC_GAIN: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(100);
@@ -165,14 +215,15 @@ pub(crate) fn set_wake(app: &AppHandle, phrase: Option<String>) {
 }
 
 /// A spoken reply started or stopped playing on some overlay (linux::talk_state). The helper is told only while
-/// the wake word is on: it then ignores the phrase meanwhile, and for a moment after.
+/// the wake word is on (it then ignores the phrase meanwhile, and for a moment after) or barge-in (it listens for the
+/// user talking over it).
 #[cfg(target_os = "linux")]
 pub(crate) fn speaking(app: &AppHandle, on: bool) {
     let tell = {
         let mut wake = WAKE.lock().unwrap();
         let changed = wake.1 != on;
         wake.1 = on;
-        changed && wake.0.is_some()
+        changed && (wake.0.is_some() || barge_on())
     };
     if tell {
         to_voice(app, &json!({ "cmd": "speaking", "on": on }));
@@ -220,7 +271,14 @@ pub(crate) fn start_voice(app: &AppHandle) {
     // A helper starts with the wake word off: this one (the first, or one restarted after it died) is told the phrase.
     #[cfg(target_os = "linux")]
     {
-        let cmds = wake_cmds(&WAKE.lock().unwrap(), true);
+        let (mut cmds, speaking) = {
+            let wake = WAKE.lock().unwrap();
+            (wake_cmds(&wake, true), wake.1)
+        };
+        // It starts with barge-in off too.
+        if barge_on() {
+            cmds.extend(barge_cmds(true, speaking));
+        }
         for cmd in cmds {
             to_voice(app, &cmd);
         }
@@ -460,6 +518,8 @@ fn handle_voice(app: &AppHandle, msg: Value) {
             to_sidecar(app, &json!({ "type": "voice_state", "state": msg.get("state") }));
         }
         Some("partial") | Some("level") => to_overlays(app, &ui),
+        // The user talked over a reply: the take that follows stops it (its "listening"); the sidecar logs it.
+        Some("barge") => to_sidecar(app, &json!({ "type": "voice_barge" })),
         // Dictation: the words are typed, never asked.
         #[cfg(target_os = "linux")]
         Some("final") if DICTATE.swap(false, Ordering::Relaxed) => {
@@ -547,6 +607,21 @@ mod tests {
         }
         assert_eq!(gain_of(&json!({ "enabled": true })), 100, "an older sidecar says nothing: none");
         assert_eq!(gain_cmd(250), json!({ "cmd": "gain", "value": 2.5 }));
+    }
+
+    #[test]
+    fn barge_in_needs_an_echo_cancelled_microphone() {
+        for aec in ["hanami_aec_source", "echo-cancel-source", "alsa_input.usb-mic.echo-cancel", "my_echo_cancel_mic", "AEC.mic"] {
+            assert!(echo_cancelled(aec), "{aec}");
+        }
+        for plain in ["", "alsa_input.pci-0000_00_1f.3.analog-stereo", "bluez_input.headset", "aecho", "spaecial"] {
+            assert!(!echo_cancelled(plain), "{plain}: the reply would be heard as the user");
+        }
+        assert!(barge_of(&json!({ "type": "voice_config", "barge": true })));
+        assert!(!barge_of(&json!({ "barge": false })) && !barge_of(&json!({ "wake": "" })), "an older sidecar says nothing: off");
+        assert_eq!(barge_cmds(true, true), vec![json!({ "cmd": "barge", "on": true }), json!({ "cmd": "speaking", "on": true })], "mid-reply");
+        assert_eq!(barge_cmds(true, false), vec![json!({ "cmd": "barge", "on": true }), json!({ "cmd": "speaking", "on": false })]);
+        assert_eq!(barge_cmds(false, true), vec![json!({ "cmd": "barge", "on": false })]);
     }
 
     #[test]

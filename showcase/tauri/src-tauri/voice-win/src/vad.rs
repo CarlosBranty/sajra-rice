@@ -110,6 +110,8 @@ pub struct Step {
     pub at: u64,
     pub voice: bool,
     pub edge: Option<Edge>,
+    // The window's level in dBFS (barge-in compares a voice with the echo left in the microphone).
+    pub db: f32,
 }
 
 /// Hysteresis over the probabilities (see the top of the file).
@@ -149,7 +151,7 @@ impl Gate {
             self.confirmed = true;
             edge = Some(Edge::Start(self.start));
         }
-        Step { at, voice: self.confirmed && self.temp_end == 0 && p >= NEG_THRESHOLD, edge }
+        Step { at, voice: self.confirmed && self.temp_end == 0 && p >= NEG_THRESHOLD, edge, db: f32::NEG_INFINITY }
     }
 }
 
@@ -173,13 +175,16 @@ impl Vad {
         let whole = self.pending.len() / WINDOW * WINDOW;
         for w in self.pending[..whole].chunks(WINDOW) {
             self.pos += WINDOW as u64;
-            let quiet = w.iter().map(|s| s * s).sum::<f32>() < FLOOR * FLOOR * WINDOW as f32;
+            let power = w.iter().map(|s| s * s).sum::<f32>();
+            let quiet = power < FLOOR * FLOOR * WINDOW as f32;
             if quiet && !self.fresh {
                 self.det.reset();
             }
             self.fresh = quiet;
             let p = if quiet { 0.0 } else { self.det.prob(w) };
-            out.push(self.gate.push(p, self.pos));
+            let mut step = self.gate.push(p, self.pos);
+            step.db = 10.0 * (power / WINDOW as f32).max(1e-14).log10();
+            out.push(step);
         }
         self.pending.drain(..whole);
     }
@@ -202,6 +207,9 @@ impl Vad {
 #[cfg(test)]
 pub mod tests {
     use super::*;
+
+    /// How far before a voice the VAD puts its start (PAD), in seconds.
+    pub const PAD_SECS: f64 = PAD as f64 / 16_000.0;
 
     /// Stands in for the model: any window louder than 0.05 is voice.
     pub struct Loud;

@@ -50,16 +50,16 @@ assert.match(setter, /const phrase = wakePhrase\(given\);\n\s+if \(!phrase\) ret
 assert.match(setter, /if \(!wakeOf\(config\)\.phrase\) config\.wakeWord = true;/, 'the first phrase switches it on (that is why it was typed)');
 assert.match(setter, /config\.wakePhrase = phrase; saveConfig\(\); voiceConfig\(\); menu\(\);/, 'saved, and on to the shell at once');
 // The shell hears about it in voice_config, on Linux only: everywhere else that message is what it always was.
-assert.match(side, /const voiceConfig = \(\) => send\(\{ type: 'voice_config', enabled: VOICE_OK && config\.voice && voiceReady\(\), mute: config\.muteWhileTalking !== false, sound: !!config\.sound, \.\.\.\(NEEDS_MODEL \? \{ model: MODEL_DIR \} : \{\}\), \.\.\.\(LINUX \? \{ duck: duckLevel\(config\), wake: wakeFor\(config\), mic: deviceName\(config\.micDevice\), speaker: deviceName\(config\.speakerDevice\), micGain: micGain\(config\) \} : \{\}\) \}\);/, 'voice_config carries the phrase on Linux');
+assert.match(side, /const voiceConfig = \(\) => send\(\{ type: 'voice_config', enabled: VOICE_OK && config\.voice && voiceReady\(\), mute: config\.muteWhileTalking !== false, sound: !!config\.sound, \.\.\.\(NEEDS_MODEL \? \{ model: MODEL_DIR \} : \{\}\), \.\.\.\(LINUX \? \{ duck: duckLevel\(config\), wake: wakeFor\(config\), mic: deviceName\(config\.micDevice\), speaker: deviceName\(config\.speakerDevice\), micGain: micGain\(config\), barge: config\.bargeIn !== false \} : \{\}\) \}\);/, 'voice_config carries the phrase on Linux');
 assert.match(side, /wake: LINUX && VOICE_OK \? wakeOf\(config\) : null,/, 'the panel is told the switch and the phrase, on Linux only');
 
 // The shell: the phrase goes on to the voice helper when it changes and to every helper that starts; never when off.
 const shell = read('../../src-tauri/src/main.rs');
-assert.match(shell, /#\[cfg\(target_os = "linux"\)\]\n\s+voice::set_wake\(app, voice::wake_of\(&msg\)\);\n[\s\S]{0,400}?voice::set_mic\(app, voice::device_of\(&msg, "mic"\)\);[\s\S]{0,200}?\n\s+if msg\.get\("enabled"\)/, 'the shell reads the phrase and the microphone before the helper is started or stopped');
+assert.match(shell, /#\[cfg\(target_os = "linux"\)\]\n\s+voice::set_wake\(app, voice::wake_of\(&msg\)\);\n[\s\S]{0,400}?voice::set_mic\(app, voice::device_of\(&msg, "mic"\)\);[\s\S]{0,400}?\n\s+if msg\.get\("enabled"\)/, 'the shell reads the phrase and the microphone before the helper is started or stopped');
 assert.match(shell, /Some\("talk_toggle"\) => to_voice\(app, &json!\(\{ "cmd": "toggle" \}\)\),/, 'the talk command is what it was');
 const voice = read('../../src-tauri/src/voice.rs');
 const start = voice.slice(voice.indexOf('pub(crate) fn start_voice('), voice.indexOf('pub(crate) fn stop_voice('));
-assert.match(start, /\*state\.0\.lock\(\)\.unwrap\(\) = Some\(child\);\n\s+\/\/[^\n]*\n\s+#\[cfg\(target_os = "linux"\)\]\n\s+\{\n\s+let cmds = wake_cmds\(&WAKE\.lock\(\)\.unwrap\(\), true\);\n\s+for cmd in cmds \{\n\s+to_voice\(app, &cmd\);/, 'a helper that starts (the first, or one restarted after it died) is told the phrase');
+assert.match(start, /\*state\.0\.lock\(\)\.unwrap\(\) = Some\(child\);\n\s+\/\/[^\n]*\n\s+#\[cfg\(target_os = "linux"\)\]\n\s+\{\n\s+let \(mut cmds, speaking\) = \{\n\s+let wake = WAKE\.lock\(\)\.unwrap\(\);\n\s+\(wake_cmds\(&wake, true\), wake\.1\)\n\s+\};\n\s+\/\/[^\n]*\n\s+if barge_on\(\) \{\n\s+cmds\.extend\(barge_cmds\(true, speaking\)\);\n\s+\}\n\s+for cmd in cmds \{\n\s+to_voice\(app, &cmd\);/, 'a helper that starts (the first, or one restarted after it died) is told the phrase, and barge-in when it is on');
 // A helper that dies on its own mid-take can't say listening ended: the overlays are told for it.
 assert.match(start, /if ours \{\n\s+let app2 = app\.clone\(\);\n\s+let _ = app\.run_on_main_thread\(move \|\| to_overlays\(&app2, &voice_idle\(\)\)\);\n\s+\}/, 'idle goes to the overlays when the helper exits by itself');
 assert.match(voice, /pub\(crate\) fn stop_voice\(app: &AppHandle\) \{[^}]*\}\n\s+to_overlays\(app, &voice_idle\(\)\);\n\}/, 'and when it is stopped, as before');
@@ -96,3 +96,4 @@ assert.match(voicePage, /toggle\('Voice control', /, 'and so is Voice control');
 }
 
 console.log('wake tests: passed');
+
