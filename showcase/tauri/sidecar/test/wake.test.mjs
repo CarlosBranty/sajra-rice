@@ -50,7 +50,7 @@ assert.match(setter, /const phrase = wakePhrase\(given\);\n\s+if \(!phrase\) ret
 assert.match(setter, /if \(!wakeOf\(config\)\.phrase\) config\.wakeWord = true;/, 'the first phrase switches it on (that is why it was typed)');
 assert.match(setter, /config\.wakePhrase = phrase; saveConfig\(\); voiceConfig\(\); menu\(\);/, 'saved, and on to the shell at once');
 // The shell hears about it in voice_config, on Linux only: everywhere else that message is what it always was.
-assert.match(side, /const voiceConfig = \(\) => send\(\{ type: 'voice_config', enabled: VOICE_OK && config\.voice && voiceReady\(\), mute: config\.muteWhileTalking !== false, sound: !!config\.sound, \.\.\.\(NEEDS_MODEL \? \{ model: MODEL_DIR \} : \{\}\), \.\.\.\(LINUX \? \{ duck: duckLevel\(config\), wake: wakeFor\(config\) \} : \{\}\) \}\);/, 'voice_config carries the phrase on Linux');
+assert.match(side, /const voiceConfig = \(\) => send\(\{ type: 'voice_config', enabled: VOICE_OK && config\.voice && voiceReady\(\), mute: config\.muteWhileTalking !== false, sound: !!config\.sound, \.\.\.\(NEEDS_MODEL \? \{ model: MODEL_DIR \} : \{\}\), \.\.\.\(LINUX \? \{ duck: duckLevel\(config\), wake: wakeFor\(config\), mic: deviceName\(config\.micDevice\), speaker: deviceName\(config\.speakerDevice\) \} : \{\}\) \}\);/, 'voice_config carries the phrase on Linux');
 assert.match(side, /wake: LINUX && VOICE_OK \? wakeOf\(config\) : null,/, 'the panel is told the switch and the phrase, on Linux only');
 
 // The shell: the phrase goes on to the voice helper when it changes and to every helper that starts; never when off.
@@ -84,14 +84,15 @@ assert.match(voicePage, /toggle\('Voice control', /, 'and so is Voice control');
 {
   const panel = readFileSync(fileURLToPath(new URL('../../../panel/panel.js', import.meta.url)), 'utf8');
   const page = panel.slice(panel.indexOf('function voicePage()'), panel.indexOf('// Wayland: the commands to bind to keys'));
-  assert.match(page, /tabBtn\('replies', 'Replies'\), tabBtn\('talking', 'Talking'\), state\.duck \? tabBtn\('sounds', 'Other sounds'\) : null/, 'the Voice page has its tabs; Other sounds only where it works');
-  const at = (name) => page.indexOf(`const ${name} = [`);
-  const replies = page.slice(at('replies'), at('talking')), talking = page.slice(at('talking'), at('sounds')), sounds = page.slice(at('sounds'));
-  const only = (tab, name, groups) => { for (const g of groups) for (const [t, n] of [[replies, 'replies'], [talking, 'talking'], [sounds, 'sounds']]) assert.equal(t.includes(`group('${g}'`), n === name, `${g}: ${n === name ? 'on' : 'not on'} ${n}`); };
+  assert.match(page, /tabBtn\('replies', 'Replies'\), tabBtn\('talking', 'Talking'\), state\.audio \? tabBtn\('devices', 'Devices'\) : null, state\.duck \? tabBtn\('sounds', 'Other sounds'\) : null/, 'the Voice page has its tabs; Devices and Other sounds only where they work');
+  const at = (name) => page.indexOf(`const ${name} = `);
+  const replies = page.slice(at('replies'), at('talking')), talking = page.slice(at('talking'), at('sounds')), sounds = page.slice(at('sounds'), at('devices')), devices = page.slice(at('devices'));
+  const only = (tab, name, groups) => { for (const g of groups) for (const [t, n] of [[replies, 'replies'], [talking, 'talking'], [sounds, 'sounds'], [devices, 'devices']]) assert.equal(t.includes(`group('${g}'`), n === name, `${g}: ${n === name ? 'on' : 'not on'} ${n}`); };
   only(replies, 'replies', ['Spoken replies', 'Language']);
   only(talking, 'talking', ['Talking to me', 'Wake word']);
   only(sounds, 'sounds', ['Other sounds']);
-  assert.match(page, /on === 'talking' \? talking : on === 'sounds' \? sounds : replies/, 'one tab shows at a time');
+  only(devices, 'devices', ['Microphone', 'Speaker']);
+  assert.match(page, /on === 'talking' \? talking : on === 'sounds' \? sounds : on === 'devices' \? devices : replies/, 'one tab shows at a time');
 }
 
 console.log('wake tests: passed');

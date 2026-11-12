@@ -1536,6 +1536,8 @@ fn duck_load(dir: &Path) -> Vec<Stream> {
 trait Mixer {
     fn streams(&mut self) -> Option<Vec<Stream>>;
     fn set(&mut self, index: u32, volumes: &[u32]);
+    /// Plays a stream on another sink (a name, or @DEFAULT_SINK@).
+    fn move_to(&mut self, index: u32, sink: &str);
 }
 
 struct Pactl;
@@ -1558,6 +1560,52 @@ impl Mixer for Pactl {
         let args: Vec<String> = ["set-sink-input-volume".to_string(), index.to_string()].into_iter().chain(volumes.iter().map(u32::to_string)).collect();
         let _ = Self::run(&args);
     }
+    fn move_to(&mut self, index: u32, sink: &str) {
+        let _ = Self::run(&["move-sink-input".to_string(), index.to_string(), sink.to_string()]);
+    }
+}
+
+// ---------- the speaker Roamies plays on (the Voice page) ----------
+// The voice and the sound effects play from the webview's processes, through the sound server's default sink. With
+// a speaker picked, Roamies' own streams are moved there: when the pick changes, and whenever a reply starts playing
+// (a stream the webview opened since is moved too). Back to the default, they are moved there once.
+
+/// The sink picked ("" for the system's default).
+static SPEAKER: Mutex<String> = Mutex::new(String::new());
+
+/// Moves Roamies' own streams (`own`) to `sink`, or to the default sink for "". The streams moved.
+fn route_own(mixer: &mut impl Mixer, sink: &str, own: impl Fn(u32) -> bool) -> Vec<u32> {
+    let to = if sink.is_empty() { "@DEFAULT_SINK@" } else { sink };
+    let mine: Vec<u32> = mixer.streams().unwrap_or_default().iter().filter(|s| s.pid.is_some_and(&own)).map(|s| s.index).collect();
+    for &i in &mine {
+        mixer.move_to(i, to);
+    }
+    mine
+}
+
+/// Roamies' streams to the picked sink, on a thread of its own (pactl may be slow). `always`: also when the pick is
+/// the default (it just changed back to it).
+fn route_now(always: bool) {
+    let sink = SPEAKER.lock().unwrap().clone();
+    if sink.is_empty() && !always {
+        return;
+    }
+    std::thread::spawn(move || {
+        let me = std::process::id();
+        route_own(&mut Pactl, &sink, |pid| is_own(pid, me, |p| stat_ppid(&std::fs::read_to_string(format!("/proc/{p}/stat")).ok()?)));
+    });
+}
+
+/// The sidecar's speaker setting (voice_config): kept, and Roamies' streams moved when it changed.
+pub(crate) fn set_speaker(sink: String) {
+    {
+        let mut s = SPEAKER.lock().unwrap();
+        if *s == sink {
+            return;
+        }
+        *s = sink;
+    }
+    route_now(true);
 }
 
 /// Lowers the other apps' streams and adds them to `held`. What they had is written down before any volume moves,
@@ -1752,6 +1800,10 @@ pub(crate) fn talk_state(app: &AppHandle, label: &str, hearing: bool, speaking: 
     static TALK: Mutex<Vec<(String, bool, bool)>> = Mutex::new(Vec::new());
     let (hearing, speaking) = talk_set(&mut TALK.lock().unwrap(), label, hearing, speaking, |l| app.get_webview_window(l).is_some());
     duck_send(DuckEvent::Busy(hearing || speaking));
+    // A reply starting: its stream goes to the picked speaker.
+    if speaking {
+        route_now(false);
+    }
     // With the wake word on, the voice helper must not take Roamies' own voice saying the phrase for the user's.
     crate::voice::speaking(app, speaking);
 }
@@ -1773,11 +1825,12 @@ mod tests {
         now: Option<Vec<Stream>>,
         lists: usize,
         sets: Vec<(u32, Vec<u32>)>,
+        moves: Vec<(u32, String)>,
     }
 
     impl FakeMixer {
         fn with(streams: &[Stream]) -> Self {
-            FakeMixer { now: Some(streams.to_vec()), lists: 0, sets: Vec::new() }
+            FakeMixer { now: Some(streams.to_vec()), lists: 0, sets: Vec::new(), moves: Vec::new() }
         }
     }
 
@@ -1792,6 +1845,24 @@ mod tests {
                 s.volumes = volumes.to_vec();
             }
         }
+        fn move_to(&mut self, index: u32, sink: &str) {
+            self.moves.push((index, sink.to_string()));
+        }
+    }
+
+    #[test]
+    fn roamies_own_streams_go_to_the_picked_speaker_and_back_to_the_default() {
+        let mut m = FakeMixer::with(&[stream(38, None, &[65536]), stream(419, Some(1281), &[65536]), stream(500, Some(77), &[65536]), stream(501, Some(78), &[65536])]);
+        let own = |pid: u32| pid == 77 || pid == 78;
+        assert_eq!(route_own(&mut m, "alsa_output.usb-Codec-00.analog-stereo", own), vec![500, 501]);
+        assert_eq!(m.moves, vec![(500, "alsa_output.usb-Codec-00.analog-stereo".to_string()), (501, "alsa_output.usb-Codec-00.analog-stereo".to_string())], "only Roamies' own: not another app's, not one no app owns");
+        m.moves.clear();
+        route_own(&mut m, "", own);
+        assert_eq!(m.moves, vec![(500, "@DEFAULT_SINK@".to_string()), (501, "@DEFAULT_SINK@".to_string())]);
+        m.now = None;
+        m.moves.clear();
+        assert_eq!(route_own(&mut m, "x", own), Vec::<u32>::new(), "no sound server: nothing");
+        assert!(m.moves.is_empty());
     }
 
     /// A folder of its own for one test, outside the source tree; the test removes it when it's done.
@@ -1941,7 +2012,7 @@ mod tests {
         assert_eq!(mixer.now.as_deref(), Some(&[stream(1, Some(1281), &[13107, 13107]), stream(5, Some(77), &[10486, 5243])][..]));
         assert!(dir.join("duck.json").is_file());
         // The next start, with the sound server away: nothing can be given back yet, so it's all kept.
-        let mut away = FakeMixer { now: None, lists: 0, sets: Vec::new() };
+        let mut away = FakeMixer { now: None, lists: 0, sets: Vec::new(), moves: Vec::new() };
         assert_eq!(duck_recover(&mut away, &dir), before.to_vec());
         assert!(dir.join("duck.json").is_file());
         // The next start: back to what they had, and the note is gone.

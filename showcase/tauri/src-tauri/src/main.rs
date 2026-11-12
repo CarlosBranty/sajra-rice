@@ -1705,6 +1705,12 @@ fn handle_sidecar(app: &AppHandle, msg: Value) {
             // Linux: the phrase the voice helper listens for to start a take by itself; nothing or "": the wake word is off.
             #[cfg(target_os = "linux")]
             voice::set_wake(app, voice::wake_of(&msg));
+            // Linux: the microphone (a change restarts the helper below) and the speaker Roamies' sound plays on.
+            #[cfg(target_os = "linux")]
+            {
+                voice::set_mic(app, voice::device_of(&msg, "mic"));
+                linux::set_speaker(voice::device_of(&msg, "speaker"));
+            }
             if msg.get("enabled").and_then(Value::as_bool) == Some(true) {
                 app.state::<Voice>().1.store(0, Ordering::Relaxed);
                 start_voice(app);

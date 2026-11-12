@@ -530,12 +530,12 @@
   // as one page this had grown past its height, with the last settings cut off below the edge. Each tab fits with its
   // typing field open.
   function voicePage() {
-    const v = state.voice, on = ui.vtab === 'sounds' && !state.duck ? 'replies' : ui.vtab;
+    const v = state.voice, on = (ui.vtab === 'sounds' && !state.duck) || (ui.vtab === 'devices' && !state.audio) ? 'replies' : ui.vtab;
     const tabBtn = (id, label) => el('button', {
       className: 'tab', type: 'button', role: 'tab', id: `vtab-${id}`, 'aria-selected': String(on === id), tabIndex: on === id ? 0 : -1, 'data-k': `vtab-${id}`,
       on: { click: () => { if (ui.vtab !== id) { ui.vtab = id; ui.key = null; disarm(); render(`vtab-${id}`); } } },
     }, label);
-    const head = el('div', { className: 'mhead' }, el('div', { className: 'tabs', role: 'tablist', 'aria-label': 'Voice' }, tabBtn('replies', 'Replies'), tabBtn('talking', 'Talking'), state.duck ? tabBtn('sounds', 'Other sounds') : null));
+    const head = el('div', { className: 'mhead' }, el('div', { className: 'tabs', role: 'tablist', 'aria-label': 'Voice' }, tabBtn('replies', 'Replies'), tabBtn('talking', 'Talking'), state.audio ? tabBtn('devices', 'Devices') : null, state.duck ? tabBtn('sounds', 'Other sounds') : null));
     // The voice (where the voice helper is): Fish Audio, or the local one, spoken on this computer. Only Fish's rows
     // show for Fish; the local voice shows its download, then whether the reply language suits it.
     const local = state.voiceEngine === 'local', lv = state.localVoice;
@@ -600,7 +600,14 @@
           picks('Lower to', state.duck.levels.map((l) => [l, `${l}%`]), state.duck.level, (x) => act(`ducklevel:${x}`), 'ducklevel'),
         ] : null) : null,
     ];
-    return [head, ...(on === 'talking' ? talking : on === 'sounds' ? sounds : replies)];
+    // Linux: which microphone I listen with and which speaker I talk through ('' is the system's default).
+    const a = state.audio, list = (devs, cur) => [{ items: [['', 'System default'], ...devs.map((d) => [d.name, d.label]),
+      ...(cur && !devs.some((d) => d.name === cur) ? [[cur, 'Not connected now']] : [])] }];
+    const devices = a ? [
+      group('Microphone', 'What I listen with.', null, el('div', { className: 'setting' }, dropdown('Microphone', list(a.mics, a.mic), a.mic, (x) => act(`mic:${x}`), 'mic'))),
+      group('Speaker', 'Where my voice plays.', null, el('div', { className: 'setting' }, dropdown('Speaker', list(a.speakers, a.speaker), a.speaker, (x) => act(`speaker:${x}`), 'speaker'))),
+    ] : [];
+    return [head, ...(on === 'talking' ? talking : on === 'sounds' ? sounds : on === 'devices' ? devices : replies)];
   }
   // Money: the movements read from bank mails or added by hand (the sidecar filters them and sends a page at a time),
   // adding one by hand, and the mail accounts bank notifications are read from (read-only) with adding one and each
@@ -1063,6 +1070,8 @@
       voice: { on: true, keys: null, ready: true, mac: false, mute: true, download: null },
       // Linux's groups too, so every group of the Voice page can be seen here.
       duck: { on: true, level: 30, levels: [10, 20, 30, 50] }, wake: { on: true, phrase: 'oye jarvis' }, pen: { on: true },
+      audio: { mics: [{ name: 'mic.internal', label: 'Digital Microphone' }, { name: 'mic.usb', label: 'USB Audio CODEC Analog Stereo' }],
+        speakers: [{ name: 'out.speaker', label: 'Speaker' }, { name: 'out.hdmi1', label: 'HDMI / DisplayPort 1 Output (Stereo)' }], mic: 'mic.usb', speaker: '' },
       sound: true, actions: false, login: { on: true },
       update: { available: new URLSearchParams(location.search).has('update') ? '0.9.1' : null, installing: false, checking: false, result: null },
       intro: false,

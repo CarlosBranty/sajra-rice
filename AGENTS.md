@@ -92,6 +92,11 @@ opened at run time; the configs are compiled in and written for each attempt to 
 The password goes from the page to the shell (`auth_password`), never to the sidecar or logs. Only the shell reports
 `auth_result`: `sidecar_send` drops `auth*` from pages. Elsewhere `authorize` returns false. `safety.mjs` blocks agent
 writes and commands that touch `money.db`, `mail.db` or `<data dir>/banks/`.
+Devices (Linux, the Voice page's Devices tab): the microphones and speakers come from `pactl -f json list
+sources|sinks` (`sidecar/audiodev.mjs`, monitors left out); a pick is a device name, '' the system's default. The voice
+helper is started with `PIPEWIRE_NODE` and `PULSE_SOURCE` set to the microphone (`voice.rs` `set_mic`; a change
+restarts it), and Roamies' own playback streams are moved to the speaker with `pactl move-sink-input` when the pick
+changes and whenever a reply starts playing (`linux.rs` `set_speaker`, `route_own`).
 Usage (`sidecar/usage.mjs`): the agent's `token_usage` tool sums `~/.gg/sidekick/usage.jsonl` (one line per request:
 provider, route, model, token counts, never what was said) for today, yesterday, the last 7 days, this month or all,
 and says how it answers now: Anthropic signed in with Claude (Claude Code, the user's subscription), another

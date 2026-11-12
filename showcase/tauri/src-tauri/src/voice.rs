@@ -44,6 +44,44 @@ fn wake_cmds(wake: &(Option<String>, bool), fresh: bool) -> Vec<Value> {
     }
 }
 
+/// The microphone the user picked (Linux, the Voice page): a PipeWire/PulseAudio source's name, "" for the system's
+/// default. The helper records through ALSA's default device, which on PipeWire and PulseAudio desktops is their
+/// plugin: it goes to the node named in PIPEWIRE_NODE (pipewire-alsa) or PULSE_SOURCE (the pulse plugin).
+#[cfg(target_os = "linux")]
+static MIC: Mutex<String> = Mutex::new(String::new());
+
+/// A device name as the sound server writes them ("" for anything else: the default), as the sidecar checks it too.
+#[cfg(target_os = "linux")]
+pub(crate) fn device_of(msg: &Value, key: &str) -> String {
+    let name = msg.get(key).and_then(Value::as_str).unwrap_or("");
+    let ok = !name.is_empty() && name.len() <= 200 && name.chars().all(|c| c.is_ascii_alphanumeric() || "_.:@+-".contains(c));
+    if ok { name.to_owned() } else { String::new() }
+}
+
+/// What the helper's environment gets for a microphone: nothing for the default.
+#[cfg(target_os = "linux")]
+fn mic_env(mic: &str) -> Vec<(&'static str, String)> {
+    if mic.is_empty() {
+        Vec::new()
+    } else {
+        vec![("PIPEWIRE_NODE", mic.to_owned()), ("PULSE_SOURCE", mic.to_owned())]
+    }
+}
+
+/// The sidecar's microphone setting: kept for the helpers that start later; a running helper is stopped when it
+/// changed (the microphone is chosen when it starts), and voice_config starts it again right after.
+#[cfg(target_os = "linux")]
+pub(crate) fn set_mic(app: &AppHandle, mic: String) {
+    {
+        let mut m = MIC.lock().unwrap();
+        if *m == mic {
+            return;
+        }
+        *m = mic;
+    }
+    stop_voice(app);
+}
+
 /// The sidecar's wake word setting: kept for the helpers that start later, and told to the one running when it
 /// changed.
 #[cfg(target_os = "linux")]
@@ -92,6 +130,10 @@ pub(crate) fn start_voice(app: &AppHandle) {
     let chord = app.state::<TalkChord>().0.lock().unwrap().join(",");
     let mut cmd = Command::new(bin);
     cmd.arg("--chord").arg(chord);
+    #[cfg(target_os = "linux")]
+    for (k, v) in mic_env(&MIC.lock().unwrap()) {
+        cmd.env(k, v);
+    }
     if let Some(dir) = app.state::<VoiceModel>().0.lock().unwrap().clone() {
         cmd.arg("--model").arg(dir);
     }
@@ -393,6 +435,18 @@ mod tests {
         }
         assert_eq!(wake_of(&json!({ "wake": "x".repeat(41) })), None, "longer than any phrase the panel takes");
         assert_eq!(wake_of(&json!({ "wake": "ñ".repeat(40) })), Some("ñ".repeat(40)), "forty letters, whatever their bytes");
+    }
+
+    #[test]
+    fn the_microphone_is_a_device_name_and_reaches_the_helper_through_its_environment() {
+        let usb = "alsa_input.usb-Codec-00.analog-stereo-input";
+        assert_eq!(device_of(&json!({ "mic": usb }), "mic"), usb);
+        for odd in [json!(""), json!("a b"), json!("x;y"), json!("$(id)"), json!(7), json!(null), json!("x".repeat(201))] {
+            assert_eq!(device_of(&json!({ "mic": odd }), "mic"), "", "{odd}: the default");
+        }
+        assert_eq!(device_of(&json!({ "enabled": true }), "mic"), "", "an older sidecar says nothing: the default");
+        assert_eq!(mic_env(""), Vec::<(&str, String)>::new(), "the default: the environment as it is");
+        assert_eq!(mic_env(usb), vec![("PIPEWIRE_NODE", usb.to_string()), ("PULSE_SOURCE", usb.to_string())]);
     }
 
     #[test]

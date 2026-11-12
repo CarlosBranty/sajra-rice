@@ -41,6 +41,7 @@ import { openMoney } from './money.mjs';
 import { moneyPanel } from './money/panel.mjs';
 import { moneyTools } from './money/tools.mjs';
 import { usageTools } from './usage.mjs';
+import { deviceName, listDevices } from './audiodev.mjs';
 import { shortcutTools } from './shortcuts.mjs';
 import { createActivity } from './activity.mjs';
 import { bindCommands, canCircle, canSnap, circleWords, hasHands, hasHotkeys, hasVoice, linuxSession, micTrouble, mousePen, needsVoiceModel, platformLine, promptWords, seesPointer, stepWaits, onHyprland } from './platform.mjs';
@@ -96,6 +97,7 @@ const DEFAULTS = {
   fishModel: FISH_CHOICES[0].id, // Drama 3 (most expressive) or S2.1 Pro (natural pace, cheaper)
   language: 'auto', // the reply language: 'auto' (nothing is asked of the model), 'en' or 'es' (speech.mjs LANGUAGES)
   duckOthers: false, duckLevel: 30, // Linux: other apps' sound goes down to this percentage while it listens and speaks (speech.mjs duckOf)
+  micDevice: '', speakerDevice: '', // Linux: the microphone and speaker Roamies uses ('' = the system's default; audiodev.mjs)
   wakeWord: false, wakePhrase: '', // Linux: saying the phrase starts listening, with no key; the microphone stays on for it (speech.mjs wakeOf)
   penMouse: true, // Linux on a layer surface: while it listens, the mouse draws on the screen (platform.mjs mousePen)
   theme: 'classic', // the interface's colours: 'classic', or 'system' to follow the desktop's light or dark and its colours (speech.mjs themeOf)
@@ -138,6 +140,7 @@ const voiceModel = { status: !NEEDS_MODEL || isReady(MODEL_DIR) ? 'ready' : 'mis
 const voiceReady = () => voiceModel.status === 'ready';
 let config = { ...DEFAULTS };
 let diagnosing = false; // a diagnostics file is being made (diagnostics.mjs)
+let audioDevices = null; // Linux: { mics, speakers } for the Voice page (refreshAudio)
 let shellInfo = null; // resolves the shell's reply to it: screens, tray, panel, helpers, permissions, microphones
 {
   const saved = readJson(CONFIG_PATH, { backup: true }); // an unreadable file is set aside, never overwritten
@@ -1415,6 +1418,7 @@ function panelState() {
     language: languageOf(config.language), languages: LANGUAGES,
     duck: LINUX ? { ...duckOf(config), levels: DUCK_LEVELS } : null,
     wake: LINUX && VOICE_OK ? wakeOf(config) : null,
+    audio: LINUX && audioDevices ? { ...audioDevices, mic: deviceName(config.micDevice), speaker: deviceName(config.speakerDevice) } : null,
     pen: PEN_MOUSE ? { on: penOn() } : null,
     voice: VOICE_OK ? {
       on: !!config.voice, keys: HOTKEYS_OK ? talkSymbols() : null, ready: voiceReady(), mac: MAC, mute: config.muteWhileTalking !== false, autoListen: !!config.autoListen,
@@ -1431,7 +1435,14 @@ function panelState() {
 
 // duck (Linux): the percentage other apps' sound is lowered to while it listens and speaks, 0 when that's off.
 // wake (Linux): the phrase the voice helper listens for to start a take, '' when the wake word is off.
-const voiceConfig = () => send({ type: 'voice_config', enabled: VOICE_OK && config.voice && voiceReady(), mute: config.muteWhileTalking !== false, sound: !!config.sound, ...(NEEDS_MODEL ? { model: MODEL_DIR } : {}), ...(LINUX ? { duck: duckLevel(config), wake: wakeFor(config) } : {}) });
+const voiceConfig = () => send({ type: 'voice_config', enabled: VOICE_OK && config.voice && voiceReady(), mute: config.muteWhileTalking !== false, sound: !!config.sound, ...(NEEDS_MODEL ? { model: MODEL_DIR } : {}), ...(LINUX ? { duck: duckLevel(config), wake: wakeFor(config), mic: deviceName(config.micDevice), speaker: deviceName(config.speakerDevice) } : {}) });
+// Linux: the microphones and speakers there are, for the Voice page; asked again now and then (one plugged in or out).
+async function refreshAudio() {
+  if (!LINUX) return;
+  const d = await listDevices().catch(() => null);
+  if (JSON.stringify(d) !== JSON.stringify(audioDevices)) { audioDevices = d; menu(); }
+}
+if (LINUX) { refreshAudio(); setInterval(refreshAudio, 15000).unref(); }
 // The wake phrase typed in the panel. The first one switches the wake word on (that's why it was typed); changing
 // it later leaves the switch as it is.
 function setWakePhrase(given) {
@@ -1612,6 +1623,8 @@ async function onMenu(id) {
   else if (id === 'list') showList({ seconds: 20 });
   else if (id === 'mutetalk') { config.muteWhileTalking = config.muteWhileTalking === false; saveConfig(); voiceConfig(); menu(); }
   else if (id === 'autolisten') { config.autoListen = !config.autoListen; saveConfig(); menu(); }
+  else if (id.startsWith('mic:') && LINUX) { config.micDevice = deviceName(id.slice(4)); saveConfig(); voiceConfig(); menu(); }
+  else if (id.startsWith('speaker:') && LINUX) { config.speakerDevice = deviceName(id.slice(8)); saveConfig(); voiceConfig(); menu(); }
   else if (id === 'duck' && LINUX) { config.duckOthers = !duckOf(config).on; saveConfig(); voiceConfig(); menu(); }
   else if (id.startsWith('ducklevel:') && LINUX && DUCK_LEVELS.includes(Number(id.slice(10)))) { config.duckLevel = Number(id.slice(10)); saveConfig(); voiceConfig(); menu(); }
   else if (id === 'wake' && LINUX) { config.wakeWord = !wakeOf(config).on; saveConfig(); voiceConfig(); menu(); }
