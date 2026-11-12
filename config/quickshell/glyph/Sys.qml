@@ -130,7 +130,9 @@ Singleton {
     Timer { id: btResumeT; interval: 1500; onTriggered: { for (const d of Bluetooth.devices.values) if (root.btResume.includes(d.address) && !d.connected) d.connect(); } }
 
     // ---- кофеин: не спать. Ингибитору нужно живое окно — невидимое 0×0, как в demonshot ----
-    property bool caffeine: false
+    // remembered in the shell's state (Theme.state), so a restart or reload keeps it as it was
+    property bool caffeine: Theme.state.caffeine
+    onCaffeineChanged: if (Theme.state.caffeine !== caffeine) Theme.state.caffeine = caffeine
     IdleInhibitor {
         enabled: root.caffeine
         window: PanelWindow {

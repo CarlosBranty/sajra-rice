@@ -192,6 +192,7 @@ Singleton {
             property var tones: []        // тона обоев, их пишет квантайзер; пусто — серые обои или нет картинки
             property string variant: "tonalspot" // как тон обоев становится палитрой, id из schemes.js (VARIANTS)
             property bool dnd: false  // новые не показываются, критические — всегда
+            property bool caffeine: false // never idle or sleep (Sys.caffeine); remembered across restarts
             property int unread: 0    // для лока
             // ---- то, что крутят настройки (prefs) ----
             property var widgets: ["weather", "calendar", "cpu", "player", "buds", "system"] // бенто дома по порядку, см. kinds
