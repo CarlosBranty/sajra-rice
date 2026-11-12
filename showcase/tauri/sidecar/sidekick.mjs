@@ -40,6 +40,7 @@ import { EVERY as MAIL_EVERY, createMail } from './mail/service.mjs';
 import { openMoney } from './money.mjs';
 import { moneyPanel } from './money/panel.mjs';
 import { moneyTools } from './money/tools.mjs';
+import { usageTools } from './usage.mjs';
 import { createActivity } from './activity.mjs';
 import { bindCommands, canCircle, canSnap, circleWords, hasHands, hasHotkeys, hasVoice, linuxSession, micTrouble, mousePen, needsVoiceModel, platformLine, promptWords, seesPointer, stepWaits } from './platform.mjs';
 import { keyCards, keyKinds, signInCards } from './providers.mjs';
@@ -800,6 +801,16 @@ process.on('uncaughtException', (e, origin) => {
 // One line per request in ~/.gg/sidekick/usage.jsonl: token counts and timings only, never what was said.
 const USAGE_FILE = path.join(process.env.ROAMIES_DATA_DIR ? path.join(process.env.ROAMIES_DATA_DIR, 'sidekick') : path.join(HOME, '.gg', 'sidekick'), 'usage.jsonl');
 const usageToday = { day: '', requests: 0, tokens: 0 };
+// The agent can tell the tokens used and how it answers: Anthropic signed in with Claude runs through Claude Code
+// (the user's subscription, claudeCodeRoute); another provider signed in to its account (oauthOn) uses that account;
+// otherwise an API key.
+const answeringRoute = () => {
+  const p = config.provider;
+  if (!p || !config.model) return null;
+  const via = p === 'anthropic' ? (oauthOn.get('anthropic') ? 'subscription' : 'api-key') : (oauthOn.get(p) ? 'account' : 'api-key');
+  return { provider: p, model: config.model, via };
+};
+tools.push(...usageTools({ file: USAGE_FILE, route: answeringRoute }));
 function logUsage(rec) {
   const day = new Date().toDateString();
   if (usageToday.day !== day) Object.assign(usageToday, { day, requests: 0, tokens: 0 });
@@ -893,7 +904,7 @@ async function prompt(text, image = null, note = '', byVoice = false) {
     });
     const turn = nextTurn();
     logLine('request', { turn, model: config.model, chars: text.length, image: !!image, session: session?.id });
-    const use = { t: Date.now(), model: config.model, calls: 0, tools: 0, in: 0, cacheRead: 0, cacheWrite: 0, out: 0 };
+    const use = { t: Date.now(), provider: config.provider, route: agentRoute, model: config.model, calls: 0, tools: 0, in: 0, cacheRead: 0, cacheWrite: 0, out: 0 };
     const soon = frontSoon; frontSoon = null;
     frontNow = soon && Date.now() - soon.at < 8000 ? await soon.p : await whereNow();
     const stamped = `[${stampNow()}] ${text}`;

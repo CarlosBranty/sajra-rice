@@ -92,6 +92,10 @@ opened at run time; the configs are compiled in and written for each attempt to 
 The password goes from the page to the shell (`auth_password`), never to the sidecar or logs. Only the shell reports
 `auth_result`: `sidecar_send` drops `auth*` from pages. Elsewhere `authorize` returns false. `safety.mjs` blocks agent
 writes and commands that touch `money.db`, `mail.db` or `<data dir>/banks/`.
+Usage (`sidecar/usage.mjs`): the agent's `token_usage` tool sums `~/.gg/sidekick/usage.jsonl` (one line per request:
+provider, route, model, token counts, never what was said) for today, yesterday, the last 7 days, this month or all,
+and says how it answers now: Anthropic signed in with Claude (Claude Code, the user's subscription), another
+provider's account, or an API key.
 Mail (`sidecar/mail/`): bank mails over IMAP with app passwords (Gmail, Yahoo; `imapflow`, `mailparser`), strictly
 read-only: EXAMINE, `BODY.PEEK[]`, a server-side SEARCH for the definitions' exact senders inside a 90-day or UID
 window (cursors with UIDVALIDITY in `<data dir>/mail.db`), never STORE, COPY, MOVE or EXPUNGE. Only the receiving
