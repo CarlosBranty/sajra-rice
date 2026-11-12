@@ -41,8 +41,9 @@ import { openMoney } from './money.mjs';
 import { moneyPanel } from './money/panel.mjs';
 import { moneyTools } from './money/tools.mjs';
 import { usageTools } from './usage.mjs';
+import { shortcutTools } from './shortcuts.mjs';
 import { createActivity } from './activity.mjs';
-import { bindCommands, canCircle, canSnap, circleWords, hasHands, hasHotkeys, hasVoice, linuxSession, micTrouble, mousePen, needsVoiceModel, platformLine, promptWords, seesPointer, stepWaits } from './platform.mjs';
+import { bindCommands, canCircle, canSnap, circleWords, hasHands, hasHotkeys, hasVoice, linuxSession, micTrouble, mousePen, needsVoiceModel, platformLine, promptWords, seesPointer, stepWaits, onHyprland } from './platform.mjs';
 import { keyCards, keyKinds, signInCards } from './providers.mjs';
 import { activityLogs, buildReport, reportDir, reportName, reveal, run, scrubConfig, tail } from './diagnostics.mjs';
 
@@ -811,6 +812,8 @@ const answeringRoute = () => {
   return { provider: p, model: config.model, via };
 };
 tools.push(...usageTools({ file: USAGE_FILE, route: answeringRoute }));
+// Hyprland with a Lua config (the glyph dotfiles): the user's own shortcuts, read from keybinds.lua and used by voice.
+if (onHyprland(process.platform)) tools.push(...shortcutTools());
 function logUsage(rec) {
   const day = new Date().toDateString();
   if (usageToday.day !== day) Object.assign(usageToday, { day, requests: 0, tokens: 0 });

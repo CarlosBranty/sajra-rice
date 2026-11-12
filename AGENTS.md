@@ -96,6 +96,10 @@ Usage (`sidecar/usage.mjs`): the agent's `token_usage` tool sums `~/.gg/sidekick
 provider, route, model, token counts, never what was said) for today, yesterday, the last 7 days, this month or all,
 and says how it answers now: Anthropic signed in with Claude (Claude Code, the user's subscription), another
 provider's account, or an API key.
+Shortcuts (`sidecar/shortcuts.mjs`, Hyprland with a Lua config such as the glyph dotfiles): `desktop_shortcuts` reads
+`~/.config/hypr/hyprland/keybinds.lua` (keys from `variables.lua`, `user.lua` overrides) each time, and `use_shortcut`
+dispatches a shell action by name (`hyprctl dispatch 'hl.dsp.global("shell:<name>")'`) or presses any other shortcut
+with `wtype`. `safety.mjs` `checkShortcut` keeps out binds that kill or restart, type text, or sleep or power off.
 Mail (`sidecar/mail/`): bank mails over IMAP with app passwords (Gmail, Yahoo; `imapflow`, `mailparser`), strictly
 read-only: EXAMINE, `BODY.PEEK[]`, a server-side SEARCH for the definitions' exact senders inside a 90-day or UID
 window (cursors with UIDVALIDITY in `<data dir>/mail.db`), never STORE, COPY, MOVE or EXPUNGE. Only the receiving
