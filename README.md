@@ -56,14 +56,35 @@ Also: Hyprland (Lua), hypridle, kitty, fish, starship, fastfetch, btop, cava (do
 ```sh
 git clone https://github.com/Nebelung-cloud/glyph-rice ~/.local/share/glyph
 ~/.local/share/glyph/install.sh                  # Arch: packages, services, symlinks, login theme
-~/.local/share/glyph/install.sh --with telegram  # same, extras picked up front
+~/.local/share/glyph/install.sh --with telegram  # same, components picked up front (--with "" for the rice only)
+~/.local/share/glyph/install.sh --with hanami    # same, with the Hanami assistant
 ~/.local/share/glyph/install.sh --links          # any distro: symlinks only
 ~/.local/share/glyph/install.sh --sddm           # login theme only (sudo); run again after editing it
+~/.local/share/glyph/install.sh --dry-run        # print every action, change nothing
+~/.local/share/glyph/install.sh --help           # all the flags
 ```
 
-Without `--with` it asks which extras to add: `telegram` (`Super` `D`), `spotify` with Spicetify (`Super` `M`),
-`clash` for the VPN panel. Old configs go to `~/.dots-backup-<date>/`. Wallpapers are read from `~/Pictures/Wallpapers`,
+The installer is a terminal UI made with [gum](https://github.com/charmbracelet/gum) (it offers to install it from
+`extra/gum` first): a welcome screen with what it detected (distro, GPU, laptop, fingerprint reader), a component
+picker, then each step with a spinner and a counter: pacman, yay and the AUR, components, symlinks, services, Hanami,
+the login theme, and a summary with the next steps. Command output goes to
+`~/.local/state/glyph/install-<date>.log`; when a step fails it shows the last lines and asks whether to retry it on
+screen, continue or stop. `--yes` asks nothing (defaults, plain text, as without a terminal); `--dry-run` prints the
+commands instead of running them, without sudo.
+
+Without `--with` it asks which components to add: `hanami` (below), `telegram` (`Super` `D`), `spotify` with Spicetify
+(`Super` `M`), `vault` (Vaultwarden through rbw and rofi, `Super` `Alt` `P`), `clash` for the VPN panel.
+Old configs go to `~/.dots-backup-<date>/`. Wallpapers are read from `~/Pictures/Wallpapers`,
 gifs for the home cat tile from `~/Pictures/Gifs` (pick one in prefs → home, or click the tile; none there — the cat).
+
+**Hanami** (optional) is a voice assistant on the desktop: `Ctrl` `Alt` `Space` to talk to it, hold `Ctrl` `Alt` `D`
+to dictate into any app, and it can read and type into windows and kitty. Sign in to Claude in its panel; the voice
+models (~1 GB) download on first use. It is installed prebuilt from its release `.deb` through
+`packaging/hanami-bin/PKGBUILD` (`--hanami-deb <file>` installs a local build instead), and turned on by two
+gitignored links the installer makes: `hypr/hanami-enabled.lua` → `hanami.lua` (keys and autostart, loaded by
+`user.lua`) and `kitty/hanami.conf` → `hanami-remote.conf` (kitty's remote control over a private socket). Delete
+both, or run `install.sh --no-hanami`, to turn it off. Hanami is a modified version of
+[Roamies](https://github.com/KenKaiii/Roamies) by Ken Kai, under the [AGPL-3.0](https://www.gnu.org/licenses/agpl-3.0.html).
 
 | `config/` | goes to |
 |---|---|

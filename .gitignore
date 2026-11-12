@@ -7,3 +7,6 @@ config/fonts/.uuid
 /glyph-tok/
 # generated on every launch by config/bin/glyph-vault from glyph's palette
 config/rofi/glyph-colors.rasi
+# Hanami is optional: install.sh links these to turn it on (hanami.lua, hanami-remote.conf), each machine its own
+config/hypr/hanami-enabled.lua
+config/kitty/hanami.conf

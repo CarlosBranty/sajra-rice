@@ -119,11 +119,7 @@ hl.window_rule({ match = { class = "^([Pp]inentry.*|gcr-prompter)$" }, float = t
 -- rofi (gestor de contraseñas): blur detrás del fondo translúcido y animación suave
 hl.layer_rule({ match = { namespace = "rofi" }, blur = true, ignore_alpha = 0.2, animation = "popin 90%" })
 
--- Roamies: Ctrl+Alt+Espacio para hablarle. Una pulsación empieza a escuchar; otra (o una pausa al terminar de hablar)
--- envía lo dicho. Es la compilación de desarrollo (~/Projects/Roamies); si vuelves a la AppImage, cambia la ruta
-hl.bind("CTRL + ALT + Space", hl.dsp.exec_cmd(os.getenv("HOME") .. "/Projects/Roamies/showcase/tauri/src-tauri/target/debug/roamies --talk"))
-
--- Roamies al iniciar sesión (la compilación de desarrollo). Hyprland no lee ~/.config/autostart, así que se arranca aquí
-hl.on("hyprland.start", function()
-    hl.exec_cmd(os.getenv("HOME") .. "/Projects/Roamies/showcase/tauri/src-tauri/target/debug/roamies")
-end)
+-- Hanami (asistente de voz, componente opcional): sus atajos y su arranque están en hanami.lua. install.sh lo activa
+-- enlazando hanami-enabled.lua → hanami.lua; sin ese enlace no se carga nada
+local hanami = io.open(os.getenv("HOME") .. "/.config/hypr/hanami-enabled.lua")
+if hanami then hanami:close(); require("hanami-enabled") end
