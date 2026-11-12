@@ -54,6 +54,13 @@ Money (`sidecar/money.mjs`, `sidecar/money/`): expenses read from bank notificat
 in a child process with row and time limits (`money/query.mjs`). Banks are data, one JSON per bank in `sidecar/banks/`
 (bundled in), and users add or replace them with the same JSON in `<data dir>/banks/`. Test fixtures are synthetic:
 never put a real mail's names, account numbers or amounts in the repository.
+Mail (`sidecar/mail/`): bank mails over IMAP with app passwords (Gmail, Yahoo; `imapflow`, `mailparser`), strictly
+read-only: EXAMINE, `BODY.PEEK[]`, a server-side SEARCH for the definitions' exact senders inside a 90-day or UID
+window (cursors with UIDVALIDITY in `<data dir>/mail.db`), never STORE, COPY, MOVE or EXPUNGE. Only the receiving
+provider's own Authentication-Results header goes to `parseMail` (`providerAuthResults`). App passwords live only in
+the keyring through `secrets.mjs` (`mail-<hash>` per account); the settings keep `{ provider, email }` (`email`, so
+diagnostics redact it). `mail/service.mjs` polls while the app runs and does nothing without an account; its tests run
+against `test/fake-imap.mjs`, which records every command.
 
 ## Commands
 

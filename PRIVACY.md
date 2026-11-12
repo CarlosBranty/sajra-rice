@@ -48,6 +48,19 @@ Each provider's own privacy policy applies to what is sent to it.
 - The screen is captured only when Roamies answers something about your screen, or when you mark an area. On Linux
   with Wayland it's taken through your desktop's screenshot portal; the copy the portal saves is deleted right away.
 
+## Money (off until you add a mail account)
+
+- When you add a mail account on the Money page, Roamies connects to that provider's mail server (IMAP over TLS)
+  every few minutes with the app password you created. It opens your mailbox read-only and asks only for mail from
+  the exact addresses of the banks it knows; it never marks, moves or deletes anything.
+- The app password is kept in your system's keyring, never in Roamies' settings, logs or database. Remove the account
+  in Roamies to delete it there, and revoke the app password at your provider.
+- From each bank mail it keeps only the expense: date, amount, merchant or person, the last four digits of the
+  account, the operation number and the category you give it, in a database on your computer. Mails it can't read are
+  listed by sender and subject so you can check them; their contents are not kept.
+- Nothing from your mail is sent to the AI model unless you ask Roamies about your spending; then it sees the expenses
+  it needs to answer, not the mails.
+
 ## What's stored on your computer
 
 Everything lives in `~/.gg` (on Windows, `%USERPROFILE%\.gg`) and stays on your computer:

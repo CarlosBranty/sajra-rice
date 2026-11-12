@@ -20,7 +20,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { createInterface } from 'node:readline';
 import {
-  addFact, applyFold, approxTokens, archiveFolded, clearFacts, clearFinished, compactTrigger, fitContext, flushWrites, forgetFact, isSummary, listItems, listFacts, nextDue, pickFacts, planFold,
+  DIR, addFact, applyFold, approxTokens, archiveFolded, clearFacts, clearFinished, compactTrigger, fitContext, flushWrites, forgetFact, isSummary, listItems, listFacts, nextDue, pickFacts, planFold,
   touchFacts, forDisk, forProvider, loadLatestSession, newSession, openCommitments, pruneSessions, readJson, saveSession, takeDueReminders, updateCommitment, writeJson,
 } from './store.mjs';
 import { foldInput, foldPrompt, memoryInput, memoryPrompt, oneShot, parseBrain, transcript } from './brain.mjs';
@@ -36,6 +36,8 @@ import { createLatency } from './latency.mjs';
 import { LOCAL_VOICE, createLocalEngine, localModel } from './localvoice.mjs';
 import { DEFAULT_VOICE, FISH_CHOICES } from './fish.mjs';
 import { createSecrets, retryLoad } from './secrets.mjs';
+import { EVERY as MAIL_EVERY, createMail } from './mail/service.mjs';
+import { openMoney } from './money.mjs';
 import { createActivity } from './activity.mjs';
 import { bindCommands, canCircle, canSnap, circleWords, hasHands, hasHotkeys, hasVoice, linuxSession, micTrouble, mousePen, needsVoiceModel, platformLine, promptWords, seesPointer, stepWaits } from './platform.mjs';
 import { keyCards, keyKinds, signInCards } from './providers.mjs';
@@ -93,6 +95,9 @@ const DEFAULTS = {
   wakeWord: false, wakePhrase: '', // Linux: saying the phrase starts listening, with no key; the microphone stays on for it (speech.mjs wakeOf)
   penMouse: true, // Linux on a layer surface: while it listens, the mouse draws on the screen (platform.mjs mousePen)
   theme: 'classic', // the interface's colours: 'classic', or 'system' to follow the desktop's light or dark and its colours (speech.mjs themeOf)
+  // Money: the mail accounts bank notifications are read from ({ provider, email }; their app passwords are only in the
+  // keyring) and the minutes between checks (mail/service.mjs).
+  mailAccounts: [], mailEvery: 5,
 };
 const LINUX = process.platform === 'linux';
 // Linux: "x11" or "wayland" (the app says which). Wayland keeps apps from seeing the pointer over other apps and
@@ -755,6 +760,16 @@ const logLine = (kind, data) => {
   const line = `${now.toISOString()} ${kind} ${typeof data === 'string' ? data : JSON.stringify(data)}\n`;
   fs.mkdir(LOG_DIR, { recursive: true, mode: 0o700 }).then(() => fs.appendFile(path.join(LOG_DIR, `${day}.log`), line, { mode: 0o600 })).catch(() => {});
 };
+
+// ---------- money: bank mails ----------
+// Read-only IMAP with app passwords, while the app runs; nothing at all until an account is added (mail/service.mjs).
+// mail.pending(): the expenses waiting for the user after the last read (onPending says when it changes).
+const mail = createMail({
+  secrets, dir: DIR, openMoney,
+  settings: () => config, save: (patch) => { Object.assign(config, patch); saveConfig(); },
+  log: logLine, onChange: () => panel(),
+});
+
 async function pruneLogs() {
   const cutoff = Date.now() - 7 * 864e5;
   for (const f of await fs.readdir(LOG_DIR).catch(() => [])) {
@@ -1384,6 +1399,7 @@ function panelState() {
     login: login.supported ? { on: login.on } : null,
     update: { available: update.available, installing: update.installing, checking: update.checking, result: update.result, page: update.page, done: update.done },
     intro: !!intro,
+    money: { accounts: mail.list(), every: mail.every(), everys: MAIL_EVERY },
   };
 }
 
@@ -1543,6 +1559,9 @@ async function onMenu(id) {
   else if (id === 'localdl') getLocalVoice();
   else if (id === 'fishkey') fishKeyLogin();
   else if (id === 'fishkey_remove') removeFishKey();
+  else if (id.startsWith('mail_test:')) mail.test(id.slice(10)).then((r) => panelNote(r.text, !r.ok));
+  else if (id.startsWith('mail_remove:')) mail.remove(id.slice(12)).then((r) => { menu(); panelNote(r.text, !r.ok); });
+  else if (id.startsWith('mailevery:') && MAIL_EVERY.includes(Number(id.slice(10)))) { config.mailEvery = Number(id.slice(10)); saveConfig(); mail.refresh(); menu(); }
   else if (id === 'sound') { config.sound = !config.sound; saveConfig(); ui({ kind: 'sound', on: config.sound }); voiceConfig(); menu(); }
   else if (id === 'actions') {
     config.allowActions = !config.allowActions; saveConfig(); menu(); // live section picks this up
@@ -1796,6 +1815,13 @@ createInterface({ input: process.stdin }).on('line', (line) => {
     apiKeyLogin(id, m.key.slice(0, 1000)).then(() => panelNote(signedIn.get(m.provider) ? `${label} is connected.` : `That ${label} key didn't work.`, !signedIn.get(m.provider)))
       .catch((e) => panelNote(`That ${label} key didn't work: ${String(e?.message ?? e).slice(0, 80)}`, true));
   } else if (m.type === 'panel_fishkey' && typeof m.key === 'string') fishKeyLogin({ given: m.key.slice(0, 1000), note: panelNote }).catch((e) => console.error('fish key', e));
+  else if (m.type === 'panel_mail_add' && typeof m.provider === 'string' && typeof m.email === 'string' && typeof m.password === 'string') {
+    mail.add({ provider: m.provider, email: m.email.slice(0, 200), password: m.password.slice(0, 200) }).then((r) => {
+      menu(); panelNote(r.text, !r.ok);
+      // Then a first read straight away, which says how the connection went.
+      if (r.ok) mail.test(r.id).then((t) => panelNote(t.text, !t.ok));
+    });
+  }
   else if (m.type === 'panel_wake' && LINUX) setWakePhrase(m.phrase);
   else if (m.type === 'answer') { pending.get(m.id)?.(m.text ?? null); pending.delete(m.id); }
   else if (m.type === 'ui_ready') {
@@ -1893,6 +1919,7 @@ resumed.then(() => menu());
 menu();
 overlays();
 sendKeys();
+mail.start();
 send({ type: 'login_item' });
 logLine('start', { version: VERSION, platform: process.platform, ...(LINUX ? { session: SESSION } : {}), model: config.model });
 pruneLogs(); pruneUsage();

@@ -262,6 +262,25 @@ slot):
 - **It can't hear you:** check the input device picked in your sound settings; Roamies uses the default microphone.
 - **With fractional scaling** the Roamie may look a little soft.
 
+## Money
+
+Roamies can keep track of your card and wallet spending from the notification mails your bank sends for each
+charge. Add a mail account on the panel's **Money** page: Gmail or Yahoo, with an app password made for Roamies
+(the page says how; Outlook is coming). Then, every few minutes while Roamies runs:
+
+- **What it reads:** only mails from your banks' exact sender addresses (Banco Falabella and BCP so far), the last 90
+  days the first time, then only new ones. Gmail's All Mail (not Spam or Trash), Yahoo's Inbox (not Bulk).
+- **Read-only:** the mailbox is opened read-only and mails are fetched without marking them read. Nothing is moved,
+  flagged, deleted or sent. A mail counts only when your provider says it really came from the bank (DKIM or DMARC).
+- **Where data lives:** each charge's date, amount, merchant, the last four digits of the account and the operation
+  number, in `~/.gg/sidekick/money.db` (on Windows `%USERPROFILE%\.gg\sidekick\money.db`); where reading stopped, in
+  `mail.db` beside it. Mail bodies are not kept; a mail it couldn't read is kept as its sender, subject and date. The
+  app password is only in your Keychain, Windows (encrypted for your account) or your keyring; the settings keep the
+  provider and address. The mail goes from your provider to this computer only.
+- **Removing everything:** remove each account on the Money page (that deletes its app password from the keyring),
+  then delete `money.db` and `mail.db`. Revoke the app password in your Google or Yahoo account too: a Yahoo one keeps
+  working after you change your Yahoo password.
+
 ## Privacy
 
 Roamies has no analytics, and nothing is collected by the developer. Your messages, and screenshots when you ask

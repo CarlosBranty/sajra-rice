@@ -1,5 +1,6 @@
 // The panel that opens from the menu bar or tray icon: a sidebar of pages. Home (what's going on) and Memory,
-// then a page per group of settings: Model, Appearance, Voice, Behavior and About.
+// then a page per group of settings: Model, Appearance, Voice, Money (the mail accounts bank notifications are read from),
+// Behavior and About.
 // The sidecar owns every value: it sends the whole state when the panel opens and after each change, and the
 // panel sends back the same actions the menu used ({type:'menu', id}). Opened in a plain browser it shows a
 // labelled preview with sample data instead.
@@ -21,7 +22,8 @@
   let state = null, tab = 'home', deferred = false;
   // What's open in the panel itself: a key field (provider id or 'fish'), the row action waiting for its
   // Confirm, each long list's page (pg) and how many rows fit on one (per, measured), Memory's tab and its search.
-  const ui = { key: null, kind: {}, arm: null, pg: {}, per: {}, mtab: 'facts', vtab: 'replies', atab: 'look', q: '', bindShown: new Set() };
+  // Money's tab, the provider picked to add and the address typed (the app password is never kept here).
+  const ui = { key: null, kind: {}, arm: null, pg: {}, per: {}, mtab: 'facts', vtab: 'replies', atab: 'look', ytab: 'accounts', mprov: 'gmail', maddr: '', q: '', bindShown: new Set() };
   let armTimer = 0;
   const disarm = () => { clearTimeout(armTimer); if (ui.arm) { ui.arm = null; return true; } return false; };
 
@@ -563,6 +565,57 @@
     ];
     return [head, ...(on === 'talking' ? talking : on === 'sounds' ? sounds : replies)];
   }
+  // Money: the mail accounts bank notifications are read from (read-only) and adding one, with each provider's way
+  // to an app password. Two tabs: the panel doesn't scroll, and the form with its how-to doesn't fit under the list.
+  const MAIL_HELP = {
+    gmail: 'Gmail needs an app password: turn on 2-Step Verification in your Google Account, then create one at myaccount.google.com/apppasswords. Revoke it there at any time; changing your Google password revokes it too.',
+    yahoo: 'Yahoo needs an app password: Account Info, Account Security, Generate app password. Revoke it there at any time: it keeps working after you change your Yahoo password, so revoke it when you stop using Roamies.',
+    outlook: "Coming soon: Outlook.com no longer takes app passwords and needs a Microsoft sign-in, which Roamies doesn't have yet.",
+  };
+  function moneyPage() {
+    const m = state.money, on = ui.ytab;
+    const tabBtn = (id, label) => el('button', {
+      className: 'tab', type: 'button', role: 'tab', id: `ytab-${id}`, 'aria-selected': String(on === id), tabIndex: on === id ? 0 : -1, 'data-k': `ytab-${id}`,
+      on: { click: () => { if (ui.ytab !== id) { ui.ytab = id; disarm(); render(`ytab-${id}`); } } },
+    }, label);
+    const head = el('div', { className: 'mhead' }, el('div', { className: 'tabs', role: 'tablist', 'aria-label': 'Money' }, tabBtn('accounts', 'Accounts'), tabBtn('add', 'Add account')));
+    if (on === 'add') {
+      const p = ui.mprov;
+      const addr = el('input', { type: 'email', id: 'key-mailaddr', value: ui.maddr, autocomplete: 'off', spellcheck: false, placeholder: 'Email address', 'aria-label': 'Email address', maxLength: 200, on: { input: (e) => { ui.maddr = e.target.value; } } });
+      const pass = el('input', { type: 'password', id: 'key-mailpass', autocomplete: 'off', spellcheck: false, placeholder: 'App password', 'aria-label': 'App password', maxLength: 200 });
+      const save = () => {
+        const email = addr.value.trim(), password = pass.value.trim();
+        if (!email) return addr.focus();
+        if (!password) return pass.focus();
+        send({ type: 'panel_mail_add', provider: ui.mprov, email, password });
+        pass.value = ''; ui.maddr = ''; ui.ytab = 'accounts'; render('ytab-accounts');
+      };
+      for (const f of [addr, pass]) f.addEventListener('keydown', (e) => { if (e.key === 'Enter') save(); });
+      return [head, group('Add an account', null, null,
+        picks('Provider', [['gmail', 'Gmail'], ['yahoo', 'Yahoo'], ['outlook', 'Outlook (soon)']], p, (x) => { ui.mprov = x; render(`mprov:${x}`); }, 'mprov'),
+        el('p', { className: 'why wrap', textContent: MAIL_HELP[p] }),
+        p === 'outlook' ? null : [
+          el('div', { className: 'keyform' }, el('span', { className: 'px field' }, addr)),
+          el('div', { className: 'keyform' }, el('span', { className: 'px field' }, pass), btn('Save', save, { k: 'mail-save' })),
+          el('p', { className: 'why wrap', textContent: `The app password stays in ${where()}. I only read your banks' mails and never move, mark or delete anything.` }),
+        ])];
+    }
+    const { box, nav } = paged('mail', m.accounts, (a) => el('li', { className: 'item' },
+      el('span', { className: 'mark', 'aria-hidden': 'true' }),
+      el('span', { className: 'text', title: a.status ? `${a.email}: ${a.status.text}` : a.email }, `${a.label} · ${a.email}`,
+        el('small', { className: a.status?.state === 'error' ? 'late' : '', textContent: a.status ? `${a.status.text}${a.status.at ? ` · ${ago(a.status.at)}` : ''}` : 'Not checked yet' })),
+      el('span', { className: 'row-btns' },
+        link('Test', () => act(`mail_test:${a.id}`), { k: `mail-test:${a.id}`, aria: `Test the connection to ${a.email}` }),
+        armed('Remove', 'Confirm', `mail-remove:${a.id}`, `mail_remove:${a.id}`, `Remove ${a.email} and its app password`))),
+    { label: 'Mail accounts', empty: 'No account yet: add one to read your bank mails.' });
+    return [head,
+      group('Check every', 'How often I look for new bank mails while I run.', null,
+        picks('Check every', m.everys.map((n) => [n, `${n} min`]), m.every, (x) => act(`mailevery:${x}`), 'mailevery')),
+      el('div', { className: 'group paged', role: 'tabpanel', 'aria-labelledby': 'ytab-accounts' },
+        el('div', { className: 'ghead' }, el('h2', { textContent: 'Mail accounts' }), el('p', { textContent: 'Read-only: nothing is moved, marked or deleted.' })), box),
+      foot(null, nav)];
+  }
+
   // Wayland: the commands to bind to keys in the desktop's settings (no app may hold its own shortcuts there).
   // A command shows only after copying it failed, so it can be copied by hand.
   const BIND_ROWS = [['talk', 'Talk to me'], ['summon', 'Show or hide me'], ['ask', 'Ask me'], ['list', 'Your list'], ['panel', 'This panel'], ['snap', 'Ask about an area']];
@@ -615,7 +668,7 @@
   }
 
   // ---------------------------------------------------------------- render
-  const PANES = { home, memory, model: modelPage, appearance: appearancePage, voice: voicePage, behavior: behaviorPage, about: aboutPage };
+  const PANES = { home, memory, model: modelPage, appearance: appearancePage, voice: voicePage, money: moneyPage, behavior: behaviorPage, about: aboutPage };
   // focusKey: what to focus after (a data-k, or an element id); otherwise whatever had focus keeps it.
   function render(focusKey, animate = false) {
     if (!state) return;
@@ -804,9 +857,13 @@
       sound: true, actions: false, login: { on: true },
       update: { available: new URLSearchParams(location.search).has('update') ? '0.9.1' : null, installing: false, checking: false, result: null },
       intro: false,
+      money: { accounts: [
+        { id: 'mail-1', provider: 'yahoo', label: 'Yahoo', email: 'ana.perez@yahoo.com', status: { state: 'ok', text: 'Read 3 new bank mails', at: at - 4 * 60e3 } },
+        { id: 'mail-2', provider: 'gmail', label: 'Gmail', email: 'ana.work@gmail.com', status: { state: 'error', text: 'Gmail refused the address or app password. Check the address, or create a new app password (it needs 2-Step Verification on).', at: at - 60e3 } },
+      ], every: 5, everys: [2, 5, 15, 30, 60] },
     };
     if (q.has('busy')) Object.assign(s, { busy: true, status: { state: 'busy', text: 'Reading notes.md' } });
-    if (q.has('empty')) Object.assign(s, { recent: [], facts: [], commitments: [], usage: null });
+    if (q.has('empty')) Object.assign(s, { recent: [], facts: [], commitments: [], usage: null, money: { ...s.money, accounts: [] } });
     if (q.has('many')) {
       const things = ['Prefers short answers', 'Drinks oat flat whites', 'Works late on Thursdays', 'Has a cat called Miso', 'Training for a 10k in March', 'Learning Japanese', 'Uses Figma for design', 'Ships on Fridays', 'Allergic to peanuts', 'Sister is called Ana'];
       s.facts = Array.from({ length: 100 }, (_, i) => ({ id: `f${i}`, text: `${things[i % things.length]}${i >= things.length ? ` (${Math.floor(i / things.length) + 1})` : ''}` }));
@@ -815,7 +872,7 @@
     }
     if (q.has('checking')) s.update.checking = true;
     if (q.has('uptodate')) s.update.result = { ok: true, at: Date.now() + 60e3 };
-    if (q.get('tab')) setTimeout(() => { if (q.get('mtab')) ui.mtab = q.get('mtab'); if (q.get('vtab')) ui.vtab = q.get('vtab'); if (q.get('atab')) ui.atab = q.get('atab'); show(q.get('tab')); }, 0);
+    if (q.get('tab')) setTimeout(() => { if (q.get('mtab')) ui.mtab = q.get('mtab'); if (q.get('vtab')) ui.vtab = q.get('vtab'); if (q.get('atab')) ui.atab = q.get('atab'); if (q.get('ytab')) ui.ytab = q.get('ytab'); if (q.get('mprov')) ui.mprov = q.get('mprov'); show(q.get('tab')); }, 0);
     setTimeout(() => window.__panel({ kind: 'state', state: s }), 0);
     return async (cmd, args) => {
       if (cmd === 'theme_get') return desk;
