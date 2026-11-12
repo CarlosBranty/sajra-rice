@@ -33,6 +33,20 @@ starts playing (`voice-out.js`); `~/.gg/sidekick.log` gets one `[latency]` line 
 (`sidecar/latency.mjs`). Debug builds: `ROAMIES_FISH_MODEL=s2.1-pro` (or `drama-3`) voices that run without changing
 the saved setting (an account with no credit stays on the free tier either way).
 
+Listening (Windows and Linux voice helper): Silero VAD v6 (`voice-win/src/vad.rs`, MIT, `silero-vad.onnx` next to
+the Parakeet files) tells a voice from noise for takes and the wake word; without that file a voice is a level, as
+before (sound under -60 dBFS is never given to it, so a quiet room costs next to nothing). Waiting for the wake word, Parakeet reads only the stretches of voice it hears (each when it ends, or every
+2.5 s or more while it goes on, the next read reaching back past the cut by the phrase's length, at least 1 s; a phrase
+that ends right at a cut is read again whole before a take starts), and for 6 s after a spoken reply (and its 1 s echo) a voice is the next
+question without the phrase. A hands-free take quiet for 0.25 s asks the end-of-turn check (Smart Turn,
+`smart-turn.onnx`) and ends as soon as it says the turn is over and a read has heard words that sound finished (a
+question, or a full stop after four words or more, not ending on "y", "de", "eh"…); otherwise the pauses decide as
+before. While a reply is under way the app tells the helper it is speaking, gaps between its chunks included.
+`ROAMIES_TEST_VAD=<silero-vad.onnx> cargo test vad` checks the probabilities against the official wrapper's
+(`fixtures/silero-vad-hola.*`). `roamies-voice --model <dir> --bench-listen <wav> [--phrase P] [--listen] [--no-vad]
+[--turn p]` plays a WAV as the microphone at real speed and prints the CPU seconds and Parakeet reads it cost, and how
+a take ended (see the top of `main.rs`).
+
 The local voice (Windows and Linux): `roamies-voice --speak <voice.onnx> [--speaker 1] [--threads 2]` speaks a Piper
 voice as upstream Piper 1.8 (`OHF-Voice/piper1-gpl`) does, in a process of its own that the sidecar starts when the
 voice is picked (`sidecar/localvoice.mjs`, JSON lines; see the top of `voice-win/src/speak.rs`). Text becomes phonemes

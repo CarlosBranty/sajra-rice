@@ -46,9 +46,11 @@ impl Resampler {
     }
 }
 
-/// Where captured audio goes: the take buffer (16 kHz mono) and level events.
+/// Where captured audio goes: the take buffer (16 kHz mono) and level events, and a copy for the voice activity model
+/// when there is one (the take buffer is cut and cleared as takes need, the model must hear every sample once).
 pub struct Sink {
     buf: Arc<Mutex<Vec<f32>>>,
+    tap: Option<Arc<Mutex<Vec<f32>>>>,
     tx: Sender<Ev>,
     resampler: Option<Resampler>,
     channels: usize,
@@ -58,7 +60,12 @@ pub struct Sink {
 
 impl Sink {
     pub fn new(buf: Arc<Mutex<Vec<f32>>>, tx: Sender<Ev>) -> Self {
-        Sink { buf, tx, resampler: None, channels: 1, mono: Vec::new(), out: Vec::new() }
+        Sink { buf, tap: None, tx, resampler: None, channels: 1, mono: Vec::new(), out: Vec::new() }
+    }
+
+    pub fn with_tap(mut self, tap: Option<Arc<Mutex<Vec<f32>>>>) -> Self {
+        self.tap = tap;
+        self
     }
 
     fn start(&mut self, rate: u32, channels: usize) {
@@ -82,6 +89,10 @@ impl Sink {
             r.push(&self.mono, &mut self.out);
         }
         self.buf.lock().unwrap().extend_from_slice(&self.out);
+        // After the buffer: whatever the model has heard is in the buffer already.
+        if let Some(tap) = &self.tap {
+            tap.lock().unwrap().extend_from_slice(&self.out);
+        }
         let _ = self.tx.send(Ev::Level(level));
     }
 }
@@ -133,6 +144,18 @@ pub struct Source {
     #[cfg(any(windows, target_os = "linux"))]
     _stream: Option<cpal::Stream>,
     stop: Arc<AtomicBool>,
+}
+
+impl Source {
+    /// A microphone that hears nothing: tests feed the buffers themselves.
+    #[cfg(test)]
+    pub fn idle() -> Source {
+        Source {
+            #[cfg(any(windows, target_os = "linux"))]
+            _stream: None,
+            stop: Arc::new(AtomicBool::new(false)),
+        }
+    }
 }
 
 impl Drop for Source {

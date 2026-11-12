@@ -8,10 +8,16 @@
 // what was said, as on macOS (Windows only). On Wayland no app can watch the keyboard, so there {"cmd":"toggle"}
 // (sent for `roamies --talk`, which people bind to a key) starts a take, and sends it when it comes again or on a
 // pause. Exits when stdin closes.
+// A voice is told by Silero VAD (vad.rs, silero-vad.onnx in the model folder); without that file a voice is a level
+// over SPEECH_LEVEL, as before. With it, a hands-free take whose voice has been quiet for TURN_SILENCE asks the
+// end-of-turn check (Smart Turn, smart-turn.onnx) whether the turn sounds over, and ends as soon as it says so and a
+// read has heard all the words and they sound finished (turn_may_end); otherwise the pauses below decide.
 // The wake word (Linux, off unless asked): after {"cmd":"wake","on":true,"phrase":"hey roamie"} the microphone stays
-// on between takes, only watched for a voice. A voice gets its last few seconds read, about once a second at most,
-// and when the phrase is in what was read a hands-free take starts right after it, as {"cmd":"toggle"} starts one.
-// {"cmd":"speaking","on":true} (a spoken reply is playing) stops that meanwhile, and for a moment after.
+// on between takes, only watched for a voice. Each stretch of voice the VAD hears is read once it ends (at the cap
+// while it goes on, the next read overlapping the cut by the phrase's length, see wake_reach); without the VAD a voice gets its last few seconds
+// read, about once a second at most. When the phrase is in what was read a hands-free take starts right after it, as
+// {"cmd":"toggle"} starts one. {"cmd":"speaking","on":true} (a spoken reply is playing) stops that meanwhile, and for a
+// moment after; with the VAD, a voice in the FOLLOW_UP seconds after that is the next question, without the phrase.
 //
 // roamies-voice --model <dir> [--chord control,option]   normal use (Roamies starts it)
 // roamies-voice --perms                                   prints {"type":"perms","mic":…}
@@ -20,11 +26,18 @@
 // roamies-voice --model <dir> --test-audio <wav>          dev: a file stands in for the mic ({"cmd":"listen"} starts;
 //                                                         after {"cmd":"wake",…} it plays once, to say the phrase)
 // roamies-voice --speak <voice.onnx> [--speaker 1] [--threads 2]   the local voice: text in, speech out (speak.rs)
+// roamies-voice --model <dir> --bench-listen <wav> [--phrase "hey jarvis"] [--listen] [--no-vad] [--turn <p>]
+//     dev: what listening costs. The WAV stands in for the mic at real speed while the wake word waits for the phrase
+//     (or, with --listen, as a hands-free take); then prints {"type":"bench"} with the CPU seconds used (Linux), the
+//     speech model's reads (wake_reads, take_reads), when the phrase woke it and how the take ended (seconds from the
+//     start). --no-vad keeps the level gate; --turn answers every end-of-turn check with p after 60 ms (a stand-in).
 
 mod audio;
 mod ink;
 mod keys;
 mod speak;
+mod turn;
+mod vad;
 
 use audio::{MicError, Sink, Source};
 use parakeet_rs::{ExecutionConfig, ParakeetTDT, TimestampMode, Transcriber};
@@ -70,6 +83,8 @@ pub enum Ev {
     // What was read while waiting for the wake word: each word and the second it ends at, from the snippet's start.
     Snippet { take: u64, words: Vec<(String, f64)> },
     EngineFailed(String),
+    // Whether the take's turn sounded over (None: the check failed), for the silence that began after `voiced`.
+    Turn { take: u64, voiced: f64, complete: Option<bool> },
 }
 
 // ---------- transcription (its own thread: loading and reading never stall the hotkey loop) ----------
@@ -86,11 +101,17 @@ fn model_present(dir: &Path) -> bool {
     dir.join("vocab.txt").is_file() && dir.join("encoder-model.int8.onnx").is_file() && dir.join("decoder_joint-model.int8.onnx").is_file()
 }
 
+/// ONNX Runtime allows one environment per process (a second one fails to build): Parakeet and the voice gate share it.
+pub fn ort_env() -> Result<parakeet_rs::ort::environment::Environment, String> {
+    static ENV: std::sync::OnceLock<Result<parakeet_rs::ort::environment::Environment, String>> = std::sync::OnceLock::new();
+    ENV.get_or_init(|| parakeet_rs::ort::init().with_name("roamies-voice").build().map_err(|e| e.to_string())).clone()
+}
+
 fn load_model(dir: &Path) -> Result<ParakeetTDT, String> {
     // Half the cores: quick enough to read a minute of speech in a second or two, without starving the PC.
     let threads = thread::available_parallelism().map(|n| n.get() / 2).unwrap_or(2).clamp(1, 8);
     let t0 = Instant::now();
-    let env = parakeet_rs::ort::init().with_name("roamies-voice").build().map_err(|e| e.to_string())?;
+    let env = ort_env()?;
     let config = ExecutionConfig::new().with_environment(env).with_intra_threads(threads);
     let mut asr = ParakeetTDT::from_pretrained(dir, Some(config)).map_err(|e| e.to_string())?;
     // One short warm-up run, so the first real request doesn't pay for ONNX Runtime's setup.
@@ -129,34 +150,126 @@ fn transcribe_words(asr: &mut ParakeetTDT, audio: Vec<f32>) -> Vec<(String, f64)
 
 fn spawn_engine(dir: PathBuf, tx: Sender<Ev>) -> (Sender<Job>, thread::JoinHandle<()>) {
     let (jtx, jrx) = mpsc::channel::<Job>();
-    let handle = thread::spawn(move || {
-        let mut asr = match load_model(&dir) {
-            Ok(a) => a,
-            Err(e) => {
-                log(&format!("model failed to load: {e}"));
-                let _ = tx.send(Ev::EngineFailed(e));
-                return;
-            }
+    let handle = thread::spawn(move || match load_model(&dir) {
+        Ok(asr) => serve(asr, jrx, tx),
+        Err(e) => {
+            log(&format!("model failed to load: {e}"));
+            let _ = tx.send(Ev::EngineFailed(e));
+        }
+    });
+    (jtx, handle)
+}
+
+// Reads the engine ran (wake snippets, take reads), for --bench-listen.
+static READS: [std::sync::atomic::AtomicUsize; 2] = [const { std::sync::atomic::AtomicUsize::new(0) }; 2];
+
+fn serve(mut asr: ParakeetTDT, jrx: Receiver<Job>, tx: Sender<Ev>) {
+    while let Ok(first) = jrx.recv() {
+        // Only the newest live read matters (a wake snippet is one too); a closing read always runs.
+        let mut jobs = vec![first];
+        jobs.extend(jrx.try_iter());
+        let job = match jobs.iter().rposition(|j| j.last) {
+            Some(i) => jobs.swap_remove(i),
+            None => jobs.pop().expect("at least one job"),
         };
+        READS[usize::from(!job.wake)].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let answer = if job.wake {
+            Ev::Snippet { take: job.take, words: transcribe_words(&mut asr, job.audio) }
+        } else {
+            Ev::Text { take: job.take, text: transcribe(&mut asr, job.audio), last: job.last }
+        };
+        if tx.send(answer).is_err() {
+            return;
+        }
+    }
+}
+
+// ---------- the voice gate and the end of a turn ----------
+
+// Silero VAD (vad.rs), next to the speech model. Without it (not downloaded yet, or it won't load) a voice is a level
+// over SPEECH_LEVEL, as before.
+const VAD_MODEL: &str = "silero-vad.onnx";
+
+fn load_vad(dir: &Path) -> Option<vad::Vad> {
+    match vad::Silero::load(&dir.join(VAD_MODEL)) {
+        Ok(m) => {
+            log("voice activity model ready");
+            Some(vad::Vad::new(Box::new(m)))
+        }
+        Err(e) => {
+            log(&format!("no voice activity model ({e}): a voice is told by its level"));
+            None
+        }
+    }
+}
+
+/// Whether a turn sounds over (S2: Smart Turn in turn.rs): the probability that the speaker has finished, from the
+/// take's last seconds of 16 kHz sound.
+pub trait TurnCheck: Send {
+    fn complete(&mut self, audio_16k: &[f32]) -> Result<f32, String>;
+}
+
+// A turn is over at this probability (Smart Turn's own threshold).
+const TURN_DONE: f32 = 0.5;
+// It is asked once the voice has been quiet this long (the VAD's silence, not a level's): a breath between two
+// words is shorter, and a turn that is over can end here instead of on the 0.7 to 1.5 s pauses.
+const TURN_SILENCE: f64 = 0.25;
+// The most it is given: the model reads up to 8 s.
+const TURN_AUDIO: f64 = 8.0;
+
+struct TurnJob {
+    take: u64,
+    // The take's voice_at when it was asked: the answer is about the silence after it, stale once they speak again.
+    voiced: f64,
+    audio: Vec<f32>,
+}
+
+type TurnLoader = Box<dyn FnOnce() -> Option<Box<dyn TurnCheck>> + Send>;
+
+/// The check on a thread of its own (it takes tens of milliseconds, never the audio's or the keys' time). Without a
+/// model the thread ends, and asking it fails.
+fn spawn_turn(load: TurnLoader, tx: Sender<Ev>) -> Sender<TurnJob> {
+    let (jtx, jrx) = mpsc::channel::<TurnJob>();
+    thread::spawn(move || {
+        let Some(mut check) = load() else { return };
         while let Ok(first) = jrx.recv() {
-            // Only the newest live read matters (a wake snippet is one too); a closing read always runs.
-            let mut jobs = vec![first];
-            jobs.extend(jrx.try_iter());
-            let job = match jobs.iter().rposition(|j| j.last) {
-                Some(i) => jobs.swap_remove(i),
-                None => jobs.pop().expect("at least one job"),
+            // Only the newest silence matters.
+            let job = jrx.try_iter().last().unwrap_or(first);
+            let complete = match check.complete(&job.audio) {
+                Ok(p) => Some(p >= TURN_DONE),
+                Err(e) => {
+                    log(&format!("turn check: {e}"));
+                    None
+                }
             };
-            let answer = if job.wake {
-                Ev::Snippet { take: job.take, words: transcribe_words(&mut asr, job.audio) }
-            } else {
-                Ev::Text { take: job.take, text: transcribe(&mut asr, job.audio), last: job.last }
-            };
-            if tx.send(answer).is_err() {
+            if tx.send(Ev::Turn { take: job.take, voiced: job.voiced, complete }).is_err() {
                 return;
             }
         }
     });
-    (jtx, handle)
+    jtx
+}
+
+// Smart Turn (turn.rs), next to the speech model.
+const TURN_MODEL: &str = "smart-turn.onnx";
+
+impl TurnCheck for turn::SmartTurn {
+    fn complete(&mut self, audio_16k: &[f32]) -> Result<f32, String> {
+        turn::SmartTurn::complete(self, audio_16k)
+    }
+}
+
+fn load_turn(dir: &Path) -> Option<Box<dyn TurnCheck>> {
+    match ort_env().and_then(|env| turn::SmartTurn::load(&dir.join(TURN_MODEL), &env)) {
+        Ok(t) => {
+            log("end-of-turn model ready");
+            Some(Box::new(t))
+        }
+        Err(e) => {
+            log(&format!("no end-of-turn model ({e}): pauses end a take"));
+            None
+        }
+    }
 }
 
 // ---------- the wake word (Linux): a phrase that starts a take, heard with the same model ----------
@@ -174,6 +287,22 @@ const WAKE_SETTLE: f64 = 0.6;
 const WAKE_TRAIL: f64 = 0.4;
 // Roamies' own voice, and its echo in the room, is never listened to: while a reply plays and this long after.
 const WAKE_AFTER_SPEECH: f64 = 1.0;
+// With the VAD, a voice is read once it ends, or at this length while it goes on; the next read then starts this much
+// before the cut, so a phrase said across it is whole in one of the two. The phrase is a second at most.
+// A longer phrase gets a longer overlap (wake_reach), and the cap stays WAKE_FRESH past it.
+const WAKE_CAP: f64 = 2.5;
+const WAKE_OVERLAP: f64 = 1.0;
+const WAKE_FRESH: f64 = 1.0;
+// A read cut at the cap whose phrase ends this close to the cut may have cut through its last word (the model's end
+// times land early): no take from it; the stretch is read again from just before the phrase.
+const WAKE_EDGE: f64 = 0.5;
+// A stretch of voice is read with this much before it and after it: a soft first sound the model only hears from its
+// second window on, and quiet before the first word (Parakeet read "oye" right at a snippet's start as "hoy").
+const WAKE_PRE: f64 = 0.5;
+const WAKE_POST: f64 = 0.15;
+// With the VAD, after a spoken reply (and its WAKE_AFTER_SPEECH), a voice is taken as the next question without the
+// phrase for this long. Without the VAD a level can't tell a voice from the room, so only the phrase starts a take.
+const FOLLOW_UP: f64 = 6.0;
 // A microphone that won't open is tried again this often.
 const WAKE_RETRY: f64 = 15.0;
 // A read that never came back (the engine dropped it for a newer one) is given up on after this.
@@ -182,6 +311,14 @@ const WAKE_READ_TIMEOUT: f64 = 15.0;
 // the phrase: "center" came through as "Enter", or whole), so a take starts this long after the phrase, or most of
 // the way to the end of the word that comes right behind it.
 const WAKE_CUT_MARGIN: f64 = 0.4;
+
+/// How far a read at the cap reaches back past the last cut (seconds), and the cap: room for the whole phrase,
+/// said at about 0.08 s a letter (measured with the local voice: "oye computadora" took 1.0 s).
+fn wake_reach(words: &[String]) -> (f64, f64) {
+    let letters: usize = words.iter().map(|w| w.chars().count()).sum();
+    let overlap = (0.4 + 0.08 * letters as f64).clamp(WAKE_OVERLAP, 2.5);
+    (overlap, (overlap + WAKE_FRESH).max(WAKE_CAP))
+}
 
 /// Where in a snippet (seconds) the take begins: just after the phrase's last word ended (end), keeping most of the
 /// word that follows (next_end: when that one ends).
@@ -280,6 +417,18 @@ struct Wake {
     retry_at: f64,
     // The dev WAV has stood in for the microphone (once per wake command, see wake_open).
     played: bool,
+    // With the VAD: where the voice being heard began (stream samples), and a stretch of voice waiting to be read.
+    seg: Option<u64>,
+    next: Option<(u64, u64, bool)>,
+    // The read out was cut at the cap while the voice went on: how long it is (seconds).
+    read_cut: Option<f64>,
+    // The phrase was heard in a read the cap may have cut through: the next read only needs its last word.
+    deferred: bool,
+    // With the VAD: until when a voice is a new question without the phrase (after a reply, see set_speaking).
+    follow_until: f64,
+    // With the VAD: how far a read at the cap reaches back past the last cut, and the cap (see wake_reach).
+    overlap: f64,
+    cap: f64,
 }
 
 // ---------- the talk session (port of the Voice class in voice/main.swift) ----------
@@ -312,7 +461,16 @@ const READ_MARGIN: f64 = 0.25;
 const HANGING: &[&str] = &[
     "and", "or", "but", "so", "because", "the", "a", "an", "to", "of", "in", "on", "at", "for", "with", "from", "that", "my", "your",
     "y", "e", "o", "u", "pero", "porque", "que", "de", "del", "al", "el", "la", "los", "las", "un", "una", "en", "con", "por", "para", "mi", "tu",
+    // Fillers: someone still thinking.
+    "eh", "em", "ehm", "este", "mm", "mmm", "um", "uh", "er", "erm", "hmm",
 ];
+
+/// Whether the words of a take, all heard, sound like a whole turn, so the end-of-turn check may end it: a finished
+/// question or exclamation, or a finished sentence of four words or more. Smart Turn alone said "over" at pauses
+/// mid-sentence ("Quiero saber…", "eh…"), and a short sentence with a full stop is often only its start.
+fn turn_may_end(text: &str, covered: bool) -> bool {
+    covered && (pause_ends(text, true) == SHORT_PAUSE || (sounds_finished(text) && text.split_whitespace().count() >= 4))
+}
 
 /// Whether a live transcript ends like a finished sentence or question: a full stop, question or exclamation mark (Parakeet
 /// writes them) after a word that doesn't leave it hanging.
@@ -392,6 +550,16 @@ struct Voice {
     ended_why: &'static str,
     // The take's words are the last live read's (it heard them all), not another read of the whole take.
     reused: bool,
+    // The voice gate (vad.rs), None without its model: then a voice is a level over SPEECH_LEVEL, as before. It hears
+    // the microphone through tap; steps is its verdicts, kept to reuse the memory.
+    vad: Option<vad::Vad>,
+    tap: Arc<Mutex<Vec<f32>>>,
+    steps: Vec<vad::Step>,
+    // The end-of-turn check, and the silence it was last asked about (its voice_at).
+    turn: Option<Sender<TurnJob>>,
+    turn_asked: f64,
+    // The silence (its voice_at) the check said was the end of the turn.
+    turn_over: f64,
 }
 
 impl Voice {
@@ -430,6 +598,12 @@ impl Voice {
             ended_at: 0.0,
             ended_why: "",
             reused: false,
+            vad: None,
+            tap: Arc::new(Mutex::new(Vec::new())),
+            steps: Vec::new(),
+            turn: None,
+            turn_asked: f64::NAN,
+            turn_over: f64::NAN,
         }
     }
 
@@ -454,7 +628,11 @@ impl Voice {
         self.ink.set_armed(matches!(self.phase, Phase::Armed | Phase::Holding), now);
         self.ink.follow(now);
         match self.phase {
-            Phase::Holding | Phase::HandsFree => self.maybe_read(now),
+            Phase::Holding => self.maybe_read(now),
+            Phase::HandsFree => {
+                self.maybe_read(now);
+                self.ask_turn(now);
+            }
             Phase::Finishing => {
                 if self.tail_until.is_some_and(|t| now >= t) {
                     self.tail_until = None;
@@ -583,6 +761,8 @@ impl Voice {
         self.read_len = 0;
         self.read_upto = f64::NEG_INFINITY;
         self.reused = false;
+        // Any take answers the reply: the follow-up is used up.
+        self.wake.follow_until = 0.0;
     }
 
     fn show_listening(&mut self, mode: &str, now: f64) {
@@ -622,7 +802,12 @@ impl Voice {
     // The microphone (or the dev WAV) on, into an empty buffer.
     fn open_audio(&mut self) -> Result<(), MicError> {
         self.buf.lock().unwrap().clear();
-        let sink = Sink::new(self.buf.clone(), self.tx.clone());
+        self.tap.lock().unwrap().clear();
+        let tap = self.vad.as_mut().map(|v| {
+            v.restart();
+            self.tap.clone()
+        });
+        let sink = Sink::new(self.buf.clone(), self.tx.clone()).with_tap(tap);
         let started = match &self.test_audio {
             Some(p) => audio::play_file(p, sink).map_err(|e| MicError::new("failed", e)),
             None => audio::open_mic(sink),
@@ -708,15 +893,66 @@ impl Voice {
         if last && self.phase == Phase::Finishing {
             self.finalize();
         }
+        if !last {
+            self.turn_end();
+        }
+    }
+
+    // A hands-free take whose voice has been quiet TURN_SILENCE (by the VAD) asks whether the turn sounds over, once
+    // per silence; the answer comes back as Ev::Turn.
+    fn ask_turn(&mut self, now: f64) {
+        let Some(turn) = &self.turn else { return };
+        if self.vad.is_none() || !self.spoke || self.turn_asked == self.voice_at || now - self.voice_at < TURN_SILENCE {
+            return;
+        }
+        self.turn_asked = self.voice_at;
+        let audio = {
+            let buf = self.buf.lock().unwrap();
+            buf[buf.len().saturating_sub((TURN_AUDIO * RATE as f64) as usize)..].to_vec()
+        };
+        if turn.send(TurnJob { take: self.take, voiced: self.voice_at, audio }).is_err() {
+            self.turn = None; // no model: today's pauses
+        }
+    }
+
+    // Over: the take ends as soon as a read has heard all its words and they sound like a whole turn (turn_may_end),
+    // the quiet being its tail. Not over, or unknown: the pauses decide, as before.
+    fn on_turn(&mut self, take: u64, voiced: f64, complete: Option<bool>) {
+        if take != self.take || self.phase != Phase::HandsFree || voiced != self.voice_at || complete != Some(true) {
+            return;
+        }
+        self.turn_over = voiced;
+        self.turn_end();
+    }
+
+    // Both the check and the words agree that the turn is over (each may come last).
+    fn turn_end(&mut self) {
+        if self.phase == Phase::HandsFree && self.turn_over == self.voice_at && turn_may_end(&self.best, read_covers(self.read_upto, self.voice_at)) {
+            let now = self.now();
+            self.end("turn complete", now);
+            self.finish(0.0);
+        }
     }
 
     fn on_level(&mut self, v: f64) {
         let now = self.now();
+        self.heard(v, now);
+    }
+
+    // A bit of sound came in (v: its level), at now.
+    fn heard(&mut self, v: f64, now: f64) {
         self.wake_level(v, now);
-        if v > 0.2 {
+        let (voiced, spoke) = match self.vad.is_some() {
+            true => {
+                let voiced = self.listen_vad(now);
+                (voiced, voiced)
+            }
+            false => (v > 0.2, v > SPEECH_LEVEL),
+        };
+        if voiced {
             self.voice_at = now;
         }
-        if v > SPEECH_LEVEL && self.phase != Phase::Idle {
+        if spoke && self.phase != Phase::Idle {
             self.spoke = true;
         }
         if !matches!(self.phase, Phase::Holding | Phase::HandsFree) || now - self.level_at < 0.05 {
@@ -815,7 +1051,8 @@ impl Voice {
             return;
         }
         log(&if words.is_empty() { "wake word off".to_owned() } else { format!("wake word on ({} words)", words.len()) });
-        self.wake = Wake { words, speaking: self.wake.speaking, quiet_until: self.wake.quiet_until, ..Wake::default() };
+        let (overlap, cap) = wake_reach(&words);
+        self.wake = Wake { words, speaking: self.wake.speaking, quiet_until: self.wake.quiet_until, overlap, cap, ..Wake::default() };
         if self.phase != Phase::Idle {
             return; // a take under way keeps its microphone and its number
         }
@@ -832,6 +1069,7 @@ impl Voice {
     fn set_speaking(&mut self, on: bool, now: f64) {
         if self.wake.speaking && !on {
             self.wake.quiet_until = now + WAKE_AFTER_SPEECH;
+            self.wake.follow_until = self.wake.quiet_until + FOLLOW_UP;
         }
         self.wake.speaking = on;
     }
@@ -883,6 +1121,7 @@ impl Voice {
                 self.wake.heard_at = None;
                 self.wake.reading = None;
                 self.wake.read_at = now;
+                (self.wake.seg, self.wake.next, self.wake.deferred) = (None, None, false);
             }
             Err(e) => self.wake_mic_failed(&e, now),
         }
@@ -909,7 +1148,9 @@ impl Voice {
         self.wake.failed = false;
         let deaf = self.wake_deaf(now);
         // Nothing of Roamies' own voice is kept, so none of it is read once it has stopped.
-        let (keep, slack) = if deaf { (0, 0) } else { ((WAKE_WINDOW * RATE as f64) as usize, (WAKE_SLACK * RATE as f64) as usize) };
+        // With the VAD a read can reach back a cap and an overlap.
+        let window = if self.vad.is_some() { WAKE_WINDOW.max(self.wake.cap + self.wake.overlap) } else { WAKE_WINDOW };
+        let (keep, slack) = if deaf { (0, 0) } else { ((window * RATE as f64) as usize, (WAKE_SLACK * RATE as f64) as usize) };
         {
             let mut buf = self.buf.lock().unwrap();
             if buf.len() > keep + slack {
@@ -917,6 +1158,9 @@ impl Voice {
                 buf.drain(..cut);
                 self.wake.dropped += cut as u64;
             }
+        }
+        if self.vad.is_some() {
+            return; // the VAD tells a voice (wake_vad)
         }
         if deaf {
             self.wake.heard_at = None;
@@ -929,6 +1173,9 @@ impl Voice {
     // A voice was heard since the last read: its last few seconds go to be read. One read at a time and one a
     // second at most, so a video playing for hours costs a read a second and nothing piles up.
     fn wake_read(&mut self, now: f64) {
+        if self.vad.is_some() {
+            return self.wake_read_vad(now);
+        }
         let Some(engine) = &self.engine else { return };
         if self.wake_deaf(now) || self.wake.reading.is_some() || now - self.wake.read_at < WAKE_EVERY {
             return;
@@ -952,6 +1199,95 @@ impl Voice {
         }
     }
 
+    /// What came into the tap goes through the VAD: whether any of it was a voice. While waiting for the phrase the
+    /// stretches of voice are noted to be read, and after a reply a voice starts a take.
+    fn listen_vad(&mut self, now: f64) -> bool {
+        let Some(vad) = self.vad.as_mut() else { return false };
+        let mut steps = std::mem::take(&mut self.steps);
+        steps.clear();
+        {
+            let mut tap = self.tap.lock().unwrap();
+            vad.feed(&tap, &mut steps);
+            tap.clear();
+        }
+        let voiced = steps.iter().any(|s| s.voice);
+        if self.wake_waiting() && self.source.is_some() {
+            self.wake_vad(&steps, now);
+        }
+        self.steps = steps;
+        voiced
+    }
+
+    fn wake_vad(&mut self, steps: &[vad::Step], now: f64) {
+        let rate = RATE as f64;
+        if self.wake_deaf(now) {
+            // Roamies' own voice: none of it is a stretch to read, nor the start of one that goes on after it.
+            if let Some(vad) = self.vad.as_mut() {
+                vad.forget();
+            }
+            (self.wake.seg, self.wake.next, self.wake.deferred) = (None, None, false);
+            return;
+        }
+        for s in steps {
+            if s.voice {
+                self.wake.voice_at = now;
+            }
+            match s.edge {
+                Some(vad::Edge::Start(at)) => {
+                    let from = at.saturating_sub((WAKE_PRE * rate) as u64);
+                    if now < self.wake.follow_until {
+                        log("follow-up heard");
+                        return self.wake_take(from, true, now);
+                    }
+                    self.wake.seg = Some(from);
+                }
+                Some(vad::Edge::End(at)) => {
+                    if let Some(from) = self.wake.seg.take() {
+                        self.wake_segment(from, (at + (WAKE_POST * rate) as u64).min(s.at), false);
+                    }
+                }
+                None => {}
+            }
+            if let Some(from) = self.wake.seg.filter(|&f| s.at >= f + (self.wake.cap * rate) as u64) {
+                self.wake_segment(from, s.at, true);
+                self.wake.seg = Some(s.at - (self.wake.overlap * rate) as u64);
+            }
+        }
+    }
+
+    // A stretch of voice (stream samples) to be read; one waiting already is joined with it, so nothing said is
+    // skipped while a read is out, up to the cap and its overlap.
+    // cut: at the cap, the voice going on.
+    fn wake_segment(&mut self, from: u64, to: u64, cut: bool) {
+        if to <= from {
+            return; // ended in the overlap of a read already made
+        }
+        let from = self.wake.next.map_or(from, |(f, _, _)| f.min(from));
+        self.wake.next = Some((from.max(to.saturating_sub(((self.wake.cap + self.wake.overlap) * RATE as f64) as u64)), to, cut));
+    }
+
+    // With the VAD: the stretch of voice waiting goes to be read, one read at a time.
+    fn wake_read_vad(&mut self, now: f64) {
+        let Some(engine) = &self.engine else { return };
+        if self.wake_deaf(now) || self.wake.reading.is_some() {
+            return;
+        }
+        let Some((from, to, cut)) = self.wake.next.take() else { return };
+        let (audio, start) = {
+            let buf = self.buf.lock().unwrap();
+            let at = |p: u64| (p.saturating_sub(self.wake.dropped) as usize).min(buf.len());
+            (buf[at(from)..at(to).max(at(from))].to_vec(), self.wake.dropped + at(from) as u64)
+        };
+        if audio.len() < RATE as usize / 5 {
+            return;
+        }
+        self.wake.read_at = now;
+        self.wake.read_cut = cut.then_some(audio.len() as f64 / RATE as f64);
+        if engine.send(Job { take: self.take, audio, last: false, wake: true }).is_ok() {
+            self.wake.reading = Some((self.take, now, start));
+        }
+    }
+
     /// A snippet was read: when the phrase is in it, a hands-free take starts where the phrase ended. What was
     /// heard is never logged.
     fn on_snippet(&mut self, take: u64, heard: Vec<(String, f64)>, now: f64) {
@@ -967,7 +1303,32 @@ impl Voice {
         // One timed word can be two plain ones ("twenty-one"): each gets the time the whole ends at.
         let said: Vec<(String, f64)> = heard.iter().flat_map(|(w, end)| plain_words(w).into_iter().map(move |p| (p, *end))).collect();
         let plain: Vec<String> = said.iter().map(|(w, _)| w.clone()).collect();
-        let Some(last) = wake_match(&self.wake.words, &plain) else { return };
+        let read_cut = self.wake.read_cut.take();
+        let deferred = std::mem::take(&mut self.wake.deferred);
+        let last = wake_match(&self.wake.words, &plain).or_else(|| {
+            // Read again whole after a cut through it: it was said, and its last word says where it ends ("oye" can
+            // come back as "oye y" the second time).
+            let end = self.wake.words.last()?;
+            plain.iter().rposition(|w| deferred && same_word(end, w))
+        });
+        let Some(last) = last else { return };
+        if read_cut.is_some_and(|secs| said[last].1 > secs - WAKE_EDGE) {
+            // Maybe cut through: the stretch is read again from just before the phrase (where the word before it
+            // ended), so its end times are whole; the take waits for that read.
+            self.wake.deferred = true;
+            let first = (last + 1).saturating_sub(self.wake.words.len());
+            let before = if first > 0 { said[first - 1].1 } else { 0.0 };
+            let begins = start + ((before - WAKE_PRE).max(0.0) * RATE as f64) as u64;
+            if let Some(seg) = self.wake.seg.as_mut() {
+                *seg = (*seg).min(begins);
+            } else if let Some(next) = self.wake.next.as_mut() {
+                next.0 = next.0.min(begins);
+            } else {
+                let end = self.wake.dropped + self.buf.lock().unwrap().len() as u64;
+                self.wake_segment(begins, end, false);
+            }
+            return;
+        }
         log("wake word heard");
         // Words after the phrase in the same breath ("jarvis, what time is it") are already in the buffer, or came
         // in while the snippet was read: the take starts where the phrase ended, so none are lost.
@@ -985,6 +1346,7 @@ impl Voice {
             let cut = (from.saturating_sub(self.wake.dropped) as usize).min(buf.len());
             buf.drain(..cut);
         }
+        (self.wake.seg, self.wake.next, self.wake.deferred) = (None, None, false);
         self.spoke = said_more;
         self.phase = Phase::HandsFree;
         self.blocked = true;
@@ -1035,6 +1397,7 @@ impl Voice {
                 let now = self.now();
                 self.on_snippet(take, words, now);
             }
+            Ev::Turn { take, voiced, complete } => self.on_turn(take, voiced, complete),
             Ev::EngineFailed(e) => {
                 self.engine = None;
                 self.engine_error = Some(e);
@@ -1042,6 +1405,83 @@ impl Voice {
         }
         false
     }
+}
+
+/// One turn of the main loop: what came in, then a tick. True when Roamies has gone.
+fn pump(voice: &mut Voice, rx: &Receiver<Ev>) -> bool {
+    let quit = match rx.recv_timeout(Duration::from_millis(16)) {
+        Ok(ev) => {
+            let mut quit = voice.handle(ev);
+            while let Ok(ev) = rx.try_recv() {
+                quit |= voice.handle(ev);
+            }
+            quit
+        }
+        Err(RecvTimeoutError::Timeout) => false,
+        Err(RecvTimeoutError::Disconnected) => true,
+    };
+    if !quit {
+        voice.tick();
+    }
+    quit
+}
+
+/// The voice gate and the end-of-turn check, when their models are there (with the speech model's).
+fn gate(voice: &mut Voice, dir: &Path, tx: &Sender<Ev>) {
+    voice.vad = load_vad(dir);
+    if voice.vad.is_some() {
+        let dir = dir.to_path_buf();
+        voice.turn = Some(spawn_turn(Box::new(move || load_turn(&dir)), tx.clone()));
+    }
+}
+
+// This process's CPU time in seconds (Linux: utime and stime, fields 14 and 15 of /proc/self/stat, in 1/100 s).
+fn cpu_seconds() -> f64 {
+    let stat = std::fs::read_to_string("/proc/self/stat").unwrap_or_default();
+    let f: Vec<f64> = stat.rsplit(')').next().unwrap_or("").split_whitespace().map(|x| x.parse().unwrap_or(f64::NAN)).collect();
+    f.get(11).zip(f.get(12)).map_or(f64::NAN, |(u, s)| (u + s) / 100.0)
+}
+
+/// --bench-listen <wav> (see the top of the file): what listening costs, with the WAV for the microphone at real speed.
+fn bench_listen(dir: &Path, wav: &Path, args: &[String]) {
+    let asr = load_model(dir).unwrap_or_else(|e| panic!("model: {e}"));
+    let (samples, _) = audio::read_wav(wav).unwrap_or_else(|e| panic!("{}: {e}", wav.display()));
+    let (tx, rx) = mpsc::channel();
+    let (jobs, jrx) = mpsc::channel();
+    let engine_tx = tx.clone();
+    thread::spawn(move || serve(asr, jrx, engine_tx));
+    let mut voice = Voice::new(Some(jobs), Some(wav.to_path_buf()), tx.clone());
+    if !args.iter().any(|a| a == "--no-vad") {
+        gate(&mut voice, dir, &tx);
+    }
+    if let Some(p) = arg(args, "--turn").and_then(|p| p.parse::<f32>().ok()) {
+        // A stand-in for Smart Turn: always this answer, in about the time it takes.
+        struct Fixed(f32);
+        impl TurnCheck for Fixed {
+            fn complete(&mut self, _: &[f32]) -> Result<f32, String> {
+                thread::sleep(Duration::from_millis(60));
+                Ok(self.0)
+            }
+        }
+        voice.turn = Some(spawn_turn(Box::new(move || Some(Box::new(Fixed(p)) as Box<dyn TurnCheck>)), tx.clone()));
+    }
+    let listen = args.iter().any(|a| a == "--listen");
+    let secs = samples.len() as f64 / RATE as f64;
+    let (cpu0, t0) = (cpu_seconds(), Instant::now());
+    if listen {
+        voice.listen_now();
+    } else {
+        voice.set_wake(true, &arg(args, "--phrase").unwrap_or_else(|| "hey jarvis".into()));
+    }
+    let mut woke = None;
+    while t0.elapsed().as_secs_f64() < secs + 2.0 && !pump(&mut voice, &rx) {
+        if !listen && woke.is_none() && voice.phase != Phase::Idle {
+            woke = Some(t0.elapsed().as_secs_f64());
+        }
+    }
+    let reads = |i: usize| READS[i].load(std::sync::atomic::Ordering::Relaxed);
+    let ended = (!voice.ended_why.is_empty()).then(|| json!({ "why": voice.ended_why, "at": voice.ended_at - voice.listen_at }));
+    emit(json!({ "type": "bench", "audio_s": secs, "cpu_s": cpu_seconds() - cpu0, "wake_reads": reads(0), "take_reads": reads(1), "vad": voice.vad.is_some(), "woke_at": woke, "ended": ended }));
 }
 
 fn arg(args: &[String], name: &str) -> Option<String> {
@@ -1085,6 +1525,10 @@ fn main() {
         return;
     }
 
+    if let Some(wav) = arg(&args, "--bench-listen") {
+        return bench_listen(&model.expect("--bench-listen needs --model <dir>"), Path::new(&wav), &args);
+    }
+
     let (tx, rx): (Sender<Ev>, Receiver<Ev>) = mpsc::channel();
     let (engine, engine_thread) = match &model {
         Some(dir) if model_present(dir) => {
@@ -1097,6 +1541,9 @@ fn main() {
         }
     };
     let mut voice = Voice::new(engine, arg(&args, "--test-audio").map(PathBuf::from), tx.clone());
+    if let Some(dir) = model.as_ref().filter(|d| model_present(d)) {
+        gate(&mut voice, dir, &tx);
+    }
     voice.latency = std::env::var_os("ROAMIES_LATENCY").is_some();
     if let Some(c) = arg(&args, "--chord") {
         voice.set_chord(&c.split(',').map(str::to_owned).collect::<Vec<_>>());
@@ -1113,23 +1560,7 @@ fn main() {
     });
 
     emit(json!({ "type": "ready", "engine": "parakeet", "model": voice.engine.is_some() }));
-    loop {
-        let quit = match rx.recv_timeout(Duration::from_millis(16)) {
-            Ok(ev) => {
-                let mut quit = voice.handle(ev);
-                while let Ok(ev) = rx.try_recv() {
-                    quit |= voice.handle(ev);
-                }
-                quit
-            }
-            Err(RecvTimeoutError::Timeout) => false,
-            Err(RecvTimeoutError::Disconnected) => true,
-        };
-        if quit {
-            break;
-        }
-        voice.tick();
-    }
+    while !pump(&mut voice, &rx) {}
     // Let the engine thread finish (a model still loading included) before exiting: tearing ONNX Runtime
     // down under it crashes.
     drop(voice);
@@ -1870,5 +2301,426 @@ mod tests {
         for wav in [wav, wav2] {
             let _ = std::fs::remove_file(wav);
         }
+    }
+
+    // ---- the voice gate (vad.rs), the end of a turn and the follow-up ----
+
+    fn with_vad(v: &mut Voice) {
+        v.vad = Some(vad::Vad::new(Box::new(vad::tests::Loud)));
+    }
+
+    // A Voice whose microphone only hears what the test feeds it, its voice told by the VAD (here: anything loud).
+    fn gated() -> (Voice, Receiver<Job>, PathBuf) {
+        let (mut v, jobs, wav) = voice();
+        with_vad(&mut v);
+        v.source = Some(Source::idle());
+        (v, jobs, wav)
+    }
+
+    // Waiting for "hey jarvis" that way.
+    fn waiting_gated() -> (Voice, Receiver<Job>, PathBuf) {
+        let (mut v, jobs, wav) = gated();
+        v.handle(Ev::Cmd(json!({ "cmd": "wake", "on": true, "phrase": "Hey Jarvis" })));
+        v.wake.played = true; // never the stand-in WAV: its tone would be a voice
+        (v, jobs, wav)
+    }
+
+    fn talk(secs: f64) -> Vec<f32> {
+        vec![0.3; (secs * RATE as f64) as usize]
+    }
+
+    fn hush(secs: f64) -> Vec<f32> {
+        vec![0.0; (secs * RATE as f64) as usize]
+    }
+
+    // Sound as the microphone brings it, 20 ms at a time from `at`, always at a level the volume gate takes for a voice
+    // (only the VAD may decide), the wake word looked after at every step. Returns when it ends.
+    fn feed(v: &mut Voice, audio: &[f32], at: f64) -> f64 {
+        let mut now = at;
+        for c in audio.chunks(RATE as usize / 50) {
+            v.buf.lock().unwrap().extend_from_slice(c);
+            v.tap.lock().unwrap().extend_from_slice(c);
+            v.heard(0.5, now);
+            v.wake_tick(now);
+            now += 0.02;
+        }
+        now
+    }
+
+    #[test]
+    fn without_the_voice_activity_model_a_voice_is_still_a_level() {
+        let dir = std::env::temp_dir().join(format!("roamies-voice-novad-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        assert!(load_vad(&dir).is_none(), "not downloaded");
+        std::fs::write(dir.join(VAD_MODEL), b"not a model").unwrap();
+        assert!(load_vad(&dir).is_none(), "a broken file");
+        let _ = std::fs::remove_dir_all(&dir);
+        // And then the level decides, as before (the tests above all run that way).
+        let (mut v, _jobs, wav) = voice();
+        assert!(v.vad.is_none());
+        v.source = Some(Source::idle());
+        v.toggle();
+        v.heard(0.5, v.listen_at + 1.0);
+        assert!(v.spoke && v.voice_at == v.listen_at + 1.0);
+        let _ = std::fs::remove_file(wav);
+    }
+
+    #[test]
+    fn with_the_vad_a_take_hears_a_voice_by_its_sound_not_its_level() {
+        let (mut v, _jobs, wav) = gated();
+        v.toggle();
+        let t = v.listen_at;
+        let end = feed(&mut v, &hush(2.0), t);
+        assert!(!v.spoke && v.voice_at == t, "loud but no voice: nothing was said");
+        let end = feed(&mut v, &talk(1.0), end);
+        assert!(v.spoke, "a voice");
+        assert!(v.voice_at > end - 0.1, "heard to its end");
+        let _ = std::fs::remove_file(wav);
+    }
+
+    #[test]
+    fn with_the_vad_the_wake_word_reads_only_stretches_of_voice() {
+        let (mut v, jobs, wav) = waiting_gated();
+        let at = feed(&mut v, &hush(5.0), 1.0);
+        assert!(jobs.try_recv().is_err(), "room noise, however loud, is never read");
+        let at = feed(&mut v, &talk(1.0), at);
+        assert!(jobs.try_recv().is_err(), "not while the voice goes on");
+        let at = feed(&mut v, &hush(0.6), at);
+        let job = jobs.try_recv().expect("the stretch of voice is read once it ended");
+        assert!(job.wake && !job.last);
+        let secs = job.audio.len() as f64 / RATE as f64;
+        assert!((1.0 + WAKE_PRE..1.5 + WAKE_PRE).contains(&secs), "the voice, a little before and after it: {secs} s");
+        assert!(job.audio.iter().take(RATE as usize / 10).all(|&s| s == 0.0) && job.audio.iter().any(|&s| s > 0.0));
+        v.on_snippet(job.take, heard("thank you"), at);
+        feed(&mut v, &hush(5.0), at);
+        assert!(jobs.try_recv().is_err(), "and nothing more until another voice");
+        assert_eq!(v.phase, Phase::Idle);
+        let _ = std::fs::remove_file(wav);
+    }
+
+    #[test]
+    fn a_long_voice_is_read_at_the_cap_and_the_phrase_across_the_cut_is_still_found() {
+        let (mut v, jobs, wav) = waiting_gated();
+        let at = feed(&mut v, &hush(0.5), 0.0);
+        // Four seconds of talk, each sample saying where it is in the stream.
+        let start = RATE as usize / 2;
+        let speech: Vec<f32> = (0..4 * RATE as usize).map(|i| 0.1 + i as f32 * 1e-6).collect();
+        let place = |x: f32| start as f64 / RATE as f64 + (x as f64 - 0.1) * 1e6 / RATE as f64;
+        let mut now = at;
+        let mut first = None;
+        for c in speech.chunks(RATE as usize / 50) {
+            now = feed(&mut v, c, now);
+            if first.is_none() {
+                first = jobs.try_recv().ok();
+            }
+        }
+        let first = first.expect("read at the cap, while it still goes on");
+        assert!(first.audio.len() as f64 <= (v.wake.cap + 0.1) * RATE as f64, "{} samples", first.audio.len());
+        let cut = place(*first.audio.last().unwrap());
+        assert!((2.5..3.2).contains(&cut), "cut at {cut} s");
+        let now = feed(&mut v, &hush(0.6), now);
+        assert!(jobs.try_recv().is_err(), "one read at a time");
+        v.on_snippet(first.take, heard("and then hey"), now);
+        v.wake_tick(now);
+        let second = jobs.try_recv().expect("the rest, from a second before the cut");
+        let from = place(second.audio[0]);
+        assert!((from - (cut - v.wake.overlap)).abs() < 0.05, "from {from} s");
+        // "hey jarvis" said across the cut (around it) is whole in the second read.
+        v.on_snippet(second.take, vec![("hey".into(), 0.6), ("jarvis".into(), 1.0)], now);
+        assert_eq!(v.phase, Phase::HandsFree, "the phrase was found");
+        let begins = place(v.buf.lock().unwrap().iter().copied().find(|&s| s > 0.0).unwrap());
+        assert!((begins - (from + 1.4)).abs() < 0.05, "the take begins after it: {begins} s");
+        // A voice that ended inside the overlap of a read already made: nothing more to read.
+        v.wake_segment(5 * RATE as u64, 4 * RATE as u64, false);
+        assert_eq!(v.wake.next, None);
+        let _ = std::fs::remove_file(wav);
+    }
+
+    #[test]
+    fn with_the_vad_roamies_own_voice_is_not_read_and_after_it_a_voice_is_a_new_question() {
+        let (mut v, jobs, wav) = waiting_gated();
+        v.set_speaking(true, 1.0);
+        let at = feed(&mut v, &talk(3.0), 1.0);
+        assert!(jobs.try_recv().is_err() && v.phase == Phase::Idle, "the reply itself");
+        v.set_speaking(false, at);
+        // Its echo, just after: still not taken, and not carried over into what comes next.
+        let at = feed(&mut v, &talk(WAKE_AFTER_SPEECH - 0.2), at);
+        let at = feed(&mut v, &hush(0.5), at);
+        assert!(jobs.try_recv().is_err() && v.phase == Phase::Idle, "its echo");
+        let _ = said();
+        // Then, within the follow-up, a voice starts a take without the phrase, from its first word.
+        feed(&mut v, &talk(0.4), at);
+        assert_eq!(v.phase, Phase::HandsFree, "a follow-up question");
+        assert!(jobs.try_recv().is_err(), "without reading it for the phrase");
+        assert_eq!(said(), vec![json!({ "type": "state", "state": "listening", "mode": "handsfree" })], "as a toggled take");
+        assert!(v.spoke);
+        assert!(v.buf.lock().unwrap().iter().take(RATE as usize / 20).any(|&s| s == 0.0), "a moment before the first word is kept");
+        v.cancel();
+        // Later than the follow-up: only the phrase starts one.
+        let (mut w, jobs, wav2) = waiting_gated();
+        w.set_speaking(true, 1.0);
+        w.set_speaking(false, 2.0);
+        let at = feed(&mut w, &hush(WAKE_AFTER_SPEECH + FOLLOW_UP + 0.2), 2.0);
+        let at = feed(&mut w, &talk(1.0), at);
+        feed(&mut w, &hush(0.6), at);
+        assert_eq!(w.phase, Phase::Idle, "too late for a follow-up");
+        assert!(jobs.try_recv().is_ok_and(|j| j.wake), "read for the phrase instead");
+        // A take of its own also uses the follow-up up.
+        let (mut x, _jobs, wav3) = waiting_gated();
+        x.set_speaking(true, 0.5);
+        x.set_speaking(false, 1.0);
+        assert!(x.wake.follow_until > 1.0);
+        x.toggle();
+        x.cancel();
+        assert_eq!(x.wake.follow_until, 0.0);
+        for wav in [wav, wav2, wav3] {
+            let _ = std::fs::remove_file(wav);
+        }
+    }
+
+    // A hands-free take with the VAD and a stand-in turn check (the test answers its questions): one second of talk.
+    fn turn_take() -> (Voice, Receiver<TurnJob>, PathBuf, f64) {
+        let (mut v, _jobs, wav) = gated();
+        let (ttx, turns) = mpsc::channel();
+        v.turn = Some(ttx);
+        v.toggle();
+        let t = v.listen_at;
+        feed(&mut v, &talk(1.0), t);
+        (v.best, v.heard_at) = ("the thing is".into(), v.voice_at);
+        let voiced = v.voice_at;
+        (v, turns, wav, voiced)
+    }
+
+    #[test]
+    fn a_turn_that_sounds_over_ends_the_take_at_once() {
+        let (mut v, turns, wav, voiced) = turn_take();
+        v.ask_turn(voiced + TURN_SILENCE - 0.05);
+        assert!(turns.try_recv().is_err(), "not before a quarter second of quiet");
+        v.ask_turn(voiced + TURN_SILENCE + 1e-9);
+        let job = turns.try_recv().expect("asked once the voice stopped");
+        assert_eq!((job.take, job.voiced), (v.take, voiced));
+        assert!(job.audio.len() >= RATE as usize && job.audio.len() <= (TURN_AUDIO * RATE as f64) as usize);
+        v.ask_turn(voiced + 0.6);
+        assert!(turns.try_recv().is_err(), "once per silence");
+        // Over, and the live read sent after the voice stopped heard a finished question: it ends there.
+        v.handle(Ev::Turn { take: job.take, voiced: job.voiced, complete: Some(true) });
+        assert_eq!(v.phase, Phase::HandsFree, "the words so far (\"the thing is\") don't sound finished");
+        (v.read_at, v.reading) = (voiced + READ_MARGIN, true);
+        v.on_text(v.take, "what time is it?".into(), false);
+        assert_eq!(v.phase, Phase::Finishing, "over: no waiting out the pause");
+        assert_eq!(v.ended_why, "turn complete");
+        // In the other order (the words first, then the check) the same.
+        let (mut v, turns, wav3, voiced) = turn_take();
+        (v.read_at, v.reading) = (voiced + READ_MARGIN, true);
+        v.on_text(v.take, "Open the browser and look up tomorrow's weather.".into(), false);
+        v.ask_turn(voiced + 0.3);
+        let job = turns.try_recv().expect("asked");
+        v.handle(Ev::Turn { take: job.take, voiced: job.voiced, complete: Some(true) });
+        assert_eq!((v.phase, v.ended_why), (Phase::Finishing, "turn complete"), "a whole request ends at once too");
+        let _ = std::fs::remove_file(wav3);
+        // Only the last eight seconds of a long take go to the check.
+        let (mut v, turns, wav2, _) = turn_take();
+        let from = v.voice_at;
+        let at = feed(&mut v, &talk(9.0), from);
+        v.ask_turn(at + 0.3);
+        assert_eq!(turns.try_recv().expect("asked").audio.len(), (TURN_AUDIO * RATE as f64) as usize);
+        for wav in [wav, wav2] {
+            let _ = std::fs::remove_file(wav);
+        }
+    }
+
+    #[test]
+    fn a_turn_not_over_or_unknown_keeps_todays_pauses() {
+        // Not over: the full pause, as before.
+        let (mut v, turns, wav, voiced) = turn_take();
+        v.ask_turn(voiced + 0.3);
+        let job = turns.try_recv().expect("asked");
+        v.handle(Ev::Turn { take: job.take, voiced: job.voiced, complete: Some(false) });
+        v.tick_keys(voiced + PAUSE_ENDS - 0.05);
+        assert_eq!(v.phase, Phase::HandsFree);
+        v.tick_keys(voiced + PAUSE_ENDS + 0.05);
+        assert_eq!((v.phase, v.ended_why), (Phase::Finishing, "pause"), "the cap");
+        // The check failed: the same.
+        let (mut v, turns, wav2, voiced) = turn_take();
+        v.ask_turn(voiced + 0.3);
+        let job = turns.try_recv().expect("asked");
+        v.handle(Ev::Turn { take: job.take, voiced: job.voiced, complete: None });
+        v.tick_keys(voiced + PAUSE_ENDS - 0.05);
+        assert_eq!(v.phase, Phase::HandsFree);
+        // An answer about an older silence (they spoke again since) or an older take changes nothing.
+        let (mut v, turns, wav3, voiced) = turn_take();
+        v.ask_turn(voiced + 0.3);
+        let job = turns.try_recv().expect("asked");
+        feed(&mut v, &talk(0.5), voiced + 0.4);
+        v.handle(Ev::Turn { take: job.take, voiced: job.voiced, complete: Some(true) });
+        v.handle(Ev::Turn { take: job.take - 1, voiced: v.voice_at, complete: Some(true) });
+        assert_eq!(v.phase, Phase::HandsFree);
+        // No check (no model): never asked, today's timings; the punctuation rule still shortens the pause.
+        let (mut v, _turns, wav4, voiced) = turn_take();
+        v.turn = None;
+        v.ask_turn(voiced + 0.3);
+        v.tick_keys(voiced + PAUSE_ENDS - 0.05);
+        assert_eq!(v.phase, Phase::HandsFree);
+        let (mut v, turns, wav5, voiced) = turn_take();
+        (v.best, v.read_upto) = ("what time is it?".into(), voiced + 0.3);
+        v.ask_turn(voiced + 0.3);
+        let job = turns.try_recv().expect("asked");
+        v.handle(Ev::Turn { take: job.take, voiced: job.voiced, complete: Some(false) });
+        v.tick_keys(voiced + SHORT_PAUSE + 0.05);
+        assert_eq!((v.phase, v.ended_why), (Phase::Finishing, "short pause"));
+        // Without the VAD there is no quarter second of quiet to ask about.
+        let (mut v, _jobs, wav6) = voice();
+        let (ttx, turns) = mpsc::channel();
+        v.turn = Some(ttx);
+        v.source = Some(Source::idle());
+        v.toggle();
+        v.heard(0.5, v.listen_at + 0.5);
+        v.ask_turn(v.listen_at + 2.0);
+        assert!(turns.try_recv().is_err());
+        for wav in [wav, wav2, wav3, wav4, wav5, wav6] {
+            let _ = std::fs::remove_file(wav);
+        }
+    }
+
+    // Regression (verifier B2): Smart Turn said "over" at a pause mid-sentence and the take was sent as "Quiero
+    // saber." / "…gastos y..." / "Yeah." (a filler). The check only ends a take whose words, all heard, sound like a
+    // finished turn: a question or exclamation, or a full stop after four words or more that don't end hanging.
+    #[test]
+    fn a_turn_check_never_cuts_off_words_that_do_not_sound_finished() {
+        for text in ["", "Quiero saber.", "Necesito que me digas el total de gastos y...", "Yeah.", "Eh.", "Sí.", "quiero ver mis gastos de", "Necesito que me digas el total de gastos y", "Dime cuánto gasté este."] {
+            let (mut v, turns, wav, voiced) = turn_take();
+            (v.read_at, v.reading) = (voiced + READ_MARGIN, true);
+            v.on_text(v.take, text.into(), false);
+            v.ask_turn(voiced + 0.3);
+            let job = turns.try_recv().expect("asked");
+            v.handle(Ev::Turn { take: job.take, voiced: job.voiced, complete: Some(true) });
+            assert_eq!(v.phase, Phase::HandsFree, "{text:?}");
+            let _ = std::fs::remove_file(wav);
+        }
+        // A finished question whose last read didn't hear its end: not until a read has.
+        let (mut v, turns, wav, voiced) = turn_take();
+        (v.read_at, v.reading) = (voiced - 0.3, true);
+        v.on_text(v.take, "what time is it?".into(), false);
+        v.ask_turn(voiced + 0.3);
+        let job = turns.try_recv().expect("asked");
+        v.handle(Ev::Turn { take: job.take, voiced: job.voiced, complete: Some(true) });
+        assert_eq!(v.phase, Phase::HandsFree, "the read may have missed words");
+        let _ = std::fs::remove_file(wav);
+        // Fillers leave a sentence hanging, as "and" does: the full pause.
+        for filler in ["Quiero ver, eh.", "so um.", "Y este."] {
+            assert_eq!(pause_ends(filler, true), PAUSE_ENDS, "{filler}");
+        }
+    }
+
+    // Regression (verifier B1): the 2.5 s cap cut "…ahora mismo oye computa|dora", the read still matched the
+    // phrase, and the take began with its tail ("Mm-hmm.", or nothing heard), losing the question after it.
+    #[test]
+    fn a_phrase_the_cap_may_have_cut_is_read_again_whole_before_a_take_starts() {
+        let (mut v, jobs, wav) = waiting_gated();
+        let at = feed(&mut v, &hush(0.5), 0.0);
+        // Talk, each sample saying where it is in the stream (from 0.5 s).
+        let speech: Vec<f32> = (0..5 * RATE as usize).map(|i| 0.1 + i as f32 * 1e-6).collect();
+        let place = |x: f32| 0.5 + (x as f64 - 0.1) * 1e6 / RATE as f64;
+        let starts = |a: &[f32]| {
+            let k = a.iter().position(|&x| x > 0.0).unwrap();
+            place(a[k]) - k as f64 / RATE as f64
+        };
+        let (mut now, mut fed, mut first) = (at, 0, None);
+        for c in speech.chunks(RATE as usize / 50) {
+            now = feed(&mut v, c, now);
+            fed += c.len();
+            if let Ok(j) = jobs.try_recv() {
+                first = Some(j);
+                break;
+            }
+        }
+        let first = first.expect("read at the cap");
+        let secs = first.audio.len() as f64 / RATE as f64;
+        // The phrase ends a moment before the cut: its last word may have been cut through.
+        v.on_snippet(first.take, vec![("te".into(), secs - 1.6), ("digo".into(), secs - 1.2), ("hey".into(), secs - 0.6), ("jarvis".into(), secs - 0.1)], now);
+        assert_eq!(v.phase, Phase::Idle, "no take from a phrase that may be cut");
+        let phrase_at = starts(&first.audio) + secs - 1.2;
+        let now = feed(&mut v, &speech[fed..fed + RATE as usize / 2], now);
+        let now = feed(&mut v, &hush(0.6), now);
+        let second = jobs.try_recv().expect("read again, with all of the phrase");
+        let from = starts(&second.audio);
+        assert!((from - (phrase_at - WAKE_PRE)).abs() < 0.05, "from {from} s, the phrase at {phrase_at} s");
+        let into = phrase_at - from;
+        // The second read misheard its first word ("hey" as "they"): the phrase was heard already, its last word is
+        // enough to know where it ends.
+        v.on_snippet(second.take, vec![("they".into(), into + 0.6), ("jarvis".into(), into + 1.1)], now);
+        assert_eq!(v.phase, Phase::HandsFree, "now the take starts");
+        let begins = place(v.buf.lock().unwrap().iter().copied().find(|&s| s > 0.0).unwrap());
+        assert!((begins - (from + into + 1.5)).abs() < 0.05, "after the phrase: {begins} s");
+        let _ = std::fs::remove_file(wav);
+        // A phrase well inside the read still starts the take at once.
+        let (mut v, jobs, wav) = waiting_gated();
+        let mut now = feed(&mut v, &hush(0.5), 0.0);
+        let mut first = None;
+        for c in speech.chunks(RATE as usize / 50) {
+            now = feed(&mut v, c, now);
+            if let Ok(j) = jobs.try_recv() {
+                first = Some(j);
+                break;
+            }
+        }
+        let first = first.expect("read at the cap");
+        let secs = first.audio.len() as f64 / RATE as f64;
+        v.on_snippet(first.take, vec![("hey".into(), secs - 1.6), ("jarvis".into(), secs - 1.1), ("what".into(), secs - 0.7)], now);
+        assert_eq!(v.phase, Phase::HandsFree);
+        let _ = std::fs::remove_file(wav);
+    }
+
+    #[test]
+    fn a_longer_phrase_gets_a_longer_overlap_and_the_buffer_keeps_it() {
+        let (mut v, _jobs, wav) = waiting_gated();
+        assert!((1.0..1.5).contains(&v.wake.overlap) && v.wake.cap >= WAKE_CAP, "{} {}", v.wake.overlap, v.wake.cap);
+        v.handle(Ev::Cmd(json!({ "cmd": "wake", "on": true, "phrase": "Oye asistente de la casa por favor" })));
+        v.wake.played = true;
+        assert!(v.wake.overlap >= 2.2 && v.wake.cap >= v.wake.overlap + 0.9, "{} {}", v.wake.overlap, v.wake.cap);
+        feed(&mut v, &talk(9.0), 0.0);
+        assert!(v.buf.lock().unwrap().len() as f64 >= (v.wake.cap + v.wake.overlap) * RATE as f64, "what a read needs is kept");
+        let _ = std::fs::remove_file(wav);
+    }
+
+    // ONNX Runtime builds one environment per process: Parakeet, the VAD and Smart Turn must all load in it.
+    // ROAMIES_TEST_MODEL=<dir with the Parakeet files, silero-vad.onnx and smart-turn.onnx> cargo test together
+    #[test]
+    fn the_speech_vad_and_turn_models_load_together() {
+        let Some(dir) = std::env::var_os("ROAMIES_TEST_MODEL").map(PathBuf::from) else {
+            return eprintln!("skipped: set ROAMIES_TEST_MODEL=<model dir>");
+        };
+        let mut asr = load_model(&dir).expect("Parakeet");
+        let mut gate = load_vad(&dir).expect("Silero VAD");
+        let mut turn = load_turn(&dir).expect("Smart Turn");
+        let mut steps = Vec::new();
+        gate.feed(&[0.0; 2048], &mut steps);
+        assert_eq!(steps.len(), 4);
+        assert!(turn.complete(&[0.0; 16_000]).is_ok_and(|p| (0.0..=1.0).contains(&p)));
+        assert_eq!(transcribe(&mut asr, vec![0.0; 100]), "");
+    }
+
+    #[test]
+    fn the_turn_check_runs_on_its_own_thread_and_answers_with_its_threshold() {
+        struct Says(Result<f32, String>);
+        impl TurnCheck for Says {
+            fn complete(&mut self, _: &[f32]) -> Result<f32, String> {
+                self.0.clone()
+            }
+        }
+        for (says, complete) in [(Ok(0.8), Some(true)), (Ok(0.3), Some(false)), (Err("boom".to_owned()), None)] {
+            let (tx, rx) = mpsc::channel();
+            let jobs = spawn_turn(Box::new(move || Some(Box::new(Says(says)) as Box<dyn TurnCheck>)), tx);
+            jobs.send(TurnJob { take: 3, voiced: 1.5, audio: vec![0.0; 100] }).unwrap();
+            match rx.recv_timeout(Duration::from_secs(5)) {
+                Ok(Ev::Turn { take: 3, voiced, complete: c }) => assert!(voiced == 1.5 && c == complete),
+                _ => panic!("no answer"),
+            }
+        }
+        // No model: the thread ends, and asking fails (the take keeps today's rules).
+        let (tx, _rx) = mpsc::channel();
+        let jobs = spawn_turn(Box::new(|| None), tx);
+        thread::sleep(Duration::from_millis(50));
+        assert!(jobs.send(TurnJob { take: 1, voiced: 0.0, audio: Vec::new() }).is_err());
     }
 }

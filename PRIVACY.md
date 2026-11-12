@@ -25,7 +25,10 @@ key) receives:
 
 **GitHub** is used to check for and download updates.
 
-**Hugging Face** is used once, on Windows and Linux, to download the speech model.
+**Hugging Face** and **GitHub** are used once, on Windows and Linux, to download the speech model (NVIDIA Parakeet)
+and two small helper models: Silero VAD, which tells a voice from noise, and Pipecat Smart Turn, which tells when
+you've finished speaking. Each file is pinned to one version and checked; all of them run on your computer, and no
+audio leaves it.
 
 **Wikipedia** is used to fetch photos for photo cards, and websites' `favicon.ico` is fetched for source cards.
 

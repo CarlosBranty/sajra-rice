@@ -72,7 +72,7 @@ assert.match(read('../../src-tauri/src/sidecar.rs'), /\.env\("ROAMIES_VOICE", he
 const host = read('../../../roamies/host.js');
 const talk = host.slice(host.indexOf('const talkSync = '), host.indexOf('// Start hidden in auto mode'));
 assert.match(talk, /if \(!LINUX\) return;/, 'nothing is sent anywhere else');
-assert.match(talk, /const speaking = !!Roamie\.voiceOut\?\.playing\(\), key = `\$\{hearing\},\$\{speaking\}`;\n\s+if \(key === toldTalk\) return;/, 'only when it changes');
+assert.match(talk, /const speaking = !!Roamie\.voiceOut\?\.speaking\(\), key = `\$\{hearing\},\$\{speaking\}`;\n\s+if \(key === toldTalk\) return;/, 'only when it changes');
 assert.match(talk, /invoke\('talk_state', \{ hearing, speaking \}\)\.catch\(\(\) => \{ toldTalk = null; \}\);/, 'and again if the shell did not get it');
 assert.match(host, /else if \(m\.kind === 'voice'\) \{ onVoice\(m\); talkSync\(\); \}/, 'the take opening is passed on at once (the mic is already on)');
 assert.match(host, /const up = \(\) => !!\(getAgent\(\)\?\.visible \|\| ask \|\| Roamie\.panel\?\.isOpen \|\| Roamie\.ink\?\.playing \|\| Roamie\.ink\?\.loose \|\| Roamie\.ink\?\.reminding \|\| hearing \|\| waveTurn \|\| Roamie\.voiceOut\?\.playing\(\)\);/, 'Esc is held as before');

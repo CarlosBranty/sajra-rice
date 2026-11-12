@@ -1443,7 +1443,10 @@ async function getVoiceModel() {
   logLine('voice_model', { phase: 'start', dir: MODEL_DIR });
   modelUpdate(true);
   try {
-    await downloadModel(MODEL_DIR, { onProgress: ({ done, total }) => { voiceModel.done = done; voiceModel.total = total; modelUpdate(false); } });
+    const { extras } = await downloadModel(MODEL_DIR, { onProgress: ({ done, total }) => { voiceModel.done = done; voiceModel.total = total; modelUpdate(false); } });
+    // The voice gate and end-of-turn models come after, never holding this up; the helper loads them the next time it
+    // loads the speech model, and listens as before meanwhile.
+    extras.then((missing) => logLine('voice_model', { phase: 'extras', missing }));
     voiceModel.status = 'ready';
     logLine('voice_model', { phase: 'ready' });
     voiceConfig();
@@ -1462,6 +1465,13 @@ const startVoiceDownload = () => {
   say(`Downloading my voice (${sizeLabel()}, just this once). I'll tell you when it's ready.`, 'happy');
   getVoiceModel();
 };
+// Installs that had the speech model before the voice and end-of-turn models existed get them now (11 MB, checked);
+// the helper picks them up the next time it loads the model. Without them it listens as before.
+if (NEEDS_MODEL && voiceReady() && config.voice) {
+  import('./voicemodel.mjs').then(({ downloadExtras }) => downloadExtras(MODEL_DIR))
+    .then((missing) => logLine('voice_model', { phase: 'extras', missing }))
+    .catch((e) => logLine('voice_model', { phase: 'extras', error: String(e?.message ?? e).slice(0, 200) }));
+}
 const PRIVACY = { microphone: 'Privacy_Microphone', speech: 'Privacy_SpeechRecognition' };
 function onVoice(m) {
   if (m.type === 'voice_state' && m.state === 'listening') { interruptQuietly(); speech.stop(); warmUp(); } // talking over it stops it
