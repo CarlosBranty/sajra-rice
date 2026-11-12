@@ -16,6 +16,7 @@ PanelWindow {
 
     signal powerRequested
     signal settingsRequested
+    signal musicRequested // клик по мини-плееру — панель музыки
 
     property bool open: false
     // peeked — открыта наведением на правый край (Hot): клавиатуру не забирает, курсор ушёл с панели — закрывается сама
@@ -287,6 +288,12 @@ PanelWindow {
                             Text { textFormat: Text.PlainText; width: parent.width; elide: Text.ElideRight; text: Media.player?.trackArtist ?? ""; font { family: Theme.ui; pixelSize: 13 } color: Theme.grey }
                         }
                         Controls { id: mctl; anchors { right: parent.right; rightMargin: 18; verticalCenter: parent.verticalCenter } size: 20; play: 44 }
+                        // обложка и название — открыть панель музыки (кнопки справа забирают свои тапы)
+                        Item {
+                            anchors { left: parent.left; right: mctl.left; top: parent.top; bottom: parent.bottom }
+                            TapHandler { onTapped: { root.close(); root.musicRequested(); } }
+                            HoverHandler { cursorShape: Qt.PointingHandCursor }
+                        }
                     }
 
                     Item {

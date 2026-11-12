@@ -3,6 +3,7 @@
 import QtQuick
 import Quickshell
 import Quickshell.Hyprland
+import Quickshell.Io
 import "bar"
 import "buds"
 import "cal"
@@ -12,13 +13,16 @@ import "deck"
 import "glyph"
 import "home"
 import "launcher"
+import "music"
 import "power"
 import "prefs"
 import "quick"
 import "settings"
 import "shot"
+import "tok"
 import "vpn"
 import "wall"
+import qs.services
 
 // glyph: rice в духе nothing os. Дом на обоях, бар, лаунчер, быстрые настройки,
 // Glyph-полосы по краям вместо OSD, остров уведомлений, меню питания, настройки, deck (дашборд снизу), буфер обмена, чары (эмодзи и символы), скриншоты, vpn, обои. Блокировка — отдельный процесс (lock.qml).
@@ -27,7 +31,9 @@ ShellRoot {
     id: shell
 
     Launcher { id: launcher }
-    Quick { id: quick; onPowerRequested: power.open(); onSettingsRequested: prefs.open() }
+    Quick { id: quick; onPowerRequested: power.open(); onSettingsRequested: prefs.open(); onMusicRequested: music.open = true }
+    Music { id: music }
+    TokDock {}
     Power { id: power }
     Prefs { id: prefs; onWallRequested: walls.open() }
     Glyph {}
@@ -68,6 +74,8 @@ ShellRoot {
         if (Theme.state.paint) Theme.apps(); // rice start ставит ссылки на term/ — цвет надо вернуть
         Rules.night();
         Rules.idle();
+        Charge.read(); // límite de carga guardado → al EC de la batería
+        paletteFile.setText(palette);
     }
     // то, что живёт в конфиге hypr. Он перечитывает его сам: сохранили любой файл hypr (ссылки живые — и git pull, и смена
     // ветки), hyprctl reload — и возвращает умолчания variables.lua: рамки demonshot, монитор, ввод, анимации. Накладываем
@@ -143,7 +151,19 @@ ShellRoot {
     Shortcut { name: "clip"; description: "буфер обмена"; onPressed: clip.toggle() }
     Shortcut { name: "charms"; description: "эмодзи, каомодзи, символы"; onPressed: charms.toggle() }
     Shortcut { name: "wall"; description: "обои"; onPressed: walls.toggle() }
+    Shortcut { name: "music"; description: "музыка: плеер и библиотека ~/Music"; onPressed: music.toggle() }
     Shortcut { name: "game"; description: "игровой режим"; onPressed: Rules.store.game = !Rules.store.game }
+
+    // палитра наружу — для своих приложений вне шелла (glyph-tok: Qt WebEngine в qs не грузится, живёт отдельным процессом).
+    // Пишется при каждой смене темы, светлой/тёмной, обоев
+    readonly property string palette: JSON.stringify({
+        light: Theme.light,
+        bg: String(Theme.bg), s1: String(Theme.s1), s2: String(Theme.s2), s3: String(Theme.s3),
+        mute: String(Theme.mute), grey: String(Theme.grey), fg: String(Theme.fg), ink: String(Theme.ink),
+        accent: String(Theme.accent), red: String(Theme.red), corners: Theme.state.corners
+    })
+    onPaletteChanged: paletteFile.setText(palette)
+    FileView { id: paletteFile; path: Theme.riceState + "/glyph/palette.json"; printErrors: false }
 
     component Shortcut: GlobalShortcut { appid: "shell" }
 }
