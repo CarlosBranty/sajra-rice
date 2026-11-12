@@ -12,7 +12,7 @@ import qs.services
 WlSessionLockSurface {
     id: root
 
-    required property var auth // { buffer, fail, busy, leaving, submit() } из lock.qml
+    required property var auth // { buffer, fail, busy, finger, touchFail, touchOk, leaving, submit() } из lock.qml
     property string layout: "en"
 
     color: Theme.bg
@@ -42,7 +42,7 @@ WlSessionLockSurface {
             if (e.key === Qt.Key_Return || e.key === Qt.Key_Enter) root.auth.submit();
             else if (e.key === Qt.Key_Escape) root.auth.buffer = "";
             else if (e.key === Qt.Key_Backspace) root.auth.buffer = root.auth.buffer.slice(0, -1);
-            else if (e.text && e.text.charCodeAt(0) >= 32) { root.auth.buffer += e.text; root.auth.fail = false; }
+            else if (e.text && e.text.charCodeAt(0) >= 32) { root.auth.buffer += e.text; root.auth.fail = false; root.auth.touchFail = false; }
             else return;
             e.accepted = true;
         }
@@ -178,13 +178,60 @@ WlSessionLockSurface {
                 Connections {
                     target: root.auth
                     function onFailChanged() { if (root.auth.fail) shake.restart(); }
+                    function onTouchFailChanged() { if (root.auth.touchFail) shake.restart(); }
+                }
+
+                // отпечаток справа от поля, точками: дуги вокруг центра, снизу разрыв. Ждёт пальца — снизу вверх бежит полоса
+                // скана; принят — горит весь; не узнан — красный и трясётся вместе с полем. Нет fprintd/пальцев — не виден
+                Item {
+                    id: finger
+                    x: pwd.width + 18
+                    anchors.verticalCenter: parent.verticalCenter
+                    width: 52
+                    height: 52
+                    visible: root.auth.finger || root.auth.touchOk
+                    opacity: root.ph(0.75, 1)
+                    property real scan: 0
+                    NumberAnimation on scan { running: finger.visible && !root.auth.touchOk; from: 1.15; to: -0.15; duration: 1500; loops: Animation.Infinite }
+                    // точки дуг: кольцо r — от -30° до 210° через верх (разрыв 120° внизу), шаг ~4.5 px по дуге; плюс центр
+                    readonly property var dots: {
+                        const out = [{ x: 26, y: 27 }];
+                        for (const r of [7, 13, 19, 25]) {
+                            const n = Math.round(r * 4.2 / 4.5);
+                            for (let i = 0; i <= n; i++) {
+                                const a = (-30 + 240 * i / n) * Math.PI / 180;
+                                out.push({ x: 26 + r * Math.cos(a), y: 27 - r * Math.sin(a) * 1.08 });
+                            }
+                        }
+                        return out;
+                    }
+                    Repeater {
+                        model: finger.dots
+                        Rectangle {
+                            required property var modelData
+                            readonly property real d: Math.abs(modelData.y / finger.height - finger.scan)
+                            x: modelData.x - 2
+                            y: modelData.y - 2
+                            width: 4
+                            height: 4
+                            radius: 2
+                            // как свет у считывателя в Windows: ждёт — янтарный, принят — зелёный, не узнан — красный.
+                            // ponytail: светодиод у считывателя в Linux одноцветный (tpacpi::power), цвета — только здесь
+                            color: root.auth.touchFail ? Theme.red : root.auth.touchOk ? "#3DDC84" : "#F2B53A"
+                            opacity: root.auth.touchOk || root.auth.touchFail ? 1 : 0.25 + 0.75 * Math.max(0, 1 - d * 5)
+                            Behavior on color { ColorAnimation { duration: 200 } }
+                        }
+                    }
                 }
             }
             Lb {
                 anchors.horizontalCenter: parent.horizontalCenter
                 opacity: root.ph(0.8, 1)
-                text: root.auth.busy ? "checking…" : root.auth.fail ? "wrong password · try again" : "enter password"
-                color: root.auth.fail ? Theme.red : Theme.grey
+                text: root.auth.busy ? "checking…"
+                    : root.auth.fail && root.auth.lockedOut ? (root.auth.finger ? "too many attempts · use your finger or wait a few minutes" : "too many attempts · wait a few minutes")
+                    : root.auth.fail ? "wrong password · try again"
+                    : root.auth.touchFail ? "finger not recognised · try again" : root.auth.finger ? "enter password or touch the reader" : "enter password"
+                color: root.auth.fail || root.auth.touchFail ? Theme.red : Theme.grey
             }
         }
     }
