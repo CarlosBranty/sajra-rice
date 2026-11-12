@@ -13,8 +13,9 @@ import Quickshell.Io
 Singleton {
     id: root
 
+    // no runtime folder: no socket at all (never a shared place like /tmp, where someone else could listen)
     readonly property string path: Quickshell.env("HANAMI_PANEL_SOCK")
-        || (Quickshell.env("XDG_RUNTIME_DIR") || "/tmp") + "/roamies/panel.sock"
+        || (Quickshell.env("XDG_RUNTIME_DIR") ? Quickshell.env("XDG_RUNTIME_DIR") + "/roamies/panel.sock" : "")
     readonly property bool linked: sock.connected
     // everything Hanami shows, as it last sent it; null until it does (and again when it goes away)
     property var state: null
@@ -201,7 +202,9 @@ Singleton {
             if (connected) {
                 root.wait = 1000;
                 root.send({ type: "hello", client: "glyph" });
-                root.send({ type: "panel_open" });
+                // only while it shows: a hidden panel that said "open" made Hanami count it open, and the first
+                // tray click then closed it
+                if (root.shown) root.send({ type: "panel_open" });
                 if (root.shown && root.page === "money") root.moneyAsk();
             } else {
                 root.state = null;
