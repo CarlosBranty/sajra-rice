@@ -1,8 +1,10 @@
 // Questions about spending, answered exactly. `runQuery` runs one SELECT in a separate Node process on a read-only
 // connection whose authorizer allows reading and nothing else (no writes, ATTACH or PRAGMA), with a row cap and a
 // time limit (the process is killed: SQLite cannot be interrupted from another thread here). The summaries are fixed
-// queries over the same rules: spending is every kind but money received, ignored expenses left out, per currency.
+// queries over the same rules: spending is every kind but NOT_SPENDING (money received, moved between the user's own
+// accounts, purchases refused), ignored expenses left out, per currency.
 import { spawn } from 'node:child_process';
+import { NOT_SPENDING } from './banks.mjs';
 
 /** Why `sql` is not a single SELECT/WITH statement, or null when it is (strings and comments are skipped). */
 export function checkSelect(sql) {
@@ -72,7 +74,7 @@ export function runQuery(file, sql, { maxRows = 200, timeoutMs = 3000 } = {}) {
   });
 }
 
-const SPENDING = "kind <> 'transfer_in' AND status <> 'ignored'";
+const SPENDING = `kind NOT IN (${NOT_SPENDING.map((k) => `'${k}'`).join(', ')}) AND status <> 'ignored'`;
 const checkMonth = (month) => {
   if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(month ?? '')) throw new Error(`a month is YYYY-MM, not ${JSON.stringify(month)}`);
   return month;

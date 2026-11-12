@@ -1,7 +1,7 @@
 {
   "id": "falabella",
   "name": "Banco Falabella",
-  "notes": "Both layouts checked against real mails (November 2026). The amount of an e-commerce purchase may change: the bank then sends a new mail for the same operation number.",
+  "notes": "Every layout is checked against real mails (November 2026). The amount of an e-commerce purchase may change: the bank then sends a new mail for the same operation number.",
   "senders": ["notificaciones@pe.notificaciones.bancofalabella.com"],
   "mails": [
     {
@@ -18,12 +18,29 @@
       }
     },
     {
+      "subject": "has realizado una transferencia",
+      "kind": "transfer_out",
+      "notes": "'Transferencia a terceros'; the subject starts with the user's first name. No account of the user's: 'Cuenta destino' is the recipient's.",
+      "otherLabels": ["Origen", "Cuenta destino", "Tipo de moneda", "Tipo de transferencia"],
+      "fields": {
+        "amount": "Monto de transferencia",
+        "fee": { "label": "Comisión", "optional": true },
+        "merchant": "Destinatario",
+        "note": { "label": "Asunto", "optional": true },
+        "date": "Fecha",
+        "time": { "label": "Hora", "optional": true },
+        "operation": "Nro. de transacción"
+      }
+    },
+    {
       "subject": "Movimientos en cuentas",
       "kind": "purchase",
+      "notes": "An account operation carries 'Número de cuenta'; a debit card purchase carries 'Tarjeta' (a masked card number) instead.",
+      "otherLabels": ["Realizado por"],
       "fields": {
         "amount": "Monto",
         "merchant": "Comercio",
-        "account": "Número de cuenta",
+        "account": ["Número de cuenta", "Tarjeta"],
         "date": "Fecha",
         "time": "Hora",
         "operation": "Número de operación"

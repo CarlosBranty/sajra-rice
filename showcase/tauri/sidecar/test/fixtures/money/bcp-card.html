@@ -1,20 +1,43 @@
 <!DOCTYPE html>
-<!-- Synthetic fixture for a BCP card purchase, built from the labels research found ("Total del consumo",
-     "Empresa", "Operación realizada"). No real sample exists yet: the layout is a guess. Values are invented. -->
+<!-- Synthetic fixture with the markup of a real BCP "Realizaste un consumo con tu Tarjeta de Débito BCP" mail
+     (November 2026): label and value in two cells, the value on its own line. Names and numbers are invented. -->
 <html>
 <body>
 <table width="600">
-  <tr><td><p>Hola Ana,</p><p>Realizaste un consumo de S/ 59.90 con tu Tarjeta de D&eacute;bito BCP.</p></td></tr>
-  <tr><td>
-    <table width="100%">
-      <tr><td>Total del consumo</td><td>S/ 59.90</td></tr>
-      <tr><td>Empresa</td><td>PLAZA VEA SAN ISIDRO 123</td></tr>
-      <tr><td>Operaci&oacute;n realizada</td><td>Consumo Tarjeta de D&eacute;bito</td></tr>
-      <tr><td>Fecha y hora</td><td>5 de noviembre de 2026 - 01:15 PM</td></tr>
-      <tr><td>N&uacute;mero de Tarjeta de D&eacute;bito</td><td>**** 7788</td></tr>
-      <tr><td>N&uacute;mero de operaci&oacute;n</td><td>123456</td></tr>
-    </table>
-  </td></tr>
+  <!-- inicio.saludo -->
+  <tr> <td> <p>Hola <b>Ana Luc&iacute;a,</b>
+</p> <p>Realizaste un consumo de <b>S/ 59.90</b> con tu <b>Tarjeta de D&eacute;bito BCP</b> en <b>PLAZA VEA SAN ISIDRO 123.</b>
+</p> <p>Por tu seguridad, te enviamos los <b>datos de tu operaci&oacute;n.</b>
+</p> </td> </tr>
+  <!-- inicio.tabla_montos -->
+  <tr> <td> <p>
+<b>Monto</b>
+</p> </td> </tr>
+  <tr> <td> <table> <tr> <td>Total del consumo</td> <td>
+<b>S/ 59.90</b>
+</td> </tr> </table> </td> </tr>
+  <!-- inicio.tabla_datos -->
+  <tr> <td> <p>
+<b>Datos de la operaci&oacute;n</b>
+</p> </td> </tr>
+  <tr> <td> <table> <tr> <td>Operaci&oacute;n realizada</td> <td>
+<b>Consumo Tarjeta de D&eacute;bito</b>
+</td> </tr> <tr> <td>Fecha y hora</td> <td>
+<b>
+<a href="">5 de noviembre de 2026 - 01:15 PM</a>
+</b>
+</td> </tr> <tr> <td>N&uacute;mero de Tarjeta de D&eacute;bito</td> <td>
+<b>************7788</b>
+</td> </tr> <tr> <td>Empresa</td> <td>
+<b>PLAZA VEA SAN ISIDRO 123</b>
+</td> </tr> <tr> <td>N&uacute;mero de operaci&oacute;n</td> <td>
+<b>
+<a href="">123456</a>
+</b>
+</td> </tr> </table> </td> </tr>
+  <tr> <td> <p>
+<b>&iquest;No reconoces esta operaci&oacute;n?</b>
+</p> </td> </tr>
 </table>
 </body>
 </html>

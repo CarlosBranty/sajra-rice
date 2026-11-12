@@ -1,6 +1,6 @@
 // A minimal IMAP server for the mail tests (plain TCP on localhost; the real providers are TLS-only, see
 // mail/read.mjs clientOptions). It answers what imapflow sends to read mail: CAPABILITY, LOGIN, LIST/LSUB, EXAMINE,
-// UID SEARCH (UID ranges, SINCE, FROM), UID FETCH, NOOP and LOGOUT. Every command line is recorded; anything else
+// UID SEARCH (UID ranges, SINCE, FROM, HEADER), UID FETCH, NOOP and LOGOUT. Every command line is recorded; anything else
 // (STORE, COPY, MOVE, EXPUNGE, SELECT, APPEND…) is answered BAD, and recorded too, so a test can prove it never came.
 import net from 'node:net';
 
@@ -82,6 +82,11 @@ export async function fakeImap({ user, pass, folders, loginError = null, hang = 
             if (k === 'UID') { const set = args[++i]; hits = hits.filter((m) => inSet(set, m.uid, max)); }
             else if (k === 'SINCE') { const d = imapDate(args[++i]); hits = hits.filter((m) => m.date >= d); }
             else if (k === 'FROM') { const s = String(args[++i]).toLowerCase(); hits = hits.filter((m) => m.from.toLowerCase().includes(s)); }
+            else if (k === 'HEADER') { // a substring of the field's value, any case (RFC 3501)
+              const field = String(args[++i]).toLowerCase(), s = String(args[++i]).toLowerCase();
+              hits = hits.filter((m) => m.raw.split(/\r?\n\r?\n/)[0].split(/\r?\n/)
+                .some((l) => l.toLowerCase().startsWith(field + ':') && l.slice(field.length + 1).toLowerCase().includes(s)));
+            }
             else return w(`${tag} BAD unsupported search key ${k}`);
           }
           // n:* always names the highest UID (RFC 3501), even below n.

@@ -22,6 +22,10 @@ add({ occurredAt: '2026-11-05T13:00:00-05:00', amount: 1500, merchant: 'Cafe Cen
 add({ occurredAt: '2026-11-06T19:05:00-05:00', amount: 2500, merchant: 'Jorge', merchantKey: 'jorge', operation: '5', messageId: '<5>', kind: 'yape_out' });
 add({ occurredAt: '2026-11-07T10:00:00-05:00', amount: 999, currency: 'USD', merchant: 'Netflix', merchantKey: 'netflix', operation: '6', messageId: '<6>' }, 'Entretenimiento');
 add({ occurredAt: '2026-11-08T10:00:00-05:00', amount: 50000, merchant: 'Sueldo', merchantKey: 'sueldo', operation: '7', messageId: '<7>', kind: 'transfer_in' });
+add({ occurredAt: '2026-11-09T10:00:00-05:00', amount: 125000, merchant: null, merchantKey: '', operation: '8', messageId: '<8>', kind: 'own_transfer' });
+add({ occurredAt: '2026-11-09T11:00:00-05:00', amount: 1599, currency: 'USD', merchant: 'Netflix', merchantKey: 'netflix', operation: null, messageId: '<9>', kind: 'rejected' });
+// Even classified by hand, they never count: the kind decides.
+m.classify(add({ occurredAt: '2026-11-09T12:00:00-05:00', amount: 7000, merchant: null, merchantKey: '', operation: '10', messageId: '<10>', kind: 'own_transfer' }), 'Otros', { learn: false });
 const before = fs.readFileSync(path.join(TMP, 'money.db'));
 
 // A plain SELECT answers exactly.
@@ -57,7 +61,8 @@ const t0 = Date.now();
 await assert.rejects(m.query('WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM c) SELECT count(*) FROM c', { timeoutMs: 400 }), /longer than/);
 assert.ok(Date.now() - t0 < 5000, 'stopped, not waited out');
 
-// Ready summaries: spending only (no money received, nothing ignored), per currency, by Lima calendar month.
+// Ready summaries: spending only (no money received or moved between own accounts, no refused purchase, nothing
+// ignored), per currency, by Lima calendar month.
 assert.deepEqual(m.totalsByCategory('2026-11'), [
   { category: 'Comida', currency: 'PEN', total: 6000, count: 2 },
   { category: null, currency: 'PEN', total: 2500, count: 1 },

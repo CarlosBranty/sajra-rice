@@ -274,7 +274,9 @@ charge. Add a mail account on the panel's **Money** page: Gmail or Yahoo, with a
   flagged, deleted or sent. A mail counts only when your provider says it really came from the bank (DKIM or DMARC).
 - **Where data lives:** each charge's date, amount, merchant, the last four digits of the account and the operation
   number, in `~/.gg/sidekick/money.db` (on Windows `%USERPROFILE%\.gg\sidekick\money.db`); where reading stopped, in
-  `mail.db` beside it. Mail bodies are not kept; a mail it couldn't read is kept as its sender, subject and date. The
+  `mail.db` beside it. Mail bodies are not kept; a mail it couldn't read is kept as its sender, subject and date, and
+  read again (still read-only) when Roamies learns new bank mail layouts. Transfers between your own accounts and
+  purchases the bank refused are kept too, but never count as spending. The
   app password is only in your Keychain, Windows (encrypted for your account) or your keyring; the settings keep the
   provider and address. The mail goes from your provider to this computer only.
 - **Removing everything:** remove each account on the Money page (that deletes its app password from the keyring),

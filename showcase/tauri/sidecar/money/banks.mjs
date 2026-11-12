@@ -7,7 +7,11 @@ import path from 'node:path';
 import bcp from '../banks/bcp.json' with { type: 'json' };
 import falabella from '../banks/falabella.json' with { type: 'json' };
 
-export const KINDS = ['purchase', 'transfer_out', 'transfer_in', 'yape_out', 'withdrawal', 'payment'];
+export const KINDS = ['purchase', 'transfer_out', 'transfer_in', 'yape_out', 'withdrawal', 'payment', 'own_transfer', 'rejected'];
+// Never spending: money received, money moved between the user's own accounts, and purchases the bank refused.
+// The last two are stored as 'ignored' (kept as a record, never offered for classification).
+export const NOT_SPENDING = ['transfer_in', 'own_transfer', 'rejected'];
+export const IGNORED_KINDS = ['own_transfer', 'rejected'];
 // amount and date are always required; the rest only when the definition says so (all fields are required
 // unless marked "optional": true).
 export const FIELDS = ['amount', 'fee', 'date', 'time', 'merchant', 'account', 'operation', 'note'];
@@ -36,11 +40,14 @@ export function validateDefinition(def) {
   const mails = def.mails.map((mail, i) => {
     const at = `mails[${i}]`;
     if (!isObject(mail)) throw new Error(`${at}: not an object`);
-    onlyKeys(mail, ['subject', 'kind', 'verified', 'notes', 'fields'], at);
+    onlyKeys(mail, ['subject', 'kind', 'verified', 'notes', 'otherLabels', 'fields'], at);
     const subject = textList(mail.subject);
     if (!subject.length || !subject.every(isText)) throw new Error(`${at}.subject: a text or a list of texts`);
     if (!KINDS.includes(mail.kind)) throw new Error(`${at}.kind: one of ${KINDS.join(', ')}`);
     if (mail.verified !== undefined && typeof mail.verified !== 'boolean') throw new Error(`${at}.verified: true or false`);
+    // Labels of the layout that are not read: a field's value never runs into one of them.
+    const otherLabels = mail.otherLabels === undefined ? [] : textList(mail.otherLabels);
+    if (!otherLabels.every(isText)) throw new Error(`${at}.otherLabels: a text or a list of texts`);
     if (!isObject(mail.fields)) throw new Error(`${at}.fields: an object of field → label`);
     const fields = {};
     for (const [name, spec] of Object.entries(mail.fields)) {
@@ -57,7 +64,7 @@ export function validateDefinition(def) {
       fields[name] = { label, optional: !!s.optional, lines: s.lines ?? 1 };
     }
     for (const need of ['amount', 'date']) if (!fields[need]) throw new Error(`${at}.fields: "${need}" is required`);
-    return { subject, kind: mail.kind, verified: mail.verified !== false, fields };
+    return { subject, kind: mail.kind, verified: mail.verified !== false, otherLabels, fields };
   });
   return { id: def.id, name: def.name, senders: def.senders.map((s) => s.toLowerCase()), currency: def.currency ?? null, mails };
 }

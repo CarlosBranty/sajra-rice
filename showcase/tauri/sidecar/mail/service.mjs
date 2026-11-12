@@ -8,7 +8,7 @@ import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { openCursors } from './cursors.mjs';
 import { PROVIDERS, READY, accountId, plainError, validEmail } from './providers.mjs';
-import { readAccount, testAccount } from './read.mjs';
+import { REREAD_PER_RUN, readAccount, testAccount } from './read.mjs';
 
 export const EVERY = [2, 5, 15, 30, 60]; // minutes between checks; 5 by default
 export const DEFAULT_EVERY = 5;
@@ -55,7 +55,10 @@ export function createMail({ secrets, settings, save, openMoney, dir, server = n
     try {
       const pass = await password(a);
       const { money: m, cursors: c } = store();
-      const r = await limited((signal) => readAccount({ ...a, password: pass, server }, { senders: senders(), cursors: c, ingest: m.ingest, now: now(), signal }));
+      const r = await limited((signal) => readAccount({ ...a, password: pass, server }, {
+        senders: senders(), cursors: c, ingest: m.ingest, now: now(), signal,
+        rereads: () => m.toReread(a.id, REREAD_PER_RUN).map((u) => u.message_id), missed: m.rereadMissed, deadline: Date.now() + timeoutMs / 2,
+      }));
       log('mail', { provider: a.provider, ...r });
       status.set(a.id, { state: 'ok', text: r.found ? `Read ${r.found} new bank mail${r.found === 1 ? '' : 's'}` : 'No new bank mails', at: now(), fails: 0, due: now() + every() });
     } catch (e) {

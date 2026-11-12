@@ -11,7 +11,8 @@ import { DatabaseSync } from 'node:sqlite';
 import { fileURLToPath } from 'node:url';
 import { openMoney, parseMail, BUILTIN } from '../money.mjs';
 import { PROVIDERS, READY, accountId, authservId, plainError, providerAuthResults, validEmail } from '../mail/providers.mjs';
-import { DAYS, clientOptions, toMail } from '../mail/read.mjs';
+import { DAYS, clientOptions, readAccount, toMail } from '../mail/read.mjs';
+import { openCursors } from '../mail/cursors.mjs';
 import { DEFAULT_EVERY, EVERY, createMail } from '../mail/service.mjs';
 import { fakeImap } from './fake-imap.mjs';
 
@@ -55,6 +56,17 @@ assert.deepEqual(providerAuthResults(head(['mx.google.com; dkim=fail header.d=no
 assert.deepEqual(providerAuthResults(head([`atlas-production.v2-mail-prod1-gq1.omega.yahoo.com; ${pass('x.pe')}`]), 'yahoo').length, 1, 'Yahoo stamps its receiving host');
 for (const id of ['yahoo.com.attacker.test', 'evilyahoo.com', 'mx.google.com']) assert.deepEqual(providerAuthResults(head([`${id}; ${pass('x.pe')}`]), 'yahoo'), [], `${id} is not Yahoo`);
 assert.deepEqual(providerAuthResults(head([`atlas.mail.yahoo.com; ${pass('x.pe')}`]), 'gmail'), [], 'Yahoo\'s header means nothing in Gmail');
+// Yahoo's real header (seen on the user's BCP and Banco Falabella mails, November 2026): authserv-id mta.yahoo.com,
+// folded, with the bank's DKIM signature next to its mail platform's (synthetic selectors and hosts).
+const YAHOO_REAL = (d) => `mta.yahoo.com;\r\n dkim=pass header.i=@${d} header.s=s1 arc_overridden_status=NOT_OVERRIDDEN;\r\n dkim=pass header.i=@mailer.example.net header.s=smtpapi arc_overridden_status=NOT_OVERRIDDEN;\r\n spf=pass smtp.mailfrom=em0000.${d} arc_overridden_status=NOT_OVERRIDDEN`;
+for (const [from, d, subject, html] of [
+  [BCP, 'notificacionesbcp.com.pe', 'Realizaste un consumo con tu Tarjeta de Débito BCP - Servicio de Notificaciones BCP', fixture('bcp-card.html')],
+  [FALABELLA, 'pe.notificaciones.bancofalabella.com', 'Movimientos en cuentas', fixture('falabella-movement-card.html')],
+]) {
+  const m = await toMail(raw({ from, subject, html, id: '<real@test>', auth: [YAHOO_REAL(d)] }), 'yahoo');
+  assert.equal(m.authResults.length, 1, 'mta.yahoo.com is Yahoo\'s own');
+  assert.equal(parseMail(m).expense.status, 'pending', `${d}: its DKIM pass is trusted, not held for review`);
+}
 // Folded header lines are read whole.
 assert.deepEqual(providerAuthResults(`Authentication-Results: mx.google.com;\r\n       dkim=pass header.i=@x.pe\r\nFrom: a@x.pe\r\n\r\nbody`, 'gmail'), ['mx.google.com; dkim=pass header.i=@x.pe']);
 // Through the parser: a forged pass under the provider's fail is still a failure.
@@ -270,6 +282,65 @@ const searches = (from) => commands(from).filter((c) => /^UID SEARCH/i.test(c));
   const exp = h.money().db.prepare("SELECT status FROM expenses WHERE message_id = '<y1@test>'").get();
   assert.equal(exp.status, 'pending', 'Yahoo\'s own results trusted');
   h.mail.stop(); h.money().close();
+  await y.close();
+}
+
+// Mails kept as not understood are looked up again by Message-ID once the bank definitions change, read with the
+// new ones, and no longer kept as not understood; once, read-only, without moving the cursor back.
+{
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'roamies-mail-reread-'));
+  process.on('exit', () => fs.rmSync(dir, { recursive: true, force: true }));
+  const yahoo = (id, subject, html) => raw({ from: BCP, subject, html, id, auth: [`atlas.mail.yahoo.com; ${pass('notificacionesbcp.com.pe')}`] });
+  const inbox = { uidValidity: 9, uidNext: 4, messages: [
+    { uid: 1, date: T, from: BCP, raw: yahoo('<qr@test>', 'Constancia de Pago con QR - Servicios de Notificaciones BCP', fixture('bcp-qr.html')) },
+    { uid: 2, date: T, from: BCP, raw: yahoo('<atm@test>', 'Realizaste un retiro en un cajero automático BCP', fixture('bcp-atm.html')) },
+    { uid: 3, date: T, from: BCP, raw: yahoo('<a<qr@test>>', 'Constancia de Pago con QR', '<p>an id that holds another</p>') },
+  ] };
+  const y = await fakeImap({ user: 'ana@yahoo.com', pass: SECRET, folders: { INBOX: inbox } });
+  // The first run with older definitions (only BCP's yapeo): both mails kept as not understood.
+  fs.mkdirSync(path.join(dir, 'banks'));
+  fs.writeFileSync(path.join(dir, 'banks', 'bcp.json'), JSON.stringify({ id: 'bcp', name: 'BCP', senders: [BCP],
+    mails: [{ subject: 'Constancia de Yapeo a Celular', kind: 'yape_out', fields: { amount: 'Monto enviado', date: 'Fecha y hora' } }] }));
+  const run = async (deadline) => {
+    const money = openMoney({ dir }), cursors = openCursors(path.join(dir, 'mail.db')), at = y.log.length;
+    const r = await readAccount({ id: 'mail-y', provider: 'yahoo', email: 'ana@yahoo.com', password: SECRET, server: { host: '127.0.0.1', port: y.port, secure: false } }, {
+      senders: [BCP], cursors, ingest: money.ingest, now: T, rereads: () => money.toReread('mail-y', 100).map((u) => u.message_id), missed: money.rereadMissed, deadline,
+    });
+    const state = { r, commands: y.log.slice(at).map((l) => l.replace(/^\S+ /, '')), unparsed: money.unparsed().map((u) => u.message_id).sort(),
+      kinds: money.db.prepare('SELECT kind FROM expenses ORDER BY kind').all().map((e) => e.kind) };
+    money.close(); cursors.close();
+    return state;
+  };
+  let s = await run();
+  assert.deepEqual([s.unparsed, s.kinds], [['<a<qr@test>>', '<atm@test>', '<qr@test>'], []]);
+  assert.ok(!s.commands.some((c) => /HEADER/i.test(c)), 'nothing to read again yet');
+  s = await run();
+  assert.ok(!s.commands.some((c) => /HEADER|FETCH/i.test(c)), 'same definitions: nothing looked up again');
+  // The definitions change (back to the built-ins): the same cursor, but the kept mails are looked up and read.
+  fs.rmSync(path.join(dir, 'banks', 'bcp.json'));
+  // Past the run's time budget for looking mails up again (a slow server): nothing looked up, all left for later.
+  s = await run(0);
+  assert.ok(!s.commands.some((c) => /HEADER/i.test(c)), 'no time left: no look-up');
+  assert.deepEqual([s.unparsed.length, s.kinds, s.r.reread], [3, [], 0]);
+  s = await run();
+  assert.ok(s.commands.some((c) => /^UID SEARCH UID 4:\* FROM/.test(c)), 'the cursor did not move back');
+  assert.deepEqual(s.commands.filter((c) => /HEADER/i.test(c)).map((c) => c.replaceAll('"', '')).sort(),
+    ['<a<qr@test>>', '<atm@test>', '<qr@test>'].map((id) => `UID SEARCH HEADER MESSAGE-ID ${id}`), 'one search per kept mail, by its Message-ID');
+  assert.deepEqual(s.kinds, ['purchase', 'withdrawal'], 'read by the new definitions');
+  assert.deepEqual(s.unparsed, ['<a<qr@test>>'], 'and no longer kept as not understood (the search for <qr@test> also hit <a<qr@test>>: only the exact id counts)');
+  assert.equal(s.r.reread, 3);
+  for (const c of s.commands) assert.doesNotMatch(c, /^(UID )?(SELECT|STORE|COPY|MOVE|EXPUNGE|APPEND|DELETE|CLOSE)\b/i, c);
+  assert.ok(s.commands.filter((c) => /FETCH/i.test(c)).every((c) => c.includes('BODY.PEEK[]')), 'fetched without marking read');
+  s = await run();
+  assert.ok(!s.commands.some((c) => /HEADER|FETCH/i.test(c)), 'once: the next run looks up nothing again');
+  // A kept mail that is gone from the mailbox is not looked for on every run.
+  inbox.messages = inbox.messages.filter((m) => m.uid !== 3);
+  fs.writeFileSync(path.join(dir, 'banks', 'extra.json'), JSON.stringify({ id: 'extra', name: 'Otro', senders: ['a@otro.test'], mails: [{ subject: 'x', kind: 'purchase', fields: { amount: 'M', date: 'F' } }] }));
+  s = await run();
+  assert.equal(s.commands.filter((c) => /HEADER/i.test(c)).length, 1, 'new definitions: looked up once');
+  assert.deepEqual(s.unparsed, ['<a<qr@test>>'], 'still kept, for review');
+  s = await run();
+  assert.ok(!s.commands.some((c) => /HEADER/i.test(c)), 'not there: not looked for again');
   await y.close();
 }
 

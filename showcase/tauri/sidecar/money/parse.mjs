@@ -127,10 +127,10 @@ export function parseDate(s, time) {
   return toLima(ms);
 }
 
-/** Any run of 5+ digits (spaces and dashes allowed inside) → "****" + its last 4 digits. */
+/** Any run of 5+ digits (spaces, dashes and the bank's own asterisks allowed inside) → "****" + its last 4 digits. */
 export function maskAccount(s) {
   if (s == null) return null;
-  return String(s).replace(/\d[\d -]*\d/g, (run) => {
+  return String(s).replace(/\d[\d* -]*\d/g, (run) => {
     const digits = run.replace(/\D/g, '');
     return digits.length >= 5 ? '****' + digits.slice(-4) : run;
   }).replace(/\s+/g, ' ').trim();
@@ -193,9 +193,10 @@ export function checkAuth(authResults, domain) {
 
 // Label → value: the label starts a line and ends at a colon, a cell break, two spaces, or a space before a value
 // that does not continue the label in lowercase ("Fecha y hora" is not "Fecha"). The value is the rest of the line,
-// or the next line when the rest is empty; `lines` joins that many lines. The longest label wins.
-function extract(textLines, fields) {
-  const labels = [];
+// or the next line when the rest is empty; `lines` joins that many lines, never into a label. The longest label wins.
+// `others` are labels of the layout that are not read (name null): they only end the value before them.
+function extract(textLines, fields, others = []) {
+  const labels = others.map((l) => ({ name: null, label: fold(l) }));
   for (const [name, spec] of Object.entries(fields)) for (const l of spec.label) labels.push({ name, label: fold(l) });
   labels.sort((a, b) => b.label.length - a.label.length);
   const folded = textLines.map(foldMap);
@@ -211,7 +212,7 @@ function extract(textLines, fields) {
   const values = {};
   for (let i = 0; i < textLines.length; i++) {
     const hit = labelAt(i);
-    if (!hit || hit.name in values) continue;
+    if (!hit || hit.name === null || hit.name in values) continue;
     const parts = [];
     let rest = hit.rest.replace(/^[\s:]+/, '').trim(), j = i;
     if (rest) parts.push(rest);
@@ -224,13 +225,13 @@ function extract(textLines, fields) {
 const fail = (reason) => ({ ok: false, reason });
 
 function fromText(text, def, bank) {
-  const v = extract(lines(text), def.fields);
+  const v = extract(lines(text), def.fields, def.otherLabels);
   for (const [name, spec] of Object.entries(def.fields)) {
     if (!spec.optional && !v[name]) return fail(`missing ${name} (label "${spec.label[0]}")`);
   }
   const amount = parseAmount(v.amount, bank.currency);
   if (!amount) return fail(`amount not understood: "${v.amount}"`);
-  const fee = v.fee ? parseAmount(v.fee, amount.currency) : null;
+  const fee = !v.fee ? null : fold(v.fee) === 'gratis' ? { cents: 0 } : parseAmount(v.fee, amount.currency);
   if (v.fee && !fee) return fail(`fee not understood: "${v.fee}"`);
   const occurredAt = parseDate(v.date, v.time);
   if (!occurredAt) return fail(`date not understood: "${v.date}${v.time ? ' ' + v.time : ''}"`);

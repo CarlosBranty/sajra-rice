@@ -2,6 +2,8 @@
 // with BODY.PEEK[] (they stay unread), and nothing is ever stored, copied, moved, flagged or deleted on the server.
 // The search runs on the server, only for the bank definitions' exact sender addresses and a window: the last
 // DAYS days the first time (or after the folder was renumbered), then only UIDs after the last one looked at.
+// Mails kept as not understood are looked up again by Message-ID (a SEARCH HEADER, just as read-only) once the bank
+// definitions change, so a mail behind the cursor gets read by the new ones without moving the cursor back.
 import { createHash } from 'node:crypto';
 import { ImapFlow } from 'imapflow';
 import { simpleParser } from 'mailparser';
@@ -10,6 +12,8 @@ import { PROVIDERS, headerFields, providerAuthResults } from './providers.mjs';
 export const DAYS = 90;
 // At most this many mails per folder and run; the rest come on the next run.
 export const MAX_PER_RUN = 300;
+// At most this many not-understood mails looked up again per account and run; the rest on the next run.
+export const REREAD_PER_RUN = 100;
 
 /** imapflow's options for an account: TLS to the provider's server with certificate checks left on, no logging (the
  * sidecar's stdout is its protocol, and logs could carry mail data). `server` replaces host/port/secure in tests. */
@@ -85,11 +89,26 @@ export function testAccount(opts, senders, { now = Date.now(), signal } = {}) {
   }, signal);
 }
 
-/** Reads the new bank mails of an account into the money store. `cursors`: openCursors(); `ingest`: money.ingest.
- * → { found, inserted, updated, duplicate, unparsed } */
-export function readAccount(opts, { senders, cursors, ingest, now = Date.now(), signal, max = MAX_PER_RUN }) {
+// Finds one mail by its Message-ID (the search matches a substring, so the fetched mail must carry exactly that id).
+// → the mail, null when it is not there, false when the server refused the search.
+async function byMessageId(client, id, provider) {
+  if (/^<missing-[0-9a-f]+@roamies>$/.test(id)) return null; // made up here: no mail carries it
+  const uids = await client.search({ header: { 'message-id': id } }, { uid: true });
+  if (uids === false) return false;
+  for (const msg of uids.length ? await client.fetchAll(uids.slice(0, 5).join(','), { uid: true, source: true }, { uid: true }) : []) {
+    const mail = await toMail(msg.source, provider);
+    if (mail.messageId === id) return mail;
+  }
+  return null;
+}
+
+/** Reads the new bank mails of an account into the money store, then looks up again the not-understood ones that
+ * `rereads()` lists (Message-IDs; `missed(id)` for one no longer there) until the clock reaches `deadline` (a header
+ * search can take a second or more on Yahoo; the rest wait for the next run). `cursors`: openCursors(); `ingest`:
+ * money.ingest. → { found, inserted, updated, duplicate, unparsed, reread } */
+export function readAccount(opts, { senders, cursors, ingest, rereads = () => [], missed = () => {}, deadline = Infinity, now = Date.now(), signal, max = MAX_PER_RUN }) {
   return withClient(opts, async (client) => {
-    const out = { found: 0, inserted: 0, updated: 0, duplicate: 0, unparsed: 0 };
+    const out = { found: 0, inserted: 0, updated: 0, duplicate: 0, unparsed: 0, reread: 0 };
     for (const folder of await folders(client, opts.provider)) {
       const box = await examine(client, folder);
       const validity = String(box.uidValidity), cur = cursors.get(opts.id, folder);
@@ -97,12 +116,20 @@ export function readAccount(opts, { senders, cursors, ingest, now = Date.now(), 
       const uids = await find(client, senders, after ? { uid: `${after + 1}:*` } : { since: sinceDate(now) }, after);
       const take = uids.slice(0, max);
       for (const msg of take.length ? await client.fetchAll(take.join(','), { uid: true, source: true }, { uid: true }) : []) {
-        const r = ingest(await toMail(msg.source, opts.provider));
+        const r = ingest({ ...await toMail(msg.source, opts.provider), account: opts.id });
         out.found++; out[r.action]++;
       }
       // Everything in the folder up to UIDNEXT has been looked at, unless the run stopped at `max`.
       const seen = take.length < uids.length ? take.at(-1) : Math.max(after, take.at(-1) ?? 0, Number(box.uidNext ?? 1) - 1);
       cursors.set(opts.id, folder, validity, seen);
+      for (const id of rereads()) {
+        if (Date.now() >= deadline) break;
+        const mail = await byMessageId(client, id, opts.provider);
+        if (mail === false) break; // left for the next run
+        if (!mail) { missed(id); continue; }
+        const r = ingest({ ...mail, account: opts.id });
+        out.reread++; out[r.action]++;
+      }
     }
     return out;
   }, signal);

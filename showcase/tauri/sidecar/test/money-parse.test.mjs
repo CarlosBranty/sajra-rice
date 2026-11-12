@@ -46,6 +46,8 @@ assert.equal(parseDate('mañana'), null);
 assert.equal(maskAccount('1234567890123456789'), '****6789');
 assert.equal(maskAccount('4111 1111 1111 1234'), '****1234');
 assert.equal(maskAccount('Cuenta de ahorro **** 4455'), 'Cuenta de ahorro **** 4455', 'already masked');
+assert.equal(maskAccount('421355******6789'), '****6789', 'a card number with its middle masked shows only its last four');
+assert.equal(maskAccount('************6789'), '************6789', 'already masked');
 assert.equal(maskAccount(null), null);
 
 // merchantKey: one key per merchant, whatever the case, accents, branch numbers, legal form or country.
@@ -92,14 +94,53 @@ for (const [file, subject, from, auth, expected] of [
   assert.deepEqual(parseMail(mail({ subject, from, authResults: auth, html: fixture(file + '.html') })), { ok: true, expense: expected }, file + '.html');
   assert.deepEqual(parseMail(mail({ subject, from, authResults: auth, text: fixture(file + '.txt') })), { ok: true, expense: expected }, file + '.txt');
 }
-// BCP card purchases: labels from research, no real sample yet, so every one is held for review.
-assert.deepEqual(parseMail(mail({ subject: 'Consumo con tu Tarjeta de Débito BCP', from: BCP, authResults: AUTH_BCP, html: fixture('bcp-card.html') })), {
-  ok: true,
-  expense: {
-    ...transfer, source: 'bcp', kind: 'purchase', occurredAt: '2026-11-05T13:15:00-05:00', amount: 5990, fee: null,
-    merchant: 'PLAZA VEA SAN ISIDRO 123', merchantKey: 'plaza vea san isidro', account: '**** 7788', operation: '123456', status: 'needs_review',
-  },
-});
+// The layouts checked against the user's real mails (November 2026), each from a fixture with the real markup.
+const bcp = { ...transfer, source: 'bcp', fee: null, note: null };
+const card = {
+  ...bcp, kind: 'purchase', occurredAt: '2026-11-05T13:15:00-05:00', amount: 5990,
+  merchant: 'PLAZA VEA SAN ISIDRO 123', merchantKey: 'plaza vea san isidro', account: '************7788', operation: '123456',
+};
+for (const [file, subject, from, auth, expected] of [
+  ['bcp-card', 'Realizaste un consumo con tu Tarjeta de Débito BCP - Servicio de Notificaciones BCP', BCP, AUTH_BCP, card],
+  ['bcp-qr', 'Constancia de Pago con QR - Servicios de Notificaciones BCP', BCP, AUTH_BCP, {
+    ...bcp, kind: 'purchase', occurredAt: '2026-11-04T20:40:00-05:00', amount: 1850, merchant: 'Bodega Don Pepe', merchantKey: 'bodega don pepe',
+    account: 'Cuenta de ahorro **** 4455', operation: '07771234', // an empty "Mensaje" stays empty: it never reads "Canal"
+  }],
+  ['bcp-yape-in', 'Constancia de recepción de Yapeo a celular BCP - Servicio de Notificaciones BCP', BCP, AUTH_BCP, {
+    ...bcp, kind: 'transfer_in', occurredAt: '2026-11-03T09:12:00-05:00', amount: 1200, merchant: 'Marco Rivas', merchantKey: 'marco rivas',
+    account: null, operation: null,
+  }],
+  ['bcp-own-transfer', 'Constancia de Transferencia Entre mis Cuentas - Servicio de Notificaciones BCP', BCP, AUTH_BCP, {
+    ...bcp, kind: 'own_transfer', occurredAt: '2026-11-02T07:30:00-05:00', amount: 125000, merchant: null, merchantKey: '',
+    account: 'Clasica **** 4455', operation: '05559876', note: 'Clasica **** 9012',
+  }],
+  ['bcp-rejected', 'Se rechazó tu compra por fondos insuficientes - Servicio de Notificaciones BCP', BCP, AUTH_BCP, {
+    ...bcp, kind: 'rejected', occurredAt: '2026-11-01T23:45:00-05:00', amount: 1599, currency: 'USD', merchant: 'PAYU *NETFLIX.COM', merchantKey: 'netflix com',
+    account: '************7788', operation: null, note: 'Fondos Insuficientes',
+  }],
+  ['bcp-atm', 'Realizaste un retiro en un cajero automático BCP - Servicio de Notificaciones BCP', BCP, AUTH_BCP, {
+    ...bcp, kind: 'withdrawal', occurredAt: '2026-09-07T18:20:00-05:00', amount: 20000, fee: 0, merchant: null, merchantKey: '',
+    account: '************7788', operation: '4321',
+  }],
+  ['falabella-movement-card', 'Movimientos en cuentas', FALABELLA, AUTH_FALABELLA, {
+    ...movement, occurredAt: '2026-11-06T13:05:00-05:00', amount: 8740, merchant: 'Tottus Jockey Pe', merchantKey: 'tottus jockey',
+    account: '****6789', operation: '990806130512',
+  }],
+  ['falabella-transfer-sent', 'ANA has realizado una transferencia', FALABELLA, AUTH_FALABELLA, {
+    ...transfer, occurredAt: '2026-11-08T21:10:00-05:00', amount: 132000, fee: 0, account: null, operation: '990811211044', // an empty "Asunto" stays empty
+  }],
+]) assert.deepEqual(parseMail(mail({ subject, from, authResults: auth, html: fixture(file + '.html') })), { ok: true, expense: expected }, file);
+// The subject of a third-party transfer starts with the user's name, whatever it is.
+assert.equal(parseMail(mail({ subject: 'MARIA JOSE has realizado una transferencia', html: fixture('falabella-transfer-sent.html') })).ok, true);
+// No credit card purchase seen yet: the same layout is assumed, and each one is held for review.
+const credit = parseMail(mail({
+  subject: 'Realizaste un consumo con tu Tarjeta de Crédito BCP - Servicio de Notificaciones BCP', from: BCP, authResults: AUTH_BCP,
+  html: fixture('bcp-card.html').replaceAll('D&eacute;bito', 'Cr&eacute;dito'),
+}));
+assert.deepEqual(credit, { ok: true, expense: { ...card, status: 'needs_review' } });
+// The real "Comisión" says "GRATIS" or "Gratis": a fee of zero. A fee that is no amount is still refused.
+assert.match(parseMail(mail({ subject: 'Realizaste un retiro en un cajero automático BCP', from: BCP, authResults: AUTH_BCP,
+  html: fixture('bcp-atm.html').replace('<b>GRATIS</b>', '<b>a convenir</b>') })).reason, /fee not understood/);
 
 // Senders: exact address only, case-insensitive; look-alikes and other mailboxes of the same domain are refused.
 const yapeMail = (over) => mail({ subject: 'Constancia de Yapeo a Celular', from: BCP, authResults: AUTH_BCP, html: fixture('bcp-yape.html'), ...over });
@@ -154,11 +195,13 @@ fs.writeFileSync(path.join(banks, 'ejemplo.json'), JSON.stringify({
 fs.writeFileSync(path.join(banks, 'bcp.json'), JSON.stringify({ ...BUILTIN.find((b) => b.id === 'bcp'), senders: ['otro@notificacionesbcp.com.pe'] }));
 fs.writeFileSync(path.join(banks, 'bad.json'), JSON.stringify({ id: 'bad', name: 'Sin remitentes', mails: [] }));
 fs.writeFileSync(path.join(banks, 'kind.json'), JSON.stringify({ id: 'kind', name: 'X', senders: ['a@b.pe'], mails: [{ subject: 'x', kind: 'robo', fields: { amount: 'M', date: 'F' } }] }));
+fs.writeFileSync(path.join(banks, 'others.json'), JSON.stringify({ id: 'others', name: 'X', senders: ['a@b.pe'], mails: [{ subject: 'x', kind: 'purchase', otherLabels: ['Canal', 42], fields: { amount: 'M', date: 'F' } }] }));
 fs.writeFileSync(path.join(banks, 'broken.json'), '{ "id": ');
 fs.writeFileSync(path.join(banks, 'notes.txt'), 'not a definition');
 const loaded = loadDefinitions(banks);
 assert.deepEqual(loaded.definitions.map((b) => b.id).sort(), ['bcp', 'ejemplo', 'falabella']);
-assert.deepEqual(loaded.problems.map((p) => p.file).sort(), ['bad.json', 'broken.json', 'kind.json']);
+assert.deepEqual(loaded.problems.map((p) => p.file).sort(), ['bad.json', 'broken.json', 'kind.json', 'others.json']);
+assert.match(loaded.problems.find((p) => p.file === 'others.json').reason, /otherLabels/);
 assert.match(loaded.problems.find((p) => p.file === 'bad.json').reason, /senders/);
 assert.match(loaded.problems.find((p) => p.file === 'kind.json').reason, /kind/);
 const ejemplo = parseMail({ from: 'avisos@ejemplo.test', subject: 'Consumo aprobado', messageId: '<e1@test>', authResults: authFor('ejemplo.test'), text: 'Fecha de vencimiento 30/11/2026\nComercio: Libreria Sur\nImporte: S/ 30.00\nFecha: 02/11/2026 10:00' }, loaded.definitions);
