@@ -12,6 +12,8 @@ Column {
     readonly property var o: Hanami.oview
     readonly property var p: o?.period ?? null
     readonly property string main: o?.currency ?? "PEN"
+    // the balance the tile shows: the period's own (income − spending) or everything so far (with what carried in)
+    readonly property real shown: !p ? 0 : Hanami.obalance === "all" ? (p.balance ?? 0) : (p.income ?? 0) - (p.spending ?? 0)
     readonly property var others: (p?.by_currency ?? []).filter(c => c.currency !== main && (c.income || c.spending || c.carry_in || c.balance))
     readonly property var labels: Hanami.dict((o?.accounts ?? []).map(a => [a.source, a.label]))
     readonly property bool empty: !!o && !(o.weeks ?? []).some(w => (w.items ?? []).length)
@@ -129,23 +131,49 @@ Column {
                 y: 20
                 width: parent.width - 48
                 spacing: 10
-                Row {
+                Item {
                     width: parent.width
-                    Lb { text: "Saldo"; width: parent.width - endLb.width }
-                    Lb { id: endLb; text: root.p ? `hasta ${root.day(root.p.end)}` : ""; color: Theme.mute }
+                    height: 28
+                    Lb { anchors.verticalCenter: parent.verticalCenter; text: "Saldo" }
+                    // the period's own balance (default) or everything so far
+                    Row {
+                        anchors { right: parent.right; verticalCenter: parent.verticalCenter }
+                        spacing: 4
+                        Repeater {
+                            model: [["period", "Periodo"], ["all", "General"]]
+                            Rectangle {
+                                id: bc
+                                required property var modelData
+                                readonly property bool on: Hanami.obalance === modelData[0]
+                                width: bcl.implicitWidth + 22
+                                height: 28
+                                radius: Theme.corner(14)
+                                color: on ? Theme.fg : bh.hovered ? Theme.s3 : Theme.s2
+                                Accessible.role: Accessible.RadioButton
+                                Accessible.name: `Saldo ${modelData[1]}`
+                                Accessible.checked: on
+                                Lb { id: bcl; anchors.centerIn: parent; text: bc.modelData[1]; px: 10; color: bc.on ? Theme.ink : Theme.fg }
+                                HoverHandler { id: bh; cursorShape: Qt.PointingHandCursor }
+                                TapHandler { onTapped: Hanami.obalance = bc.modelData[0] }
+                            }
+                        }
+                    }
                 }
                 Num {
                     width: parent.width
-                    text: root.fmt(root.p?.balance ?? 0, root.main)
+                    text: root.fmt(root.shown, root.main)
                     font.pixelSize: 52
                     fontSizeMode: Text.HorizontalFit
                     minimumPixelSize: 28
-                    color: (root.p?.balance ?? 0) < 0 ? Theme.red : Theme.fg
+                    color: root.shown < 0 ? Theme.red : Theme.fg
                     Accessible.name: `Saldo ${text}`
                 }
                 Text {
                     width: parent.width
-                    text: `${root.fmt(root.p?.carry_in ?? 0, root.main)} del periodo anterior`
+                    text: (Hanami.obalance === "all"
+                        ? `${root.fmt(root.p?.carry_in ?? 0, root.main)} del periodo anterior`
+                        : `entra ${root.fmt(root.p?.income ?? 0, root.main)}, sale ${root.fmt(root.p?.spending ?? 0, root.main)}`)
+                        + (root.p ? ` · hasta ${root.day(root.p.end)}` : "")
                     textFormat: Text.PlainText
                     font { family: Theme.ui; pixelSize: 13 }
                     color: Theme.grey
@@ -154,7 +182,7 @@ Column {
                     visible: root.others.length > 0
                     width: parent.width
                     wrapMode: Text.Wrap
-                    text: root.others.map(c => `${root.fmt(c.balance, c.currency)} (entra ${root.fmt(c.income, c.currency)}, sale ${root.fmt(c.spending, c.currency)})`).join(" · ")
+                    text: root.others.map(c => `${root.fmt(Hanami.obalance === "all" ? c.balance : c.income - c.spending, c.currency)} (entra ${root.fmt(c.income, c.currency)}, sale ${root.fmt(c.spending, c.currency)})`).join(" · ")
                     textFormat: Text.PlainText
                     font { family: Theme.mono; pixelSize: 12 }
                     color: Theme.grey

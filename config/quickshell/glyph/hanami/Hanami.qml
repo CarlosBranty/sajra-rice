@@ -56,6 +56,8 @@ Singleton {
     property var oview: null
     property string operiod: ""
     property string orange: "3m"
+    // the balance shown: "period" (this period's income minus its spending, the default) or "all" (everything so far)
+    property string obalance: "period"
     property var oedit: null
     property var oform: ({})
     property int opending: 0
