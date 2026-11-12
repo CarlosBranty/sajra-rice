@@ -55,7 +55,7 @@ assert.match(side, /wake: LINUX && VOICE_OK \? wakeOf\(config\) : null,/, 'the p
 
 // The shell: the phrase goes on to the voice helper when it changes and to every helper that starts; never when off.
 const shell = read('../../src-tauri/src/main.rs');
-assert.match(shell, /#\[cfg\(target_os = "linux"\)\]\n\s+voice::set_wake\(app, voice::wake_of\(&msg\)\);\n\s+if msg\.get\("enabled"\)/, 'the shell reads the phrase before the helper is started or stopped');
+assert.match(shell, /#\[cfg\(target_os = "linux"\)\]\n\s+voice::set_wake\(app, voice::wake_of\(&msg\)\);\n[\s\S]{0,400}?voice::set_mic\(app, voice::device_of\(&msg, "mic"\)\);[\s\S]{0,200}?\n\s+if msg\.get\("enabled"\)/, 'the shell reads the phrase and the microphone before the helper is started or stopped');
 assert.match(shell, /Some\("talk_toggle"\) => to_voice\(app, &json!\(\{ "cmd": "toggle" \}\)\),/, 'the talk command is what it was');
 const voice = read('../../src-tauri/src/voice.rs');
 const start = voice.slice(voice.indexOf('pub(crate) fn start_voice('), voice.indexOf('pub(crate) fn stop_voice('));
