@@ -60,6 +60,77 @@ pub(crate) fn dictate(app: &AppHandle) {
     }
     DICTATE.store(true, Ordering::Relaxed);
     to_voice(app, &json!({ "cmd": "hold" }));
+    watch_dictation_key(app);
+}
+
+/// What the dictation key's watch does with one look at whether the key is held.
+#[cfg(target_os = "linux")]
+#[derive(Debug, PartialEq)]
+enum KeyWatch {
+    Keep,
+    Release,
+    GiveUp,
+}
+
+/// The release bind fires only when the key is let go with its modifiers still down: let go of Ctrl or Alt first and
+/// it never comes, and the take ran on (to MAX_HELD). So while dictating, the compositor is asked whether the key is
+/// held. It is let go only once it was seen held and then seen up twice in a row; never seen held within the first
+/// looks (a compositor that can't tell), the watch gives up and the release bind alone ends the take, as before.
+#[cfg(target_os = "linux")]
+#[derive(Default)]
+struct KeyState {
+    looks: u32,
+    seen: bool,
+    ups: u32,
+}
+
+#[cfg(target_os = "linux")]
+impl KeyState {
+    const FIRST_LOOKS: u32 = 8;
+    fn step(&mut self, down: bool) -> KeyWatch {
+        self.looks += 1;
+        if down {
+            self.seen = true;
+            self.ups = 0;
+            return KeyWatch::Keep;
+        }
+        if !self.seen {
+            return if self.looks >= Self::FIRST_LOOKS { KeyWatch::GiveUp } else { KeyWatch::Keep };
+        }
+        self.ups += 1;
+        if self.ups >= 2 { KeyWatch::Release } else { KeyWatch::Keep }
+    }
+}
+
+/// Asks Hyprland every 150 ms whether D is held, while the dictation take is on (DICTATE), for at most 3 minutes.
+#[cfg(target_os = "linux")]
+fn watch_dictation_key(app: &AppHandle) {
+    let app = app.clone();
+    thread::spawn(move || {
+        let held = || {
+            Command::new("hyprctl")
+                .args(["repl", r#"return tostring(hl.is_key_down("d") or hl.is_key_down("D"))"#])
+                .stdin(Stdio::null())
+                .stderr(Stdio::null())
+                .output()
+                .map(|o| String::from_utf8_lossy(&o.stdout).trim() == "true")
+                .ok()
+        };
+        let mut st = KeyState::default();
+        let start = std::time::Instant::now();
+        while DICTATE.load(Ordering::Relaxed) && start.elapsed() < Duration::from_secs(180) {
+            thread::sleep(Duration::from_millis(150));
+            let Some(down) = held() else { return };
+            match st.step(down) {
+                KeyWatch::Keep => {}
+                KeyWatch::GiveUp => return,
+                KeyWatch::Release => {
+                    to_voice(&app, &json!({ "cmd": "release" }));
+                    return;
+                }
+            }
+        }
+    });
 }
 
 /// The dictation key was let go: what was said is read and typed.
@@ -589,6 +660,21 @@ mod tests {
         assert_eq!(device_of(&json!({ "enabled": true }), "mic"), "", "an older sidecar says nothing: the default");
         assert_eq!(mic_env(""), Vec::<(&str, String)>::new(), "the default: the environment as it is");
         assert_eq!(mic_env(usb), vec![("PIPEWIRE_NODE", usb.to_string()), ("PULSE_SOURCE", usb.to_string())]);
+    }
+
+    #[test]
+    fn the_dictation_key_is_let_go_only_after_it_was_seen_held_and_then_up_twice() {
+        let run = |looks: &[bool]| {
+            let mut st = KeyState::default();
+            looks.iter().map(|&d| st.step(d)).collect::<Vec<_>>()
+        };
+        use KeyWatch::*;
+        assert_eq!(run(&[true, true, false, false]), vec![Keep, Keep, Keep, Release], "held, then up twice");
+        assert_eq!(run(&[true, false, true, false, false]), vec![Keep, Keep, Keep, Keep, Release], "one up look is a glitch");
+        assert_eq!(run(&[false, false, true, false, false]), vec![Keep, Keep, Keep, Keep, Release], "seen held a little late");
+        let never = run(&[false; 8]);
+        assert_eq!(never.last(), Some(&GiveUp), "never seen held: the release bind decides, as before");
+        assert!(never[..7].iter().all(|w| *w == Keep), "and nothing is let go before");
     }
 
     #[test]
