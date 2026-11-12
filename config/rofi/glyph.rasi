@@ -1,0 +1,106 @@
+/* Glyph-style password picker for rofi-rbw.
+   Colors come from glyph-colors.rasi, regenerated from glyph's live palette by ~/.local/bin/glyph-vault. */
+
+* {
+    /* Fallback (glyph light) if the generated file is missing */
+    bg: #f2e7de; surface: #ffffffD9; field: #faefe6E6; line: #e4d6cb; mute: #c3b5aa;
+    dim: #786c61; fg: #100a05; accent: #9e6630; accent-soft: #9e663026; on-accent: #ffffff;
+}
+@import "glyph-colors.rasi"
+
+* {
+    background-color: transparent;
+    text-color:       @fg;
+    font:             "Space Grotesk 12";
+    spacing:          0;
+}
+
+window {
+    width:            660px;
+    location:         center;
+    anchor:           center;
+    background-color: @surface;   /* translucent: Hyprland blurs what is behind */
+    border:           0;
+    border-radius:    28px;
+    padding:          18px;
+}
+
+mainbox { spacing: 14px; children: [ inputbar, listview, box-actions ]; }
+
+/* Search field */
+inputbar {
+    background-color: @field;
+    border-radius:    18px;
+    padding:          13px 16px;
+    spacing:          12px;
+    children:         [ textbox-search, entry, num-filtered-rows ];
+}
+textbox-search {
+    content:        "󰍉";
+    font:           "JetBrainsMono Nerd Font 15";
+    text-color:     @dim;
+    expand:         false;
+    vertical-align: 0.5;
+}
+entry {
+    placeholder:       "Buscar en tu bóveda…";
+    placeholder-color: @dim;
+    vertical-align:    0.5;
+    cursor-color:      @accent;
+}
+num-filtered-rows {
+    text-color:     @mute;
+    font:           "Space Mono 10";
+    expand:         false;
+    vertical-align: 0.5;
+}
+
+/* Results */
+listview {
+    lines:        7;
+    fixed-height: true;
+    scrollbar:    false;
+    spacing:      4px;
+    cycle:        true;
+}
+element {
+    border-radius: 14px;
+    padding:       11px 14px;
+}
+element normal.normal, element alternate.normal { background-color: transparent; text-color: @fg; }
+element selected.normal { background-color: @accent; text-color: @on-accent; }
+element-text { text-color: inherit; vertical-align: 0.5; highlight: bold; }
+
+/* Clickable action chips (map to rofi-rbw's default Alt shortcuts) */
+box-actions { expand: false; orientation: horizontal; spacing: 8px; children: [ button-fill, button-pass, button-user, button-otp, button-more ]; }
+button-fill, button-pass, button-user, button-otp, button-more {
+    expand:           true;
+    vertical-align:   0.5;
+    background-color: @field;
+    text-color:       @dim;
+    border-radius:    12px;
+    padding:          8px 0;
+    font:             "Space Grotesk 10";
+    horizontal-align: 0.5;
+    cursor:           pointer;
+}
+button-fill {
+    content: "↵  Autocompletar";
+    action:  "kb-accept-entry"; background-color: @accent-soft; text-color: @accent;
+}
+button-pass {
+    content: "󰆏  Clave  Alt+C";
+    action:  "kb-custom-5";
+}
+button-user {
+    content: "󰀄  Usuario  Alt+U";
+    action:  "kb-custom-6";
+}
+button-otp {
+    content: "󰦯  2FA  Alt+T";
+    action:  "kb-custom-7";
+}
+button-more {
+    content: "⋯  Alt+M";
+    action:  "kb-custom-8"; expand: false; padding: 8px 14px;
+}

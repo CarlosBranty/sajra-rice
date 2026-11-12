@@ -37,6 +37,7 @@ AUR=(
 declare -A EXTRA=(
     [telegram]="telegram-desktop"                                        # Super+D
     [spotify]="spotify-launcher spicetify-cli spicetify-marketplace-bin" # Super+M
+    [vault]="rbw rofi rofi-rbw wtype"                                    # Super+Alt+P (Vaultwarden via glyph-vault)
     [clash]="clash-verge-rev-bin"                                        # панель VPN, Super+P
 )
 
@@ -59,6 +60,12 @@ LINKS=(
     "config/fish/config.fish                    .config/fish/config.fish"
     "config/fish/functions/fish_greeting.fish   .config/fish/functions/fish_greeting.fish"
     "config/fonts                               .local/share/fonts/glyph"
+    "config/rofi                                .config/rofi"
+    "config/rofi/rofi-rbw.rc                    .config/rofi-rbw.rc"
+    "config/bin/glyph-vault                     .local/bin/glyph-vault"
+    "config/bin/musica                          .local/bin/musica"
+    "config/bin/musica-index                    .local/bin/musica-index"
+    "config/bin/glyph-charge-setup              .local/bin/glyph-charge-setup"
 )
 
 say() { printf '\e[38;2;215;25;33m●\e[0m %s\n' "$*"; }
