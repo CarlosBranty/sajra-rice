@@ -56,14 +56,14 @@ const binds = parseBinds(BINDS, [VARS, USER]);
 const find = (keys) => binds.find((b) => b.keys === keys);
 
 test('the binds are read with their keys resolved, their section and what they do', () => {
-  assert.deepEqual(find('SUPER + Space'), { keys: 'SUPER + Space', section: 'Misc', does: 'global shell:altar', global: 'altar' });
+  assert.deepEqual(find('SUPER + Space'), { keys: 'SUPER + Space', section: 'Misc', does: 'global shell:altar', global: 'altar', action: 'hl.dsp.global("shell:altar")' });
   assert.equal(find('SUPER + A').global, 'quick');
   assert.equal(find('SUPER + SUPER_L').global, 'launcher', 'the launcher, by its shell action');
   assert.equal(find('CTRL + SUPER + Space').does, 'exec playerctl play-pause');
   assert.equal(find('SUPER + SHIFT + M').does, 'toggle special workspace music', "user.lua's override wins; a commented one doesn't");
   assert.equal(find('SUPER + Return').does, 'function() hl.exec_cmd(vars.terminal) end');
   assert.equal(find('XF86AudioLowerVolume').does, 'exec wpctl set-volume @DEFAULT_AUDIO_SINK@ 5%-', 'a call over several lines');
-  assert.deepEqual(find('SUPER + 1'), { keys: 'SUPER + 1', section: 'Workspaces', does: 'go to workspace 1' });
+  assert.deepEqual(find('SUPER + 1'), { keys: 'SUPER + 1', section: 'Workspaces', does: 'go to workspace 1', action: 'fn.wsaction("focus", "", i)' });
   assert.equal(find('CTRL + SHIFT + ALT + V').does, `exec sleep 0.5s && ydotool type -d 1 "$(cliphist list | head -1 | cliphist decode)"`, 'a comment inside the call is not part of it');
   assert.equal(find('SUPER + 0').does, 'go to workspace 10');
   assert.equal(find('SUPER + Q').does, 'window close');
@@ -78,6 +78,33 @@ test('what can never be used: killing or restarting the shell, typing, sleep, ki
   for (const keys of ['SUPER + A', 'SUPER + 3', 'SUPER + Q', 'CTRL + SUPER + Space', 'SUPER + SHIFT + M']) assert.equal(checkShortcut(find(keys)).level, SAFE, keys);
   assert.equal(checkShortcut({ keys: 'SUPER + A', does: 'global shell:x"); os.execute("rm', global: 'x"); os.execute("rm' }).level, BLOCK, 'only plain shell action names are dispatched');
   assert.equal(checkShortcut(undefined).level, BLOCK);
+});
+
+test("user.lua's binds come after keybinds.lua's: an unbind drops one, a bind adds or replaces it, any spelling", () => {
+  const user = `hl.unbind("SUPER + A")
+hl.bind("SUPER + a", hl.dsp.exec_cmd("pkill quickshell"))
+hl.bind("SUPER + B", hl.dsp.exec_cmd("firefox")) -- a browser
+--[[ hl.bind("SUPER + J", hl.dsp.exec_cmd("nothing")) ]]
+hl.bind("SUPER + RETURN", hl.dsp.exec_cmd("hyprctl kill"))`;
+  const all = parseBinds([BINDS, user], [VARS, USER]);
+  const one = (k) => all.filter((b) => b.keys.toUpperCase() === k.toUpperCase());
+  assert.equal(one('SUPER + A').length, 1);
+  assert.equal(one('SUPER + A')[0].does, 'exec pkill quickshell', 'unbound, then bound again by user.lua');
+  assert.equal(checkShortcut(one('SUPER + A')[0]).level, BLOCK);
+  assert.equal(one('SUPER + B')[0].does, 'exec firefox');
+  assert.equal(one('SUPER + J').length, 0, 'a bind in a block comment is not one');
+  assert.equal(one('SUPER + Return').length, 1, 'one key whatever its spelling');
+  assert.equal(checkShortcut(one('SUPER + Return')[0]).level, BLOCK, 'its other action kills: the key is not pressed');
+});
+
+test('what kills, ends the session or sleeps is seen however it is written, and wherever in the action', () => {
+  const bind = (action) => parseBinds(`hl.bind("SUPER + K", ${action})`)[0];
+  for (const a of ['hl.dsp.exit()', 'hl.dsp.exec_cmd("hyprctl dispatch exit")', 'hl.dsp.exec_cmd("uwsm stop")', 'hl.dsp.exec_cmd("loginctl terminate-user $USER")',
+    'hl.dsp.exec_cmd("pkill quickshell")', 'hl.dsp.exec_cmd("killall -9 firefox")', 'hl.dsp.exec_cmd("systemctl suspend")',
+    `function()\n${'    local w = hl.get_active_window(); if w and w.class ~= "kitty" and w.class ~= "foot" then end\n'.repeat(4)}    hl.exec_cmd("systemctl suspend")\nend`]) {
+    assert.equal(checkShortcut(bind(a)).level, BLOCK, a);
+  }
+  assert.equal(checkShortcut(bind('hl.dsp.exec_cmd("firefox")')).level, SAFE);
 });
 
 test('a shortcut is pressed with its modifiers held', () => {

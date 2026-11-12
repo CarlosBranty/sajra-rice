@@ -34,17 +34,20 @@ function bindCalls(text) {
   for (let i = 0; i < text.length; i++) {
     if (text[i] === '-' && text.startsWith('--', i)) {
       const start = lineStart(i), end = text.indexOf('\n', i) === -1 ? text.length : text.indexOf('\n', i);
-      if (i === start && !text.startsWith('--[[', i)) section = text.slice(i + 2, end).trim();
+      if (text.startsWith('--[[', i)) { i = (text.indexOf(']]', i) + 1) || text.length; continue; }
+      if (i === start) section = text.slice(i + 2, end).trim();
       i = end;
       continue;
     }
-    if (!text.startsWith('hl.bind(', i)) continue;
+    const unbind = text.startsWith('hl.unbind(', i);
+    if (!unbind && !text.startsWith('hl.bind(', i)) continue;
     const args = [];
-    let depth = 0, block = 0, from = i + 'hl.bind('.length, j = from;
+    let depth = 0, block = 0, from = i + (unbind ? 'hl.unbind(' : 'hl.bind(').length, j = from;
     for (; j < text.length; j++) {
       const c = text[j];
       if (c === '"' || c === "'") { const q = c; for (j++; j < text.length && text[j] !== q; j++) if (text[j] === '\\') j++; continue; }
       if (text.startsWith('[[', j)) { j = text.indexOf(']]', j) + 1 || text.length; continue; }
+      if (text.startsWith('--[[', j)) { j = (text.indexOf(']]', j) + 1) || text.length; continue; }
       if (text.startsWith('--', j)) { j = text.indexOf('\n', j); if (j < 0) j = text.length; continue; }
       if (/[A-Za-z_]/.test(c) && !/[\w.]/.test(text[j - 1] ?? '')) {
         const word = /^[A-Za-z_]\w*/.exec(text.slice(j))[0];
@@ -59,17 +62,23 @@ function bindCalls(text) {
         depth--;
       } else if (c === ',' && depth === 0 && block === 0) { args.push(text.slice(from, j).trim()); from = j + 1; }
     }
-    calls.push({ args, section });
+    calls.push({ args: args.map(stripComments), section, unbind });
     i = j;
   }
   return calls;
 }
 
+// Lua comments inside an argument (a line comment, a block one) are not part of it.
+const stripComments = (a) => a.replace(/--\[\[[\s\S]*?\]\]/g, ' ').split('\n').map((l) => l.replace(/^\s*--.*$/, '')).join('\n').trim();
 const str = (s) => (/^"([^"]*)"$|^'([^']*)'$/.exec(s ?? '') ?? []).slice(1).find((x) => x != null);
 
-/** What a bind's action does, in a few words, and the shell action's name when it is one. */
+/** What a bind's action does, in a few words, and the shell action's name when it is one. `action`: all of it, which
+ *  is what checkShortcut reads (`does` may be cut short to be shown). */
 function describe(action) {
-  const flat = action.split('\n').filter((l) => !l.trim().startsWith('--')).join(' ').replace(/\s+/g, ' ').trim();
+  const flat = action.replace(/\s+/g, ' ').trim();
+  return { ...short(flat), action: flat };
+}
+function short(flat) {
   let m;
   if ((m = /^hl\.dsp\.global\(\s*["']shell:([^"']*)["']\s*\)$/.exec(flat))) return { does: `global shell:${m[1]}`, global: m[1] };
   if ((m = /^hl\.dsp\.exec_cmd\(\s*(.*)\s*\)$/.exec(flat))) return { does: `exec ${str(m[1]) ?? m[1]}` };
@@ -80,23 +89,34 @@ function describe(action) {
 
 const WS = { focus: 'go to workspace', move: 'move the window to workspace' };
 
-/** Every keyboard shortcut of keybinds.lua: { keys, section, does, global? }. varsTexts: variables.lua, user.lua. */
-export function parseBinds(text, varsTexts = []) {
+/** Every keyboard shortcut: { keys, section, does, action, global? }. texts: keybinds.lua, then user.lua (its binds
+ *  and `hl.unbind`s come after, as Hyprland runs them); varsTexts: variables.lua, user.lua. One key is one entry,
+ *  whatever its spelling, with every action bound to it. */
+export function parseBinds(texts, varsTexts = []) {
   const vars = readVars(varsTexts);
   const out = new Map();
   const add = (keys, section, d) => {
-    const k = normKeys(keys);
-    const prev = out.get(k);
-    out.set(k, prev ? { ...prev, does: `${prev.does}; ${d.does}` } : { keys: k, section, ...d });
+    const k = normKeys(keys), id = k.toUpperCase();
+    const prev = out.get(id);
+    const both = (a, b) => (a && b ? `${a}; ${b}` : a || b);
+    // A key with several actions is pressed, so that the compositor runs them all (not dispatched as one of them).
+    if (!prev) out.set(id, { keys: k, section, ...d });
+    else out.set(id, { keys: prev.keys, section: prev.section, does: both(prev.does, d.does), action: both(prev.action, d.action) });
   };
-  for (const { args: [keyExpr = '', action = '', opts = ''], section } of bindCalls(text)) {
-    if (/mouse\s*=\s*true/.test(opts)) continue;
+  const calls = (Array.isArray(texts) ? texts : [texts]).flatMap((t) => bindCalls(t));
+  for (const { args: [keyExpr = '', action = '', opts = ''], section, unbind } of calls) {
     let m;
+    if (unbind) {
+      const keys = str(keyExpr) ?? ((m = /^vars\.(\w+)$/.exec(keyExpr)) ? vars[m[1]] : null);
+      if (keys) out.delete(normKeys(keys).toUpperCase());
+      continue;
+    }
+    if (/mouse\s*=\s*true/.test(opts)) continue;
     // The workspace loop: `vars.kbGoToWs .. " + " .. key` with fn.wsaction(kind, group, i), for i = 1..10.
     if ((m = /^vars\.(\w+)\s*\.\.\s*" \+ "\s*\.\.\s*key$/.exec(keyExpr))) {
       const w = /^fn\.wsaction\(\s*"(\w+)"\s*,\s*"(\w*)"\s*,\s*i\s*\)$/.exec(action.replace(/\s+/g, ' '));
       if (!vars[m[1]] || !w) continue;
-      for (let i = 1; i <= 10; i++) add(`${vars[m[1]]} + ${i % 10}`, 'Workspaces', { does: `${WS[w[1]] ?? w[1]}${w[2] ? ` ${w[2]}` : ''} ${i}` });
+      for (let i = 1; i <= 10; i++) add(`${vars[m[1]]} + ${i % 10}`, 'Workspaces', { does: `${WS[w[1]] ?? w[1]}${w[2] ? ` ${w[2]}` : ''} ${i}`, action: action.replace(/\s+/g, ' ') });
       continue;
     }
     const keys = str(keyExpr) ?? ((m = /^vars\.(\w+)$/.exec(keyExpr)) ? vars[m[1]] : null);
@@ -136,8 +156,8 @@ async function readConfig() {
   const dir = configDir();
   let binds;
   try { binds = await fs.readFile(path.join(dir, 'hyprland', 'keybinds.lua'), 'utf8'); } catch { return null; }
-  const vars = await Promise.all(['variables.lua', 'user.lua'].map((f) => fs.readFile(path.join(dir, f), 'utf8').catch(() => '')));
-  return { binds, vars };
+  const [variables, user] = await Promise.all(['variables.lua', 'user.lua'].map((f) => fs.readFile(path.join(dir, f), 'utf8').catch(() => '')));
+  return { binds: [binds, user], vars: [variables, user] };
 }
 const runFile = (file, args) => new Promise((resolve, reject) => {
   execFile(file, args, { timeout: 3000, killSignal: 'SIGKILL', windowsHide: true }, (err, stdout, stderr) => {
@@ -146,7 +166,7 @@ const runFile = (file, args) => new Promise((resolve, reject) => {
   });
 });
 
-/** read(): { binds, vars: [texts] } or null; run(file, args): runs a program (no shell). */
+/** read(): { binds: [keybinds.lua, user.lua], vars: [variables.lua, user.lua] } or null; run(file, args): runs a program (no shell). */
 export function shortcutTools({ read = readConfig, run = runFile } = {}) {
   const usable = async () => {
     const c = await read();

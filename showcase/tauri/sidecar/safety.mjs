@@ -492,13 +492,16 @@ export function checkUrl(url) {
 
 /** One of the user's desktop shortcuts (shortcuts.mjs), before the agent uses it for them: the user's own binds are
  *  fine, except those that kill or restart the shell, kill a window by click, type text into whatever has the
- *  keyboard, or put the computer to sleep or off. A shell action is dispatched by name, so only a plain name. */
+ *  keyboard, end the session, or put the computer to sleep or off. A shell action is dispatched by name, so only a plain name. */
 export function checkShortcut(bind) {
   if (!bind?.keys || typeof bind.does !== 'string') return verdict(BLOCK, 'not a shortcut');
   if (bind.global != null && !/^[A-Za-z][\w-]*$/.test(bind.global)) return verdict(BLOCK, 'not a plain shell action name');
-  if (/\bkill\b|restart/i.test(bind.does)) return verdict(BLOCK, 'it kills or restarts something');
-  if (/ydotool|wtype|xdotool|\btype\b/i.test(bind.does)) return verdict(BLOCK, 'it types into whatever has the keyboard');
-  if (/sleep|suspend|hibernate|poweroff|reboot|shutdown/i.test(bind.does)) return verdict(BLOCK, 'it puts the computer to sleep or off');
+  // All of what it does (`action`), not only the words shown for it.
+  const all = `${bind.does} ${bind.action ?? ''}`;
+  if (/kill|restart/i.test(all)) return verdict(BLOCK, 'it kills or restarts something');
+  if (/(^|[^\w])exit\b|uwsm\s+stop|terminate-(user|session)|logout|log-out/i.test(all)) return verdict(BLOCK, 'it ends the desktop session');
+  if (/ydotool|wtype|xdotool|\btype\b/i.test(all)) return verdict(BLOCK, 'it types into whatever has the keyboard');
+  if (/sleep|suspend|hibernate|poweroff|reboot|shutdown|halt\b/i.test(all)) return verdict(BLOCK, 'it puts the computer to sleep or off');
   return verdict(SAFE);
 }
 
