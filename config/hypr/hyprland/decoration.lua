@@ -4,6 +4,12 @@ hl.config({
     decoration = {
         rounding = vars.windowRounding,
 
+        -- прозрачность окон; glyph переписывает её из Prefs → WINDOWS (Theme.apply). Не window_rule с override:
+        -- он перекрыл бы эти значения навсегда
+        active_opacity     = vars.windowOpacity,
+        inactive_opacity   = vars.windowOpacity,
+        fullscreen_opacity = 1,
+
         blur = {
             enabled           = vars.blurEnabled,
             xray              = vars.blurXray,

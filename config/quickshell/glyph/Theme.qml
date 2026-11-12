@@ -195,6 +195,8 @@ Singleton {
             property string gif: ""        // гифка плитки-кота (services/Gifs), путь; пусто — первая в папке
             property string gifDir: ""     // пусто — ~/Pictures/Gifs
             property int rounding: 20      // окна hypr
+            property int tokOpacity: 100   // %: glyph-tok (TikTok) в фокусе — своё, не decoration.active_opacity: видео сквозь обои плохо
+            property int tokInactive: 100  // %: glyph-tok без фокуса
             property int corners: 100      // углы панелей шелла, % от своих; круги остаются кругами (Theme.corner)
             property bool edges: true      // Glyph-полосы по краям (громкость/яркость, вспышки, прогресс)
             property int briSteps: 20      // яркость с клавиш: делений на шкалу, 40/20/10 — шаг 2.5/5/10 %
@@ -245,13 +247,17 @@ Singleton {
         const shadow = light ? "rgba(0000002E)" : `rgba(${hex(fg)}1A)`;
         hypr(`hl.config({ general = { gaps_in = ${g ? 0 : r.gapsIn}, gaps_out = ${g ? 0 : r.gapsOut}, border_size = ${g ? 1 : r.border}, allow_tearing = ${g}, `
            + `col = { active_border = ${c(fg)}, inactive_border = ${c(s3)} } }, `
-           + `decoration = { rounding = ${g ? 0 : st.rounding}, blur = { enabled = ${Rules.blurOn} }, shadow = { enabled = ${Rules.shadowOn}, color = "${shadow}" } }, `
+           + `decoration = { rounding = ${g ? 0 : st.rounding}, ${Rules.glass()}, shadow = { enabled = ${Rules.shadowOn}, color = "${shadow}" } }, `
            + `group = { col = { border_active = ${c(fg)}, border_inactive = ${c(s3)}, border_locked_active = ${c(fg)}, border_locked_inactive = ${c(mute)} }, `
            + `groupbar = { font_family = "${mono}", text_color = ${c(fg)}, col = { active = ${c(s3)}, inactive = ${c(s1)}, locked_active = ${c(s3)}, locked_inactive = ${c(s1)} } } }, `
            + `misc = { background_color = ${c(bg)} } })`);
+        // glyph-tok (~/Projects/glyph-tok): своя прозрачность в фокусе и без; override — не умножать на active/inactive_opacity.
+        // Именованное правило: повтор заменяет, а не копит. В игровом — сплошное, как и остальные окна
+        hypr(`hl.window_rule({ name = "glyph-tok-opacity", match = { class = "^(glyph-tok)$" }, `
+           + `opacity = "${g ? 1 : st.tokOpacity / 100} override ${g ? 1 : st.tokInactive / 100} override" })`);
 
         kitty.setText("# glyph: пишет Theme.apply(), руками не править\n" + [
-            ["font_family", "Space Mono"], ["window_padding_width", "26 30"], ["cursor_trail", "0"],
+            ["font_family", "Space Mono"], ["dynamic_background_opacity", "yes"], ["background_opacity", String(Rules.opaOn)], ["window_padding_width", "26 30"], ["cursor_trail", "0"],
             ["foreground", fg], ["background", s1], ["cursor", fg], ["cursor_text_color", s1],
             ["selection_foreground", fg], ["selection_background", s3], ["url_color", grey],
             ["active_border_color", fg], ["inactive_border_color", s3],

@@ -57,6 +57,10 @@ Singleton {
             property int border: 2
             property int rounding: 0
             property bool blur: true
+            property int blurSize: 8      // decoration.blur.size, как blurSize в variables.lua
+            property int blurPasses: 2
+            property int opacity: 100     // %: окно в фокусе (decoration.active_opacity)
+            property int inactive: 100    // %: остальные; kitty берёт opacity себе фоном (Theme.apply)
             property bool shadow: true
             property bool motion: true
             property bool ultra: false   // режим ultra (setMode 0): 60 Гц и без украшений поверх настроек
@@ -333,6 +337,14 @@ Singleton {
     readonly property int hz: store.ultra ? rates[0] : refreshHz
     readonly property bool moving: store.motion && !store.ultra && !store.game
     readonly property bool blurOn: store.blur && !store.ultra && !store.game
+    // прозрачность окон: в игровом — сплошные. На весь экран — всегда сплошные (fullscreen_opacity)
+    readonly property real opaOn: store.game ? 1 : store.opacity / 100
+    readonly property real opaOff: store.game ? 1 : store.inactive / 100
+    // кусок decoration = { … } — blur и прозрачность, общий для windows() и Theme.apply()
+    function glass() {
+        return `blur = { enabled = ${blurOn}, size = ${store.blurSize}, passes = ${store.blurPasses} }, `
+             + `active_opacity = ${opaOn}, inactive_opacity = ${opaOff}, fullscreen_opacity = 1`;
+    }
     readonly property bool shadowOn: store.shadow && !store.ultra && !store.game
 
     // старт шелла: всё, кроме яркости (её крутят клавиши и OSD, перетирать на каждом запуске нельзя)

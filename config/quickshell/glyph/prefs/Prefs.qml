@@ -875,7 +875,7 @@ PanelWindow {
         // ---- WINDOWS: рабочий стол с двумя окнами по живым значениям колец. Анимация окон — только если motion ----
         Page {
             k: 5
-            caption: `windows · hyprland · gaps ${gIn.v} / ${gOut.v} · border ${bord.v} · rounding ${rnd.v} · panels ${pan.v} %`
+            caption: `windows · hyprland · gaps ${gIn.v} / ${gOut.v} · border ${bord.v} · rounding ${rnd.v} · panels ${pan.v} % · opacity ${opa.v} / ${opaOff.v} % · tiktok ${tokOpa.v} / ${tokOff.v} %`
 
             Row {
                 spacing: 40
@@ -898,6 +898,7 @@ PanelWindow {
                             radius: rnd.v * desk.k
                             color: Theme.s1
                             border { width: bord.v ? Math.max(1, bord.v * desk.k) : 0; color: index ? Theme.s3 : Theme.fg }
+                            opacity: (index ? opaOff.v : opa.v) / 100 // левое — в фокусе
                             Behavior on x { enabled: root.r.motion; NumberAnimation { duration: Theme.t; easing.type: Easing.BezierSpline; easing.bezierCurve: Theme.glide } }
                             Behavior on y { enabled: root.r.motion; NumberAnimation { duration: Theme.t; easing.type: Easing.BezierSpline; easing.bezierCurve: Theme.glide } }
                             Behavior on width { enabled: root.r.motion; NumberAnimation { duration: Theme.t; easing.type: Easing.BezierSpline; easing.bezierCurve: Theme.glide } }
@@ -923,12 +924,25 @@ PanelWindow {
                     }
                 }
 
-                // ponytail: blur и тени в макете не видны (плоский чёрный) — только тумблеры
+                // ponytail: blur и тени в макете не видны (плоский чёрный) — только тумблеры и кольца; прозрачность видна
+                // (сквозь окна макета — сетка точек)
                 Column {
                     spacing: 14
                     Toggle { width: 200; text: "blur"; on: root.r.blur; onFlip: { root.r.blur = !root.r.blur; Theme.apply(); } }
                     Toggle { width: 200; text: "shadow"; on: root.r.shadow; onFlip: { root.r.shadow = !root.r.shadow; Theme.apply(); } }
                     Toggle { width: 200; text: "motion"; on: root.r.motion; onFlip: { root.r.motion = !root.r.motion; Rules.motion(); } }
+                    Grid {
+                        columns: 2
+                        columnSpacing: 20
+                        rowSpacing: 10
+                        Dial { size: 90; label: "blur"; from: 1; to: 20; n: 20; value: root.r.blurSize; onMoved: v => { root.r.blurSize = v; Theme.apply(); } }
+                        Dial { size: 90; label: "passes"; from: 1; to: 4; n: 20; value: root.r.blurPasses; onMoved: v => { root.r.blurPasses = v; Theme.apply(); } }
+                        Dial { id: opa; size: 90; label: "opacity"; from: 50; to: 100; step: 5; n: 20; value: root.r.opacity; onMoved: v => { root.r.opacity = v; Theme.apply(); } }
+                        Dial { id: opaOff; size: 90; label: "unfocused"; from: 50; to: 100; step: 5; n: 20; value: root.r.inactive; onMoved: v => { root.r.inactive = v; Theme.apply(); } }
+                        // glyph-tok (TikTok): свои, в фокусе и без (Theme.apply → правило glyph-tok-opacity)
+                        Dial { id: tokOpa; size: 90; label: "tiktok"; from: 50; to: 100; step: 5; n: 20; value: Theme.state.tokOpacity; onMoved: v => { Theme.state.tokOpacity = v; Theme.apply(); } }
+                        Dial { id: tokOff; size: 90; label: "tiktok idle"; from: 50; to: 100; step: 5; n: 20; value: Theme.state.tokInactive; onMoved: v => { Theme.state.tokInactive = v; Theme.apply(); } }
+                    }
                 }
             }
 

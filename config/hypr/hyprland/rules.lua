@@ -4,7 +4,7 @@ local vars = require("variables")
 ---- Window rules ----
 ----------------------
 
-hl.window_rule({ match = { fullscreen = false }, opacity = vars.windowOpacity .. " override" })
+-- прозрачность — decoration.active_opacity / inactive_opacity (decoration.lua), её крутит Prefs → WINDOWS
 
 -- приложения (kitty) сами просят maximize при открытии — игнорируем, тайлинг решает сам
 hl.window_rule({ match = { class = ".*" }, suppress_event = "maximize" })
