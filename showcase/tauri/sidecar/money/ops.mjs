@@ -186,9 +186,11 @@ export function moneyOps({ money: open, today = localDay, authorize }) {
       return change(m, () => {
         const e = expenseById(m, id);
         const manual = e.source === 'manual', set = {}, said = [];
+        let moved = false;
         if (kind !== undefined && kind !== direction(e)) {
           if (!manual || direction(e) === 'other') throw new Error(`#${id} came from a bank mail: it stays the kind the bank said (a transfer to the user's own account is marked as an own account instead)`);
-          if (kind === 'income') Object.assign(set, { kind: 'income', category: null, status: 'classified' });
+          // An income has no category: taking a classified expense's away asks first, as removing it does.
+          if (kind === 'income') { Object.assign(set, { kind: 'income', category: null, status: 'classified' }); moved = e.category != null; }
           else Object.assign(set, { kind: 'purchase', status: 'pending', salary: 0 });
           said.push(kind === 'income' ? 'make it an income' : 'make it an expense');
         }
@@ -206,7 +208,6 @@ export function moneyOps({ money: open, today = localDay, authorize }) {
           // An entry read from a mail keeps the bank's recipient key (its rules and own account follow it).
           if (d !== e.merchant) { set.merchant = d; if (manual) set.merchant_key = merchantKey(d) || null; said.push(`description to "${d}"`); }
         }
-        let moved = false;
         if (category !== undefined) {
           const name = category === null || category === '' ? null : m.categoryName(category);
           const was = after.category;
@@ -214,7 +215,7 @@ export function moneyOps({ money: open, today = localDay, authorize }) {
           if (name !== was) {
             set.category = name;
             set.status = name ? 'classified' : after.status === 'classified' && direction(after) === 'expense' ? 'pending' : after.status;
-            moved = was != null;
+            moved = moved || was != null;
             said.push(name ? `category ${was ? `from ${was} ` : ''}to ${name}` : `remove the category ${was}`);
           }
         }

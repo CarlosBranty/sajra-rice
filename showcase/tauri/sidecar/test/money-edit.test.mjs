@@ -115,6 +115,35 @@ await rule('a re-read of the mail never overwrites an edited row', async () => {
   assert.equal(row(other).amount, 1200);
 });
 
+// Found by an independent check: a first category given in the edit sheet marked the row edited, and the mail that
+// settles its amount was dropped for good. Only a change to what the bank said (amount, currency, date, description)
+// is a correction that a re-read must not overwrite.
+await rule('a category or salary edit leaves a bank row open to the mail that settles its amount', async () => {
+  const id = bank({ occurredAt: '2026-10-06T10:00:00-05:00', amount: 10000, merchant: 'Plaza Vea', operation: '91', messageId: '<pv@test>' });
+  answer = true;
+  assert.equal((await ops.editEntry({ id, category: 'Comida', note: 'súper' })).ok, true);
+  assert.equal(row(id).edited_at, null, 'not a correction of the bank\'s values');
+  const r = m.addExpense({ source: 'bcp', kind: 'purchase', occurredAt: '2026-10-06T10:00:00-05:00', amount: 12000, currency: 'PEN', merchant: 'Plaza Vea',
+    operation: '91', messageId: '<pv2@test>', mailDate: '2026-10-09T17:00:00.000Z', status: 'pending' });
+  assert.equal(r.action, 'updated');
+  assert.deepEqual([row(id).amount, row(id).category, row(id).note], [12000, 'Comida', 'súper'], 'settled, and the category and note stay');
+  m.db.prepare('DELETE FROM expenses WHERE id = ?').run(id); // the rules below count this folder's entries
+});
+
+await rule('turning a classified expense added by hand into an income asks first: it takes the category away', async () => {
+  answer = false; asked.length = 0;
+  await ops.addExpense({ amount: 30, description: 'Regalo', category: 'Comida' });
+  const id = m.db.prepare("SELECT max(id) AS id FROM expenses WHERE source = 'manual'").get().id;
+  const before = row(id);
+  assert.equal((await ops.editEntry({ id, kind: 'income' })).ok, false);
+  assert.equal(asked.length, 1, 'asked');
+  assert.deepEqual(row(id), before, 'refused: unchanged');
+  answer = true;
+  assert.equal((await ops.editEntry({ id, kind: 'income' })).ok, true);
+  assert.equal(row(id).kind, 'income');
+  m.db.prepare('DELETE FROM expenses WHERE id = ?').run(id);
+});
+
 await rule('revert is protected and puts the bank\'s values back', async () => {
   answer = false; asked.length = 0;
   assert.equal((await ops.revertEntry({ id: cafe })).ok, false);

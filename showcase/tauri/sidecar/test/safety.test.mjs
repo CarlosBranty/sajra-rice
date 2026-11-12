@@ -376,13 +376,15 @@ console.log('safety loophole tests: passed');
     ['rm -rf ~/.gg/sidekick/banks', BLOCK], ['cp evil.json ~/.gg/sidekick/banks/bcp.json', BLOCK], ['cp evil.json ~/.gg/sidekick/banks/', BLOCK],
     ['rm -rf ~/.gg', BLOCK], ['rm -rf ~/.gg/sidekick', BLOCK], ['mv ~/.gg/sidekick ~/old', BLOCK], ['find ~/.gg -name "*.db" -delete', BLOCK],
     ['ls $(rm ~/.gg/sidekick/money.db)', BLOCK],
+    // The copy made before a migration is the user's data too.
+    ['rm ~/.gg/sidekick/money.db.bak-v3', BLOCK], ['cp /dev/null ~/.gg/sidekick/money.db.bak-v3', BLOCK],
     // Looking stays as it was.
     ['ls ~/.gg/sidekick', SAFE], ['ls ~/.gg/sidekick/banks', SAFE], ['cat ~/.gg/sidekick/banks/bcp.json', SAFE], ['du -sh ~/.gg/sidekick/money.db', SAFE],
     // Someone else's money.db is theirs.
     ['sqlite3 ~/projects/shop/money.db .tables', ASK], ['rm ~/money-notes.txt', ASK],
   ]) want(`command ${c}`, cmd(c), level);
   for (const [p, level] of [
-    ['~/.gg/sidekick/money.db', BLOCK], ['~/.gg/sidekick/money.db-wal', BLOCK], ['~/.gg/sidekick/mail.db-shm', BLOCK], ['~/.gg/sidekick/banks/new.json', BLOCK],
+    ['~/.gg/sidekick/money.db', BLOCK], ['~/.gg/sidekick/money.db-wal', BLOCK], ['~/.gg/sidekick/money.db.bak-v3', BLOCK], ['~/.gg/sidekick/mail.db-shm', BLOCK], ['~/.gg/sidekick/banks/new.json', BLOCK],
     ['~/projects/shop/money.db', SAFE],
   ]) want(`write ${p}`, checkWrite(p, HOME), level);
   assert.match(checkWrite('~/.gg/sidekick/money.db', HOME).reason, /money/i, 'says why');

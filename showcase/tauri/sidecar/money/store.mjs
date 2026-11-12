@@ -304,8 +304,10 @@ export function openStore(file) {
       const e = db.prepare('SELECT * FROM expenses WHERE id = ?').get(id);
       if (!e) throw new Error(`no expense ${id}`);
       const cols = Object.keys(set).filter((k) => ['occurred_at', 'amount', 'currency', 'merchant', 'merchant_key', 'kind', 'category', 'status', 'salary', 'note'].includes(k));
-      const edited = cols.some((k) => k !== 'note') ? now() : e.edited_at;
       const bankEdit = e.source !== 'manual' && cols.some((k) => BANK_FIELDS.includes(k) && set[k] !== e[k]);
+      // Edited: what the bank said was corrected (a re-read must not overwrite it), or, by hand, anything but the note.
+      // A category, salary or note on a bank row is not a correction: the mail that settles its amount still applies.
+      const edited = bankEdit || (e.source === 'manual' && cols.some((k) => k !== 'note')) ? now() : e.edited_at;
       const original = bankEdit && e.original == null ? JSON.stringify(Object.fromEntries(BANK_FIELDS.map((k) => [k, e[k]]))) : e.original;
       db.prepare(`UPDATE expenses SET ${cols.map((k) => `${k} = ?`).join(', ')}${cols.length ? ', ' : ''}original = ?, edited_at = ?, updated_at = ? WHERE id = ?`)
         .run(...cols.map((k) => set[k]), original, edited, now(), id);
