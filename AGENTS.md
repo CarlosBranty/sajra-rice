@@ -90,7 +90,16 @@ classified, spending / income / not counted and full-text search; paged by the s
 are classified (a new category too), unclassified, marked as the user's own or deleted (added by hand); Add by hand adds
 an expense or income. Every message from the page is checked there (zod, strict); protected ones ask the same
 `authorize`. The panel's browser preview (`?tab=money`, `?empty`) answers with sample movements.
-Income is `transfer_in` and `income`; balance = income − spending. Banks are data, one JSON per bank in `sidecar/banks/`
+Income is `transfer_in` and `income`; balance = income − spending.
+Every entry is editable (`ops.mjs` `editEntry`, the `edit_entry` tool and panel op): changing what a bank mail said
+(amount, currency, date, description) asks `authorize` and keeps the mail's values in `original` (schema v4;
+`revertEntry` puts them back), and a later read of the mail never overwrites an edited row (`store.mjs` `addExpense`);
+a note alone never asks and is no edit. Only entries added by hand switch between expense and income. Pay periods
+(`money/periods.mjs`): a period starts on the date of an income marked as salary (`salary`, `set_salary`) and ends the
+day before the next; a month whose salary hasn't come starts on the 26th (a salary paid by the 10th is the month
+before's); what is left carries into the next period (`overview`, `period_balance`). A migration first copies the
+database to `money.db.bak-v<old version>` next to it, never over an existing one.
+Banks are data, one JSON per bank in `sidecar/banks/`
 (bundled in), and users add or replace them with the same JSON in `<data dir>/banks/` (`otherLabels`: the layout's
 labels that are not read, so an empty value never runs into the next row). Own-account transfers and refused purchases
 (`own_transfer`, `rejected`) are stored as `ignored`; summaries leave out every `NOT_SPENDING` kind. Test fixtures are

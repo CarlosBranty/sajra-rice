@@ -61,7 +61,7 @@ export function moneyTools({ money: open, today = localDay, authorize }) {
     },
     {
       name: 'query_expenses',
-      description: `Run one read-only SQLite SELECT over the user's money records (from their bank notification mails, and entries they added by hand) and get the rows as JSON (at most ${MAX_ROWS}). Tables: expenses(id, source 'bcp'|'falabella'|…|'manual' (added by hand), kind, occurred_at ISO local time with offset, amount INTEGER in cents, currency 'PEN'|'USD', fee in cents, merchant (or what was said for an entry added by hand), merchant_key lowercase, account masked, operation, category, status 'pending'|'classified'|'ignored'|'needs_review', note, own_from), categories(name, position), rules(merchant_key, category, origin), own_accounts(merchant_key: recipients that are the user's own accounts); expenses_fts(merchant, note) is an FTS5 index (rowid = expenses.id). Kinds: purchase, transfer_out, yape_out, withdrawal, payment are spending; transfer_in (money received), income (added by hand), own_transfer (moved between the user's own accounts; own_from is the kind it had before its recipient was marked as theirs) and rejected (refused) are not; status 'ignored' never counts. Spending: WHERE kind NOT IN ('${NOT_SPENDING.join("', '")}') AND status <> 'ignored'. Income: WHERE kind IN ('${INCOME_KINDS.join("', '")}') AND status <> 'ignored'. Waiting to be classified: spending with status 'pending' or 'needs_review'. Sum per currency, divide amounts by 100, and use substr(occurred_at, 1, 7) for a month.`,
+      description: `Run one read-only SQLite SELECT over the user's money records (from their bank notification mails, and entries they added by hand) and get the rows as JSON (at most ${MAX_ROWS}). Tables: expenses(id, source 'bcp'|'falabella'|…|'manual' (added by hand), kind, occurred_at ISO local time with offset, amount INTEGER in cents, currency 'PEN'|'USD', fee in cents, merchant (or what was said for an entry added by hand), merchant_key lowercase, account masked, operation, category, status 'pending'|'classified'|'ignored'|'needs_review', note (what the user said about it), own_from, salary 1 on the income marked as the user's salary (pay periods start on its date), original (JSON of what the bank mail said before the user edited it; NULL if never edited), edited_at), categories(name, position), rules(merchant_key, category, origin), own_accounts(merchant_key: recipients that are the user's own accounts); expenses_fts(merchant, note) is an FTS5 index (rowid = expenses.id). Kinds: purchase, transfer_out, yape_out, withdrawal, payment are spending; transfer_in (money received), income (added by hand), own_transfer (moved between the user's own accounts; own_from is the kind it had before its recipient was marked as theirs) and rejected (refused) are not; status 'ignored' never counts. Spending: WHERE kind NOT IN ('${NOT_SPENDING.join("', '")}') AND status <> 'ignored'. Income: WHERE kind IN ('${INCOME_KINDS.join("', '")}') AND status <> 'ignored'. Waiting to be classified: spending with status 'pending' or 'needs_review'. Sum per currency, divide amounts by 100, and use substr(occurred_at, 1, 7) for a month.`,
       parameters: z.object({ sql: z.string().min(6).max(4000) }),
       execute: async ({ sql }) => {
         const r = await open().query(sql, { maxRows: MAX_ROWS });
@@ -123,12 +123,13 @@ export function moneyTools({ money: open, today = localDay, authorize }) {
     },
     {
       name: 'classify_expenses',
-      description: "Put expenses in a category: by id (from next_pending_expenses or query_expenses), or every expense of a merchant or recipient. By default the merchant's next expenses arrive in that category (learn: false to not). Changing the category of an expense that already has one asks for the user's password or fingerprint.",
+      description: "Put expenses in a category: by id (from next_pending_expenses or query_expenses), or every expense of a merchant or recipient. By default the merchant's next expenses arrive in that category (learn: false to not). When the user says a note with the category (\"comida, almuerzo con el equipo\": category Comida, note \"almuerzo con el equipo\"), pass it as note with the ids. Changing the category of an expense that already has one asks for the user's password or fingerprint; the note never does.",
       parameters: z.object({
         category: z.string().min(1).max(40),
         ids: z.array(z.number().int().positive()).max(200).optional(),
         merchant: z.string().min(1).max(200).optional().describe('a merchant or recipient name, instead of ids'),
         learn: z.boolean().optional(),
+        note: z.string().max(200).optional().describe('what the user said about these expenses, only with ids; "" removes it'),
       }),
       execute: async (args) => text(await ops.classify(args)),
     },
@@ -172,6 +173,33 @@ export function moneyTools({ money: open, today = localDay, authorize }) {
         }
         if (!merchant) throw new Error('say which recipient: merchant');
         return text(await ops.ownAccount({ action, merchant }));
+      },
+    },
+    {
+      name: 'edit_entry',
+      description: "Correct an expense or income as the user says (from query_expenses or next_pending_expenses by id): amount, currency, date, description, category, note, expense or income, and whether an income is their salary (pay periods start on the salary's date). Only what is passed changes. Changing what a bank mail said (amount, currency, date, description) asks for the user's password or fingerprint, and the bank's values are kept so the edit can be undone; so does changing a category the entry already has. A note never asks. Only entries added by hand switch between expense and income.",
+      parameters: z.object({
+        id: z.number().int().positive(),
+        amount: amount.optional(), currency, date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional().describe('YYYY-MM-DD'),
+        description: z.string().min(1).max(200).optional(),
+        category: z.string().max(40).optional().describe('a category name; "" removes it'),
+        note: z.string().max(200).optional().describe('what the user said about it; "" removes it'),
+        kind: z.enum(['expense', 'income']).optional(),
+        salary: z.boolean().optional().describe('income only: true when it is the user\'s salary'),
+      }),
+      execute: async (args) => text(await ops.editEntry(args)),
+    },
+    {
+      name: 'period_balance',
+      description: "The user's balance in a pay period: a period starts on the date of the income marked as their salary and lasts until the day before the next one (paid around the 26th; while a month's salary hasn't come, the 26th is assumed). Per currency: what was left from before (carried in) + income - spending = balance, and the periods there are. Use it for \"how much do I have left until payday\"; mark the salary with edit_entry (salary: true).",
+      parameters: z.object({ date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional().describe('any day of the period, YYYY-MM-DD; the current period if left out') }),
+      execute: async ({ date }) => {
+        const v = await ops.overview({ period: date });
+        const p = v.period;
+        const lines = p.by_currency.map((c) => `${c.currency}: carried in ${money(c.carry_in, c.currency)} + income ${money(c.income, c.currency)} - spending ${money(c.spending, c.currency)} = ${money(c.balance, c.currency)}`);
+        return [`Period ${p.start} to ${p.end} (${v.periods.find((x) => x.start === p.start)?.salary ? `from the salary on ${p.start}` : 'from the 26th; no salary marked yet'}):`,
+          ...(lines.length ? lines : ['Nothing recorded yet.']),
+          `Periods: ${v.periods.slice(-6).map((x) => `${x.start} to ${x.end}`).join(', ')}`].join('\n');
       },
     },
   ];

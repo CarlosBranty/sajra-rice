@@ -112,7 +112,19 @@ export const MIGRATIONS = [
       );
     `);
   },
+  // 4: salary (1 on the income the user marks as their salary: pay periods start there); original (JSON of the fields
+  // a bank mail gave, kept when the user first edits one of them, so the edit can be reverted; NULL when never edited);
+  // edited_at (when the user last edited the entry). Added columns: every row stays as it was.
+  (db) => {
+    db.exec(`
+      ALTER TABLE expenses ADD COLUMN salary INTEGER NOT NULL DEFAULT 0 CHECK (salary IN (0, 1));
+      ALTER TABLE expenses ADD COLUMN original TEXT;
+      ALTER TABLE expenses ADD COLUMN edited_at TEXT;
+    `);
+  },
 ];
+// The fields of an entry read from a bank mail that the user can correct (kept in `original` before the first edit).
+export const BANK_FIELDS = ['occurred_at', 'amount', 'currency', 'merchant'];
 export const SCHEMA_VERSION = MIGRATIONS.length;
 
 // Runs fn in one transaction; inside another one it is part of that one.
@@ -129,12 +141,19 @@ function transaction(db, fn) {
   }
 }
 
-function migrate(db) {
+// Before an existing database is migrated it is copied whole (VACUUM INTO: a consistent copy) to
+// <file>.bak-v<its version> next to it, private like it; a backup already there is never overwritten.
+function migrate(db, file) {
   db.exec('CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL)');
   const row = db.prepare('SELECT version FROM schema_version').get();
   if (!row) db.exec('INSERT INTO schema_version (version) VALUES (0)');
   const from = row?.version ?? 0;
   if (from > SCHEMA_VERSION) throw new Error(`money.db is at schema ${from}, newer than this Hanami (${SCHEMA_VERSION})`);
+  const backup = `${file}.bak-v${from}`;
+  if (from > 0 && from < SCHEMA_VERSION && !fs.existsSync(backup)) {
+    db.prepare('VACUUM INTO ?').run(backup);
+    if (process.platform !== 'win32') fs.chmodSync(backup, 0o600);
+  }
   for (let v = from; v < SCHEMA_VERSION; v++) {
     transaction(db, () => {
       MIGRATIONS[v](db, new Date().toISOString());
@@ -151,7 +170,7 @@ export function openStore(file) {
   const db = new DatabaseSync(file);
   try {
     db.exec('PRAGMA busy_timeout = 3000');
-    migrate(db);
+    migrate(db, file);
   } catch (e) {
     db.close();
     throw e;
@@ -184,13 +203,14 @@ export function openStore(file) {
 
   /** Stores a parsed expense once. Same Message-ID → duplicate. Same bank operation number → duplicate, unless the
    * mail is newer and the amount changed (e-commerce purchases settle later): then the amount is replaced, the old
-   * one kept in previous_amount, and the category stays. A new expense whose merchant has a rule arrives classified. */
+   * one kept in previous_amount, and the category stays; never when the user edited it. A new expense whose merchant has a rule arrives classified. */
   function addExpense(e) {
     return transaction(db, () => {
       const byMessage = e.messageId ? db.prepare('SELECT id FROM expenses WHERE message_id = ?').get(e.messageId) : null;
       if (byMessage) return { action: 'duplicate', id: byMessage.id };
-      const same = e.operation ? db.prepare('SELECT id, amount, mail_date FROM expenses WHERE source = ? AND operation = ?').get(e.source, e.operation) : null;
+      const same = e.operation ? db.prepare('SELECT id, amount, mail_date, edited_at FROM expenses WHERE source = ? AND operation = ?').get(e.source, e.operation) : null;
       if (same) {
+        if (same.edited_at) return { action: 'duplicate', id: same.id }; // the user's correction wins over any mail
         const newer = !same.mail_date || !e.mailDate || e.mailDate > same.mail_date;
         if (!newer || same.amount === e.amount) return { action: 'duplicate', id: same.id };
         db.prepare('UPDATE expenses SET previous_amount = amount, amount = ?, fee = ?, message_id = ?, mail_date = ?, updated_at = ? WHERE id = ?')
@@ -275,6 +295,32 @@ export function openStore(file) {
     return key;
   }
 
+  /** Applies an edit the user made (ops.mjs plans and protects it): `set` holds new values for the columns occurred_at,
+   * amount, currency, merchant, merchant_key, kind, category, status, salary, note. A change of the note alone is no
+   * edit (edited_at and original stay; a later mail may still settle the amount). When a bank-read field (BANK_FIELDS) of an
+   * entry read from a mail changes for the first time, the values it had are kept in `original`. */
+  function editEntry(id, set) {
+    return transaction(db, () => {
+      const e = db.prepare('SELECT * FROM expenses WHERE id = ?').get(id);
+      if (!e) throw new Error(`no expense ${id}`);
+      const cols = Object.keys(set).filter((k) => ['occurred_at', 'amount', 'currency', 'merchant', 'merchant_key', 'kind', 'category', 'status', 'salary', 'note'].includes(k));
+      const edited = cols.some((k) => k !== 'note') ? now() : e.edited_at;
+      const bankEdit = e.source !== 'manual' && cols.some((k) => BANK_FIELDS.includes(k) && set[k] !== e[k]);
+      const original = bankEdit && e.original == null ? JSON.stringify(Object.fromEntries(BANK_FIELDS.map((k) => [k, e[k]]))) : e.original;
+      db.prepare(`UPDATE expenses SET ${cols.map((k) => `${k} = ?`).join(', ')}${cols.length ? ', ' : ''}original = ?, edited_at = ?, updated_at = ? WHERE id = ?`)
+        .run(...cols.map((k) => set[k]), original, edited, now(), id);
+    });
+  }
+
+  /** Puts back the values a bank mail gave an entry the user edited; it is no longer edited. */
+  function revertEntry(id) {
+    const e = db.prepare('SELECT original FROM expenses WHERE id = ?').get(id);
+    if (!e?.original) throw new Error(`#${id} has nothing to revert`);
+    const o = JSON.parse(e.original);
+    db.prepare(`UPDATE expenses SET ${BANK_FIELDS.map((k) => `${k} = ?`).join(', ')}, original = NULL, edited_at = NULL, updated_at = ? WHERE id = ?`)
+      .run(...BANK_FIELDS.map((k) => o[k]), now(), id);
+  }
+
   function addCategory(name) {
     const n = String(name ?? '').trim();
     if (!n || n.length > 40) throw new Error('a category name is 1 to 40 characters');
@@ -293,13 +339,27 @@ export function openStore(file) {
   }
 
   return {
-    db, file, addExpense, classify, unclassify, setRule, addCategory, renameCategory, deleteCategory, recipientKey, markOwnAccount, unmarkOwnAccount,
+    db, file, addExpense, editEntry, revertEntry, classify, unclassify, setRule, addCategory, renameCategory, deleteCategory, recipientKey, markOwnAccount, unmarkOwnAccount,
     /** fn() in one transaction (the store's own changes inside it join it). */
     atomic: (fn) => transaction(db, fn),
     expense: (id) => db.prepare('SELECT * FROM expenses WHERE id = ?').get(id),
     /** The canonical name of a category, or throws. */
     categoryName: canonical,
     categories: () => db.prepare('SELECT name FROM categories ORDER BY position').all().map((r) => r.name),
+    /** Marks (or unmarks) an income as the user's salary. */
+    setSalary(id, on) {
+      if (!db.prepare('UPDATE expenses SET salary = ?, updated_at = ? WHERE id = ?').run(on ? 1 : 0, now(), id).changes) throw new Error(`no expense ${id}`);
+    },
+    /** Per local day and currency, the income and the spending (as balance() counts them), oldest first. */
+    dailyTotals: () => db.prepare(`SELECT substr(occurred_at, 1, 10) AS day, currency,
+        coalesce(SUM(CASE WHEN ${INCOME} THEN amount END), 0) AS income, coalesce(SUM(CASE WHEN ${SPENDING} THEN amount END), 0) AS spending
+      FROM expenses GROUP BY day, currency ORDER BY day, currency`).all(),
+    /** The local dates of the income marked as salary (not ignored), oldest first. */
+    salaryDates: () => db.prepare(`SELECT DISTINCT substr(occurred_at, 1, 10) AS day FROM expenses WHERE salary = 1 AND ${INCOME} ORDER BY day`).all().map((r) => r.day),
+    /** The local date of the first entry, or null. */
+    firstDay: () => db.prepare('SELECT substr(min(occurred_at), 1, 10) AS day FROM expenses').get().day ?? null,
+    /** Every entry on the local days from..to, newest first. */
+    between: (from, to) => db.prepare('SELECT * FROM expenses WHERE substr(occurred_at, 1, 10) BETWEEN ? AND ? ORDER BY occurred_at DESC, id DESC').all(from, to),
     /** Deletes an entry the user added by hand (never one read from a mail). */
     deleteManual(id) {
       if (!db.prepare("DELETE FROM expenses WHERE id = ? AND source = 'manual'").run(id).changes) throw new Error(`no entry added by hand with id ${id}`);

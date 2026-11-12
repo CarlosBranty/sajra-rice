@@ -29,9 +29,14 @@ const query = z.object({
 const amount = z.string().trim().regex(/^\d{1,9}([.,]\d{1,2})?$/, 'an amount like 20.50').transform((s) => Number(s.replace(',', '.')))
   .pipe(z.number().positive().max(100000000));
 const withQuery = { query: query.optional() };
+const day = z.string().regex(/^\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])$/, 'a date like 2026-10-26');
+const look = { period: day.optional(), range: z.enum(['1m', '3m', '6m', '1y']).optional() };
+// The overview to answer with after a change (the period and range the page shows); today's period if left out.
+const withLook = { look: z.object(look).strict().optional() };
+const note = z.string().max(200).nullable(); // '' or null: no note
 const MESSAGES = {
   list: z.object({ ...withQuery }).strict(),
-  classify: z.object({ ids, category, create: z.boolean().optional(), ...withQuery }).strict(),
+  classify: z.object({ ids, category, create: z.boolean().optional(), note: note.optional(), ...withQuery }).strict(),
   unclassify: z.object({ ids, ...withQuery }).strict(),
   rename_category: z.object({ from: category, to: category, ...withQuery }).strict(),
   delete_category: z.object({ name: category, ...withQuery }).strict(),
@@ -44,7 +49,17 @@ const MESSAGES = {
   }).strict())),
   delete_entry: z.object({ id, ...withQuery }).strict(),
   own: z.object({ action: z.enum(['mark', 'unmark']), key: z.string().trim().min(1).max(200), ...withQuery }).strict(),
+  // The overview (pay periods, S12) and the changes made from it; each answers with the overview.
+  overview: z.object(look).strict(),
+  edit_entry: z.object({
+    id, amount: amount.or(z.number().positive().max(100000000)).optional(), currency: z.enum(['PEN', 'USD']).optional(), date: day.optional(),
+    description: z.string().trim().min(1).max(200).optional(), category: category.nullable().optional(), kind: z.enum(['expense', 'income']).optional(),
+    salary: z.boolean().optional(), note: note.optional(), ...withLook,
+  }).strict(),
+  revert_entry: z.object({ id, ...withLook }).strict(),
+  set_salary: z.object({ id, on: z.boolean(), ...withLook }).strict(),
 };
+const OVERVIEW = new Set(['overview', 'edit_entry', 'revert_entry', 'set_salary']);
 
 /** money(): the open money store; today(): the local date; authorize(reason): as for the agent's tools (ops.mjs). */
 export function moneyPanel({ money: open, today = localDay, authorize }) {
@@ -84,7 +99,7 @@ export function moneyPanel({ money: open, today = localDay, authorize }) {
       case 'classify': {
         // A new category typed in the same control: made first (kept even if the change is then refused).
         if (a.create && !open().categories().some((c) => c.toLowerCase() === a.category.toLowerCase())) await ops.addCategory({ name: a.category });
-        return ops.classify({ category: a.category, ids: a.ids });
+        return ops.classify({ category: a.category, ids: a.ids, ...(a.note !== undefined && { note: a.note }) });
       }
       case 'unclassify': return ops.unclassify({ ids: a.ids });
       case 'rename_category': return ops.renameCategory({ from: a.from, to: a.to });
@@ -94,6 +109,13 @@ export function moneyPanel({ money: open, today = localDay, authorize }) {
         : ops.addExpense({ amount: a.amount, currency: a.currency, date: a.date, description: a.description, category: a.category });
       case 'delete_entry': return ops.deleteEntry({ id: a.id });
       case 'own': return ops.ownAccount({ action: a.action, merchant: a.key });
+      case 'overview': return { ok: true };
+      case 'edit_entry': {
+        const { id: entry, look: _, ...fields } = a;
+        return ops.editEntry({ id: entry, ...fields });
+      }
+      case 'revert_entry': return ops.revertEntry({ id: a.id });
+      case 'set_salary': return ops.setSalary({ id: a.id, on: a.on });
     }
   }
 
@@ -114,7 +136,15 @@ export function moneyPanel({ money: open, today = localDay, authorize }) {
       try {
         r = await run(op, a);
       } catch (e) {
-        return { ok: false, text: `${op === 'list' ? "Couldn't list" : 'Not changed'}: ${String(e?.message ?? e).slice(0, 200)}` };
+        return { ok: false, text: `${op === 'list' ? "Couldn't list" : op === 'overview' ? "Couldn't show it" : 'Not changed'}: ${String(e?.message ?? e).slice(0, 200)}` };
+      }
+      // The overview ops answer with the overview ({ kind: 'money', view: 'overview', ... }), the rest with the table.
+      if (OVERVIEW.has(op)) {
+        try {
+          return { ...r, view: await ops.overview(op === 'overview' ? a : a.look ?? {}) };
+        } catch (e) {
+          return { ...r, ok: op === 'overview' ? false : r.ok, text: r.text ?? `Couldn't show it: ${String(e?.message ?? e).slice(0, 200)}` };
+        }
       }
       try {
         return { ...r, view: view(a.query) };

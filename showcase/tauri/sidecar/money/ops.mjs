@@ -4,7 +4,9 @@
 // own account over classified transfers) first ask authorize(reason) for the user's password or fingerprint and
 // change nothing unless it answers true. Each operation → { ok, text } (ok: false when nothing was changed because
 // the user did not confirm), or throws why it cannot be done.
-import { NOT_SPENDING } from './banks.mjs';
+import { INCOME_KINDS, NOT_SPENDING } from './banks.mjs';
+import { merchantKey } from './parse.mjs';
+import { addDays, periodOf, periodsFor, weekStart } from './periods.mjs';
 
 const SYMBOL = { PEN: 'S/', USD: 'US$' };
 const SHOWN = 5;
@@ -22,6 +24,13 @@ const NOT_EXPENSE = { transfer_in: 'money received', income: 'income', own_trans
 const short = (e) => `#${e.id} ${e.merchant ?? e.note ?? e.kind}, ${money(e.amount, e.currency)}, ${e.occurred_at.slice(0, 10)}`;
 const some = (items, fn) => items.slice(0, SHOWN).map(fn).join('; ') + (items.length > SHOWN ? `; and ${items.length - SHOWN} more` : '');
 const cents = (n) => Math.round(n * 100);
+/** How an entry counts: 'income', 'expense', or 'other' (not counted: moved between own accounts, refused, ignored). */
+export const direction = (e) => (e.status === 'ignored' || (NOT_SPENDING.includes(e.kind) && !INCOME_KINDS.includes(e.kind)) ? 'other'
+  : INCOME_KINDS.includes(e.kind) ? 'income' : 'expense');
+const isIncome = (e) => direction(e) === 'income';
+const MAIN = 'PEN';
+const cleanNote = (n) => (n == null ? null : String(n).trim().slice(0, 200) || null);
+const RANGE_DAYS = { '1m': 30, '3m': 91, '6m': 182, '1y': 365 };
 
 /** A local date (YYYY-MM-DD) → an ISO time with the local offset: now on the real today, else noon. */
 export function localTime(date) {
@@ -54,6 +63,9 @@ export function moneyOps({ money: open, today = localDay, authorize }) {
     });
   }
   const expenseById = (m, id) => m.expense(id) ?? (() => { throw new Error(`no expense ${id}`); })();
+  const sourceName = (m, source) => (source === 'manual' ? 'By hand' : m.definitions?.find((d) => d.id === source)?.name ?? source.toUpperCase());
+  // "the BCP expense of S/ 45.00 on 2026-10-03": how an entry is named in an edit's confirmation.
+  const named = (m, e) => `the ${e.source === 'manual' ? 'hand-added' : sourceName(m, e.source)} ${{ income: 'income', expense: 'expense', other: 'entry' }[direction(e)]} of ${money(e.amount, e.currency)} on ${e.occurred_at.slice(0, 10)}`;
 
   return {
     addCategory: async ({ name }) => ({ ok: true, text: `Added the category "${open().addCategory(name)}".` }),
@@ -86,10 +98,14 @@ export function moneyOps({ money: open, today = localDay, authorize }) {
       });
     },
 
-    /** By ids, or every expense of a merchant; learn: the merchant's next expenses arrive in that category. */
-    classify: async ({ category, ids, merchant, learn = true }) => {
+    /** By ids, or every expense of a merchant; learn: the merchant's next expenses arrive in that category; note (only
+     * with ids): what the user said about them, set on each (never protected by itself). */
+    classify: async ({ category, ids, merchant, learn = true, note }) => {
       const m = open();
       if (!ids?.length && !merchant) throw new Error('say which expenses: ids or a merchant');
+      if (note !== undefined && !ids?.length) throw new Error('a note goes with ids, not with every expense of a merchant');
+      const noted = note === undefined ? null : cleanNote(note);
+      const setNote = (rows) => { if (note !== undefined) for (const e of rows) if (e.note !== noted) m.editEntry(e.id, { note: noted }); };
       return change(m, () => {
         const name = m.categoryName(category);
         const rows = ids?.length
@@ -98,14 +114,17 @@ export function moneyOps({ money: open, today = localDay, authorize }) {
         if (!rows.length) throw new Error(`no expenses from ${merchant}`);
         for (const e of rows) if (!isExpense(e)) throw new Error(`#${e.id} is ${NOT_EXPENSE[e.kind] ?? 'not counted as spending'}, not an expense to classify`);
         const todo = rows.filter((e) => e.category !== name);
-        if (!todo.length) return { reason: '', protect: false, apply: () => `Nothing to change: ${rows.length === 1 ? 'it is' : `all ${rows.length} are`} already in ${name}.` };
+        const withNote = note === undefined ? '' : noted ? ` with the note "${noted}"` : ' and remove their note';
+        if (!todo.length) {
+          return { reason: '', protect: false, apply: () => { setNote(rows); return `${note === undefined ? 'Nothing to change: ' : noted ? `Set the note "${noted}"; ` : 'Removed the note; '}${rows.length === 1 ? 'it is' : `all ${rows.length} are`} already in ${name}.`; } };
+        }
         const moved = todo.filter((e) => e.category), fresh = todo.length - moved.length;
         const reason = moved.length
           ? `Change the category of ${count(moved.length)}: ${some(moved, (e) => `${short(e)}, from ${e.category} to ${name}`)}${fresh ? `; and put ${count(fresh)} with no category in ${name}` : ''}`
           : `Put ${count(todo.length)} in ${name}`;
         return {
           reason, protect: moved.length > 0,
-          apply: () => { for (const e of todo) m.classify(e.id, name, { learn }); return `Put ${count(todo.length)} in ${name}.`; },
+          apply: () => { for (const e of todo) m.classify(e.id, name, { learn }); setNote(rows); return `Put ${count(todo.length)} in ${name}${withNote}.`; },
         };
       });
     },
@@ -151,6 +170,145 @@ export function moneyOps({ money: open, today = localDay, authorize }) {
         if (e.source !== 'manual') throw new Error(`#${id} came from a bank mail: only entries added by hand can be deleted`);
         return { reason: `Delete the ${e.kind === 'income' ? 'income' : 'expense'} added by hand ${short(e)}`, protect: true, apply: () => { m.deleteManual(id); return `Deleted #${id}.`; } };
       });
+    },
+
+    /** Corrects an entry: amount (soles or dollars), currency, date (YYYY-MM-DD; the time of day stays), description,
+     * category (a name; null or '' removes it), note (what the user says about it; null or '' removes it; never
+     * protected and never counted as an edit), kind 'expense' | 'income', salary. Every entry is editable. Asks
+     * authorize first when a field a bank mail gave (amount, currency, date, description) changes on an entry read from
+     * a mail (its values are then kept in `original`, so revertEntry can put them back, and a later read of the mail
+     * never overwrites the correction), and when a category the entry already has is changed or removed (as classify
+     * does). Kind: only entries added by hand switch between expense and income (an expense becomes kind 'purchase',
+     * waiting for a category; an income is kind 'income' with no category); an entry read from a mail keeps the kind
+     * the bank said (a transfer to the user's own account is marked with ownAccount instead). */
+    editEntry: async ({ id, amount, currency, date, description, category, kind, salary, note }) => {
+      const m = open();
+      return change(m, () => {
+        const e = expenseById(m, id);
+        const manual = e.source === 'manual', set = {}, said = [];
+        if (kind !== undefined && kind !== direction(e)) {
+          if (!manual || direction(e) === 'other') throw new Error(`#${id} came from a bank mail: it stays the kind the bank said (a transfer to the user's own account is marked as an own account instead)`);
+          if (kind === 'income') Object.assign(set, { kind: 'income', category: null, status: 'classified' });
+          else Object.assign(set, { kind: 'purchase', status: 'pending', salary: 0 });
+          said.push(kind === 'income' ? 'make it an income' : 'make it an expense');
+        }
+        const after = { ...e, ...set };
+        if (amount !== undefined && cents(amount) !== e.amount) { set.amount = cents(amount); said.push(`amount to ${money(set.amount, currency ?? e.currency)}`); }
+        if (currency !== undefined && currency !== e.currency) { set.currency = currency; said.push(`currency to ${currency}`); }
+        if (date !== undefined) {
+          localTime(date); // checks it
+          const at = `${date}${e.occurred_at.slice(10)}`;
+          if (at !== e.occurred_at) { set.occurred_at = at; said.push(`date to ${date}`); }
+        }
+        if (description !== undefined) {
+          const d = String(description).trim();
+          if (!d) throw new Error('a description is not empty');
+          // An entry read from a mail keeps the bank's recipient key (its rules and own account follow it).
+          if (d !== e.merchant) { set.merchant = d; if (manual) set.merchant_key = merchantKey(d) || null; said.push(`description to "${d}"`); }
+        }
+        let moved = false;
+        if (category !== undefined) {
+          const name = category === null || category === '' ? null : m.categoryName(category);
+          const was = after.category;
+          if (name && direction(after) !== 'expense') throw new Error(`#${id} is not an expense: only expenses have a category`);
+          if (name !== was) {
+            set.category = name;
+            set.status = name ? 'classified' : after.status === 'classified' && direction(after) === 'expense' ? 'pending' : after.status;
+            moved = was != null;
+            said.push(name ? `category ${was ? `from ${was} ` : ''}to ${name}` : `remove the category ${was}`);
+          }
+        }
+        if (salary !== undefined && (salary ? 1 : 0) !== ('salary' in set ? set.salary : e.salary)) {
+          if (salary && direction(after) !== 'income') throw new Error(`#${id} is not an income: only income can be the salary`);
+          set.salary = salary ? 1 : 0;
+          said.push(salary ? 'mark it as the salary' : 'unmark it as the salary');
+        }
+        if (note !== undefined && cleanNote(note) !== e.note) {
+          set.note = cleanNote(note);
+          said.push(set.note ? `note "${set.note}"` : 'remove the note');
+        }
+        if (!said.length) return { reason: '', protect: false, apply: () => `Nothing to change in #${id}.` };
+        const bankEdit = !manual && ['amount', 'currency', 'occurred_at', 'merchant'].some((k) => k in set);
+        return {
+          reason: `Edit ${named(m, e)}: ${said.join(', ')}`, protect: bankEdit || moved,
+          apply: () => { m.editEntry(id, set); return `Edited #${id}: ${said.join(', ')}.`; },
+        };
+      });
+    },
+
+    /** Puts back what the bank mail said in an entry the user edited (always asks authorize). */
+    revertEntry: async ({ id }) => {
+      const m = open();
+      return change(m, () => {
+        const e = expenseById(m, id);
+        if (!e.original) throw new Error(`#${id} has nothing to revert: it was never edited from what a bank mail said`);
+        const o = JSON.parse(e.original);
+        return {
+          reason: `Revert ${named(m, e)} to what the bank mail said: ${money(o.amount, o.currency)} on ${o.occurred_at.slice(0, 10)}, "${o.merchant ?? ''}"`, protect: true,
+          apply: () => { m.revertEntry(id); return `Reverted #${id} to what the bank mail said.`; },
+        };
+      });
+    },
+
+    /** Marks (on) or unmarks an income as the user's salary: pay periods start on its date. Not protected. */
+    setSalary: async ({ id, on }) => {
+      const m = open();
+      const e = expenseById(m, id);
+      if (on && !isIncome(e)) throw new Error(`#${id} is not an income: only income can be the salary`);
+      m.setSalary(id, on);
+      return { ok: true, text: on ? `#${id} is the salary: a pay period starts on ${e.occurred_at.slice(0, 10)}.` : `#${id} is no longer the salary.` };
+    },
+
+    /** The pay periods (periods.mjs) and the one holding `period` (any date in it; today's if left out) with its carry-in,
+     * income, spending and balance (carry-in + income - spending) per currency; its movements by week, newest first;
+     * its sources; the end-of-day balance of the main currency over `range` up to today; the categories. Amounts in cents. */
+    overview: async ({ period, range = '1m' } = {}) => {
+      const m = open();
+      const t = today();
+      const periods = periodsFor({ salaries: m.salaryDates(), first: m.firstDay(), today: t });
+      const p = period ? periodOf(periods, period) : periodOf(periods, t) ?? periods.at(-1);
+      if (!p) throw new Error(`no period holds ${period}`);
+      const days = m.dailyTotals();
+      const sums = (currency) => {
+        let carry = 0, income = 0, spending = 0;
+        for (const d of days) {
+          if (d.currency !== currency) continue;
+          if (d.day < p.start) carry += d.income - d.spending;
+          else if (d.day <= p.end) { income += d.income; spending += d.spending; }
+        }
+        return { currency, carry_in: carry, income, spending, balance: carry + income - spending };
+      };
+      const { currency: _, ...main } = sums(MAIN);
+      const rows = m.between(p.start, p.end);
+      const weeks = [];
+      for (const e of rows) {
+        const day = e.occurred_at.slice(0, 10), from = weekStart(day) < p.start ? p.start : weekStart(day);
+        if (weeks.at(-1)?.from !== from) weeks.push({ from, to: addDays(weekStart(day), 6) > p.end ? p.end : addDays(weekStart(day), 6), items: [] });
+        weeks.at(-1).items.push({
+          id: e.id, date: day, kind: direction(e), amount: e.amount, currency: e.currency, description: e.merchant ?? e.note ?? e.kind, category: e.category,
+          source: e.source, salary: e.salary === 1, edited: e.edited_at != null, editable: true, protected: e.source !== 'manual', revertible: e.original != null, note: e.note,
+        });
+      }
+      const accounts = [...new Set(rows.map((e) => e.source))].sort().map((source) => {
+        const of = rows.filter((e) => e.source === source), main_ = of.filter((e) => e.currency === MAIN);
+        const total = (list) => list.reduce((s, e) => s + e.amount, 0);
+        return { source, label: sourceName(m, source), income: total(main_.filter(isIncome)), spending: total(main_.filter(isExpense)), count: of.length };
+      });
+      const from = addDays(t, -RANGE_DAYS[range]);
+      let balance = 0;
+      const daily = new Map();
+      for (const d of days) {
+        if (d.currency !== MAIN) continue;
+        if (d.day < from) balance += d.income - d.spending;
+        else daily.set(d.day, d.income - d.spending);
+      }
+      const points = [];
+      for (let day = from; day <= t; day = addDays(day, 1)) { balance += daily.get(day) ?? 0; points.push({ date: day, balance }); }
+      return {
+        kind: 'money', view: 'overview', currency: MAIN, periods,
+        period: { start: p.start, end: p.end, ...main, by_currency: [...new Set(days.filter((d) => d.day <= p.end).map((d) => d.currency))].sort().map(sums) },
+        weeks, accounts, series: { range, points }, categories: m.categories(),
+      };
     },
 
     /** action 'mark' or 'unmark' a recipient (a merchant or recipient name, or its merchant_key) as the user's own account. */

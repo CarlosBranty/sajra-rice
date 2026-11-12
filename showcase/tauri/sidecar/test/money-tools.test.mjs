@@ -47,7 +47,7 @@ const asked = [];
 const authorize = async (reason) => { asked.push(reason); if (answer instanceof Error) throw answer; return answer; };
 const tools = moneyTools({ money: () => m, today: () => '2026-11-11', authorize });
 assert.deepEqual(tools.map((t) => t.name), ['spending', 'balance', 'query_expenses', 'categories', 'add_category', 'rename_category', 'delete_category',
-  'next_pending_expenses', 'classify_expenses', 'unclassify_expenses', 'add_expense', 'add_income', 'delete_entry', 'own_accounts']);
+  'next_pending_expenses', 'classify_expenses', 'unclassify_expenses', 'add_expense', 'add_income', 'delete_entry', 'own_accounts', 'edit_entry', 'period_balance']);
 
 // Every provider accepts the schemas (no string formats, flat objects).
 for (const t of tools) {
