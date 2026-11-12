@@ -44,6 +44,41 @@ fn wake_cmds(wake: &(Option<String>, bool), fresh: bool) -> Vec<Value> {
     }
 }
 
+/// Dictation (Linux, `roamies --dictate`): the next take's words are typed where the keyboard is, in whatever app
+/// has it (wtype), instead of going to the agent. Nothing extra runs for it: the voice helper and its model already
+/// listen for the talk shortcut. A second press ends the take, as with `--talk`; so does a pause.
+#[cfg(target_os = "linux")]
+static DICTATE: AtomicBool = AtomicBool::new(false);
+
+#[cfg(target_os = "linux")]
+pub(crate) fn dictate(app: &AppHandle) {
+    // No helper (voice control off, no model yet): nothing listens, and the flag would turn the next take into one.
+    if app.state::<Voice>().0.lock().unwrap().is_none() {
+        eprintln!("dictation: voice control is off");
+        return;
+    }
+    DICTATE.store(true, Ordering::Relaxed);
+    to_voice(app, &json!({ "cmd": "toggle" }));
+}
+
+/// What dictation types for a take's words: them and a space, so the next dictation doesn't run into them; nothing
+/// for no words.
+#[cfg(target_os = "linux")]
+fn dictation_text(text: &str) -> Option<String> {
+    let t = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    (!t.is_empty()).then(|| format!("{t} "))
+}
+
+/// Types the words into the app that has the keyboard, on a thread of its own (wtype takes a moment per word).
+#[cfg(target_os = "linux")]
+fn type_dictation(text: String) {
+    thread::spawn(move || match Command::new("wtype").arg("--").arg(&text).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::piped()).output() {
+        Ok(o) if o.status.success() => {}
+        Ok(o) => eprintln!("dictation: wtype failed: {}", String::from_utf8_lossy(&o.stderr).trim()),
+        Err(e) => eprintln!("dictation: wtype could not run ({e}); install wtype to type dictated words"),
+    });
+}
+
 /// The microphone the user picked (Linux, the Voice page): a PipeWire/PulseAudio source's name, "" for the system's
 /// default. The helper records through ALSA's default device, which on PipeWire and PulseAudio desktops is their
 /// plugin: it goes to the node named in PIPEWIRE_NODE (pipewire-alsa) or PULSE_SOURCE (the pulse plugin).
@@ -409,10 +444,22 @@ fn handle_voice(app: &AppHandle, msg: Value) {
             if msg.get("state").and_then(Value::as_str) == Some("listening") {
                 crate::linux::pen_clear();
             }
+            // A dictation that ended with no words: the next take is an ordinary one again.
+            #[cfg(target_os = "linux")]
+            if msg.get("state").and_then(Value::as_str) == Some("idle") {
+                DICTATE.store(false, Ordering::Relaxed);
+            }
             to_overlays(app, &ui);
             to_sidecar(app, &json!({ "type": "voice_state", "state": msg.get("state") }));
         }
         Some("partial") | Some("level") => to_overlays(app, &ui),
+        // Dictation: the words are typed, never asked.
+        #[cfg(target_os = "linux")]
+        Some("final") if DICTATE.swap(false, Ordering::Relaxed) => {
+            if let Some(t) = dictation_text(msg.get("text").and_then(Value::as_str).unwrap_or("")) {
+                type_dictation(t);
+            }
+        }
         Some("final") => {
             to_overlays(app, &ui);
             // Linux on a layer surface: strokes drawn with the mouse during the take make the area here, in the
@@ -475,6 +522,14 @@ mod tests {
         assert_eq!(device_of(&json!({ "enabled": true }), "mic"), "", "an older sidecar says nothing: the default");
         assert_eq!(mic_env(""), Vec::<(&str, String)>::new(), "the default: the environment as it is");
         assert_eq!(mic_env(usb), vec![("PIPEWIRE_NODE", usb.to_string()), ("PULSE_SOURCE", usb.to_string())]);
+    }
+
+    #[test]
+    fn dictated_words_are_typed_with_a_space_after_them() {
+        assert_eq!(dictation_text("Hola, ¿cómo estás?"), Some("Hola, ¿cómo estás? ".to_string()));
+        assert_eq!(dictation_text("  git   status \n"), Some("git status ".to_string()), "spaces tidied");
+        assert_eq!(dictation_text(""), None);
+        assert_eq!(dictation_text("   "), None, "no words: nothing typed");
     }
 
     #[test]

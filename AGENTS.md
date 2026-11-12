@@ -92,6 +92,9 @@ opened at run time; the configs are compiled in and written for each attempt to 
 The password goes from the page to the shell (`auth_password`), never to the sidecar or logs. Only the shell reports
 `auth_result`: `sidecar_send` drops `auth*` from pages. Elsewhere `authorize` returns false. `safety.mjs` blocks agent
 writes and commands that touch `money.db`, `mail.db` or `<data dir>/banks/`.
+Dictation (Linux): `roamies --dictate` (bound to a key like `--talk`) starts a take in the running voice helper whose
+words are typed where the keyboard is with `wtype` (`voice.rs` `dictate`, `dictation_text`), not sent to the agent: no
+model or process of its own. A second press or a pause ends it.
 Devices (Linux, the Voice page's Devices tab): the microphones and speakers come from `pactl -f json list
 sources|sinks` (`sidecar/audiodev.mjs`, monitors left out); a pick is a device name, '' the system's default. The voice
 helper is started with `PIPEWIRE_NODE` and `PULSE_SOURCE` set to the microphone (`voice.rs` `set_mic`; a change
