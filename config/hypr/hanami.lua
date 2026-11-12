@@ -31,6 +31,10 @@ hl.bind("CTRL + ALT + Space", hl.dsp.exec_cmd(bin .. " --talk"))
 hl.bind("CTRL + ALT + D", hl.dsp.exec_cmd(bin .. " --dictate"))
 hl.bind("CTRL + ALT + D", hl.dsp.exec_cmd(bin .. " --dictate-end"), { release = true })
 
+-- Ctrl+Alt+H opens its settings as a glyph side panel (the shell's hanami/ module, over Hanami's panel socket); Esc or a
+-- click beside it closes it
+hl.bind("CTRL + ALT + H", hl.dsp.global("shell:hanami"))
+
 -- Start it at login. Hyprland doesn't read ~/.config/autostart, so it starts here
 hl.on("hyprland.start", function()
     hl.exec_cmd(bin)

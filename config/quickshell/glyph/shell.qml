@@ -11,6 +11,7 @@ import "charms"
 import "clip"
 import "deck"
 import "glyph"
+import "hanami"
 import "home"
 import "launcher"
 import "music"
@@ -45,6 +46,8 @@ ShellRoot {
     Shot { id: shot }
     Vpn { id: vpn }
     Walls { id: walls }
+    // Hanami (the assistant, optional): its settings as a glyph side panel. Stays shut and quiet without Hanami running
+    HanamiPanel { id: hanami }
 
     Variants {
         model: Quickshell.screens
@@ -153,6 +156,7 @@ ShellRoot {
     Shortcut { name: "wall"; description: "обои"; onPressed: walls.toggle() }
     Shortcut { name: "music"; description: "музыка: плеер и библиотека ~/Music"; onPressed: music.toggle() }
     Shortcut { name: "game"; description: "игровой режим"; onPressed: Rules.store.game = !Rules.store.game }
+    Shortcut { name: "hanami"; description: "hanami: its settings panel"; onPressed: hanami.toggle() }
 
     // палитра наружу — для своих приложений вне шелла (glyph-tok: Qt WebEngine в qs не грузится, живёт отдельным процессом).
     // Пишется при каждой смене темы, светлой/тёмной, обоев

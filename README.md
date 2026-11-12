@@ -86,6 +86,11 @@ gitignored links the installer makes: `hypr/hanami-enabled.lua` → `hanami.lua`
 both, or run `install.sh --no-hanami`, to turn it off. Hanami is a modified version of
 [Roamies](https://github.com/KenKaiii/Roamies) by Ken Kai, under the [AGPL-3.0](https://www.gnu.org/licenses/agpl-3.0.html).
 
+Its settings open as a glyph side panel (`quickshell/glyph/hanami/`): `Ctrl` `Alt` `H`, `qs ipc call hanami toggle`,
+or Hanami's own tray and `hanami --panel`. It has the pages of Hanami's web panel (which other desktops keep): Home,
+Memory, Model, Appearance, Voice, Money, Behavior and About. It talks to Hanami over
+`$XDG_RUNTIME_DIR/roamies/panel.sock` (JSON lines) and waits quietly while Hanami isn't running.
+
 | `config/` | goes to |
 |---|---|
 | `hypr/` | `~/.config/hypr` |
