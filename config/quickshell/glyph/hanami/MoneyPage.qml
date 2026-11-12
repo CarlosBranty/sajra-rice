@@ -2,8 +2,9 @@ import QtQuick
 import qs
 import qs.components
 
-// Money: the movements read from bank mails or added by hand (the sidecar filters them and sends a page at a time),
-// adding one by hand, the mail accounts bank notifications are read from (read-only) and adding one
+// Money (in Spanish, the user's language): the overview from one salary to the next (MoneyOverview), the full table of
+// movements read from bank mails or added by hand (the sidecar filters them and sends a page at a time), adding one by
+// hand, the mail accounts bank notifications are read from (read-only) and adding one
 Column {
     id: root
 
@@ -17,23 +18,32 @@ Column {
     readonly property bool filtered: !!Hanami.mmonth || Hanami.mcat !== "" || Hanami.mgroup !== "all" || !!Hanami.mtext.trim()
     readonly property string sum: {
         if (!v?.total) return "";
-        const sums = (v.totals ?? []).map(t => [`${t.spent} out`, String(t.received).endsWith(" 0.00") ? null : `${t.received} in`].filter(Boolean).join(", "));
-        return `${v.total} movement${v.total === 1 ? "" : "s"} · ${sums.join(" · ")}`;
+        const sums = (v.totals ?? []).map(t => [`${t.spent} sale`, String(t.received).endsWith(" 0.00") ? null : `${t.received} entra`].filter(Boolean).join(", "));
+        return `${v.total} movimiento${v.total === 1 ? "" : "s"} · ${sums.join(" · ")}`;
     }
+    readonly property var mon: ["ene", "feb", "mar", "abr", "may", "jun", "jul", "ago", "sep", "oct", "nov", "dic"]
+    function monthName(x) { return `${mon[Number(x.slice(5)) - 1]} ${x.slice(0, 4)}`; }
+    readonly property string kept: ({ mac: "tu Llavero", win: "Windows, cifrada para tu cuenta", linux: "tu llavero del sistema" })[s?.os] ?? "este equipo"
     readonly property var help: ({
-        gmail: "Gmail needs an app password: turn on 2-Step Verification in your Google Account, then create one at myaccount.google.com/apppasswords. Revoke it there at any time; changing your Google password revokes it too.",
-        yahoo: "Yahoo needs an app password: Account Info, Account Security, Generate app password. Revoke it there at any time: it keeps working after you change your Yahoo password, so revoke it when you stop using Hanami.",
-        outlook: "Coming soon: Outlook.com no longer takes app passwords and needs a Microsoft sign-in, which Hanami doesn't have yet."
+        gmail: "Gmail pide una contraseña de aplicación: activa la verificación en dos pasos en tu cuenta de Google y crea una en myaccount.google.com/apppasswords. Puedes revocarla allí cuando quieras; cambiar tu contraseña de Google también la revoca.",
+        yahoo: "Yahoo pide una contraseña de aplicación: Información de la cuenta, Seguridad, Generar contraseña de aplicación. Puedes revocarla allí cuando quieras: sigue sirviendo aunque cambies tu contraseña de Yahoo, así que revócala si dejas de usar Hanami.",
+        outlook: "Pronto: Outlook.com ya no acepta contraseñas de aplicación y pide iniciar sesión con Microsoft, que Hanami aún no tiene."
     })
 
     width: parent?.width ?? 0
     spacing: 22
 
     Tabs {
-        model: [["moves", "Movements"], ["entry", "Add by hand"], ["accounts", "Accounts"], ["add", "Add account"]]
+        model: [["over", "Resumen"], ["moves", "Tabla"], ["entry", "A mano"], ["accounts", "Correos"], ["add", "Añadir correo"]]
         current: Hanami.ytab
-        onPicked: id => { Hanami.ytab = id; Hanami.arm = ""; Hanami.clearSel(); Hanami.mren = false; Hanami.dd = ""; }
+        onPicked: id => {
+            Hanami.ytab = id; Hanami.arm = ""; Hanami.clearSel(); Hanami.mren = false; Hanami.dd = ""; Hanami.oedit = null;
+            Hanami.moneyLoad();
+        }
     }
+
+    // ================================================================ Overview
+    MoneyOverview { visible: Hanami.ytab === "over" }
 
     // ================================================================ Movements
     Column {
@@ -43,7 +53,7 @@ Column {
 
         Text {
             visible: !root.v
-            text: Hanami.linked ? "Loading…" : ""
+            text: Hanami.linked ? "Cargando…" : ""
             font { family: Theme.ui; pixelSize: 14 }
             color: Theme.mute
         }
@@ -58,9 +68,9 @@ Column {
                 spacing: 8
                 Drop {
                     width: (parent.width - 16) / 3
-                    label: "Month"
+                    label: "Mes"
                     k: "mmonth"
-                    groups: [{ items: [["", "All months"]].concat((root.v?.months ?? []).map(x => [x, Hanami.monthName(x)])) }]
+                    groups: [{ items: [["", "Todos los meses"]].concat((root.v?.months ?? []).map(x => [x, root.monthName(x)])) }]
                     value: Hanami.mmonth
                     onPicked: x => Hanami.filter({ month: x })
                 }
@@ -68,15 +78,15 @@ Column {
                     width: (parent.width - 16) / 3
                     label: "Category"
                     k: "mcatf"
-                    groups: [{ items: [["", "All categories"], ["null", "Not classified"]].concat(root.cats.map(c => [JSON.stringify(c), c])) }]
+                    groups: [{ items: [["", "Todas las categorías"], ["null", "Sin clasificar"]].concat(root.cats.map(c => [JSON.stringify(c), c])) }]
                     value: Hanami.mcat
                     onPicked: x => Hanami.filter({ cat: x })
                 }
                 Drop {
                     width: (parent.width - 16) / 3
-                    label: "Kind"
+                    label: "Tipo"
                     k: "mgroup"
-                    groups: [{ items: [["all", "Everything"], ["spending", "Spending"], ["income", "Income"], ["other", "Not counted"]] }]
+                    groups: [{ items: [["all", "Todo"], ["spending", "Gastos"], ["income", "Ingresos"], ["other", "No cuenta"]] }]
                     value: Hanami.mgroup
                     onPicked: x => Hanami.filter({ group: x })
                 }
@@ -100,12 +110,12 @@ Column {
                     id: rename
                     width: parent.width - renameBtn.width - 10
                     maxLength: 40
-                    placeholder: `New name for ${root.catName}`
+                    placeholder: `Nuevo nombre para ${root.catName}`
                     catchEsc: true
                     onAccepted: parent.save()
                     onEscaped: Hanami.mren = false
                 }
-                Btn { id: renameBtn; text: "Rename"; onClicked: parent.save() }
+                Btn { id: renameBtn; text: "Renombrar"; onClicked: parent.save() }
             }
             Row {
                 visible: !(root.named && Hanami.mren)
@@ -114,7 +124,7 @@ Column {
                 Field {
                     id: find
                     width: parent.width - (catLinks.visible ? catLinks.width + 16 : 0)
-                    placeholder: "Search"
+                    placeholder: "Buscar"
                     text: Hanami.mtext
                     catchEsc: !!Hanami.mtext
                     onEdited: { Hanami.mtext = text; Hanami.mpage = 0; findTimer.restart(); }
@@ -126,11 +136,11 @@ Column {
                     visible: root.named
                     anchors.verticalCenter: parent.verticalCenter
                     spacing: 14
-                    Lnk { text: "Rename"; Accessible.name: `Rename the category ${root.catName}`; onClicked: Hanami.mren = true }
+                    Lnk { text: "Renombrar"; Accessible.name: `Renombrar la categoría ${root.catName}`; onClicked: Hanami.mren = true }
                     Lnk {
                         text: "Delete"
                         danger: true
-                        Accessible.name: `Delete the category ${root.catName}`
+                        Accessible.name: `Eliminar la categoría ${root.catName}`
                         onClicked: { Hanami.askFirst(); Hanami.moneyDo("delete_category", { name: root.catName }); }
                     }
                 }
@@ -140,6 +150,7 @@ Column {
         // ---- what to do with the rows selected ----
         Column {
             id: selBar
+            objectName: "selBar"
             visible: !!root.v && root.sel.length > 0
             width: parent.width
             spacing: 10
@@ -149,13 +160,15 @@ Column {
                 const name = Hanami.mnew ? newCat.text.trim() : Hanami.mput;
                 if (!name) return Hanami.mnew ? newCat.focus_() : undefined;
                 if (root.sel.some(r => r.category && r.category.toLowerCase() !== name.toLowerCase())) Hanami.askFirst();
-                Hanami.moneyDo("classify", { ids: root.sel.map(r => r.id), category: name, create: Hanami.mnew || undefined });
+                const note = noteF.text.trim();
+                Hanami.moneyDo("classify", { ids: root.sel.map(r => r.id), category: name, create: Hanami.mnew || undefined, note: note || undefined });
                 Hanami.clearSel();
                 newCat.text = "";
+                noteF.text = "";
             }
             Text {
                 visible: selBar.cls.length < root.sel.length
-                text: "Income and what is not counted have no category."
+                text: "Los ingresos y lo que no cuenta no llevan categoría."
                 font { family: Theme.ui; pixelSize: 13 }
                 color: Theme.grey
             }
@@ -168,7 +181,7 @@ Column {
                     visible: Hanami.mnew
                     width: parent.width - putBtn.width - 10
                     maxLength: 40
-                    placeholder: "New category"
+                    placeholder: "Nueva categoría"
                     catchEsc: true
                     onVisibleChanged: if (visible) focus_()
                     onAccepted: selBar.put()
@@ -179,36 +192,44 @@ Column {
                     width: parent.width - putBtn.width - 10
                     label: "Category"
                     k: "mcat"
-                    placeholder: "Pick a category"
-                    groups: [{ items: [["", "Pick a category", true]].concat(root.cats.map(c => [JSON.stringify(c), c]), [["new", "New category…"]]) }]
+                    placeholder: "Elige una categoría"
+                    groups: [{ items: [["", "Elige una categoría", true]].concat(root.cats.map(c => [JSON.stringify(c), c]), [["new", "Nueva categoría…"]]) }]
                     value: Hanami.mput ? JSON.stringify(Hanami.mput) : ""
                     onPicked: x => { if (x === "new") Hanami.mnew = true; else Hanami.mput = JSON.parse(x); }
                 }
-                Btn { id: putBtn; text: "Put in"; onClicked: selBar.put() }
+                Btn { id: putBtn; text: "Poner"; onClicked: selBar.put() }
+            }
+            Field {
+                id: noteF
+                objectName: "classifyNote"
+                visible: selBar.cls.length === root.sel.length
+                placeholder: "Nota (opcional), como almuerzo con el equipo"
+                maxLength: 200
+                onAccepted: selBar.put()
             }
             Flow {
                 width: parent.width
                 spacing: 16
-                Lb { text: `${root.sel.length} selected` }
+                Lb { text: `${root.sel.length} elegido${root.sel.length === 1 ? "" : "s"}` }
                 Lnk {
                     visible: selBar.withCat.length > 0
-                    text: "Remove category"
+                    text: "Quitar categoría"
                     onClicked: { Hanami.askFirst(); Hanami.moneyDo("unclassify", { ids: selBar.withCat.map(r => r.id) }); Hanami.clearSel(); }
                 }
                 Lnk {
                     visible: root.sel.length === 1 && !!root.sel[0].own
-                    text: "Mark as mine"
-                    Accessible.name: `Mark ${root.sel[0]?.text ?? ""} as your own account: its transfers stop counting`
+                    text: "Es mía"
+                    Accessible.name: `Marcar ${root.sel[0]?.text ?? ""} como cuenta tuya: sus transferencias dejan de contar`
                     onClicked: { Hanami.moneyDo("own", { action: "mark", key: root.sel[0].own }); Hanami.clearSel(); }
                 }
                 Lnk {
                     visible: root.sel.length === 1 && !!root.sel[0].manual
                     text: "Delete"
                     danger: true
-                    Accessible.name: `Delete ${root.sel[0]?.text ?? ""}, added by hand`
+                    Accessible.name: `Eliminar ${root.sel[0]?.text ?? ""}, agregado a mano`
                     onClicked: { Hanami.askFirst(); Hanami.moneyDo("delete_entry", { id: root.sel[0].id }); Hanami.clearSel(); }
                 }
-                Lnk { text: "Clear"; Accessible.name: "Clear the selection"; onClicked: Hanami.clearSel() }
+                Lnk { text: "Soltar"; Accessible.name: "Soltar lo elegido"; onClicked: Hanami.clearSel() }
             }
         }
 
@@ -217,7 +238,7 @@ Column {
             visible: !!root.v && !root.v.rows.length
             width: parent.width
             wrapMode: Text.Wrap
-            text: root.filtered ? "Nothing matches these filters." : "No movements yet: they come from your bank mails, or add one by hand."
+            text: root.filtered ? "Nada coincide con estos filtros." : "Aún no hay movimientos: llegan de los correos de tu banco, o agrégalos a mano."
             font { family: Theme.ui; pixelSize: 14 }
             color: Theme.mute
         }
@@ -246,7 +267,7 @@ Column {
                         border { width: row.pickable ? 1 : 0; color: row.on ? Theme.fg : Theme.mute }
                         Icon { anchors.centerIn: parent; visible: row.on; text: "\u{F012C}"; font.pixelSize: 16; color: Theme.ink }
                         Accessible.role: Accessible.CheckBox
-                        Accessible.name: `Select: ${row.r.text}, ${row.sign}${row.r.amount}, ${row.r.date}`
+                        Accessible.name: `Elegir: ${row.r.text}, ${row.sign}${row.r.amount}, ${row.r.date}`
                         Accessible.checked: row.on
                     }
                     Column {
@@ -327,7 +348,7 @@ Column {
         function save() {
             const f = Hanami.mform, amount = amountF.text.trim(), description = descF.text.trim(), date = dateF.text.trim() || today;
             if (!/^\d{1,9}([.,]\d{1,2})?$/.test(amount) || !Number(amount.replace(",", "."))) {
-                Hanami.note("Type the amount like 20.50.", true);
+                Hanami.note("Escribe el monto así: 20.50", true);
                 return amountF.focus_();
             }
             if (!description) return descF.focus_();
@@ -340,17 +361,17 @@ Column {
             descF.text = "";
             amountF.focus_();
         }
-        title: f.kind === "income" ? "Add income" : "Add an expense"
-        desc: "What no bank mail tells me about: cash, another card, your salary."
+        title: f.kind === "income" ? "Agregar un ingreso" : "Agregar un gasto"
+        desc: "Lo que ningún correo del banco me cuenta: efectivo, otra tarjeta, tu sueldo."
 
-        Picks { label: "Kind"; model: [["expense", "Expense"], ["income", "Income"]]; value: entry.f.kind; onPicked: x => entry.set({ kind: x }) }
+        Picks { label: "Tipo"; model: [["expense", "Gasto"], ["income", "Ingreso"]]; value: entry.f.kind; onPicked: x => entry.set({ kind: x }) }
         Row {
             width: parent.width
             spacing: 10
             Field {
                 id: amountF
                 width: parent.width - cur.width - 10
-                placeholder: "Amount, like 20.50"
+                placeholder: "Monto, como 20.50"
                 maxLength: 13
                 text: entry.f.amount
                 onEdited: Hanami.mform.amount = text
@@ -360,7 +381,7 @@ Column {
                 id: cur
                 width: 150
                 anchors.verticalCenter: parent.verticalCenter
-                label: "Currency"
+                label: "Moneda"
                 model: [["PEN", "S/"], ["USD", "US$"]]
                 value: entry.f.currency
                 onPicked: x => entry.set({ currency: x })
@@ -368,7 +389,7 @@ Column {
         }
         Field {
             id: descF
-            placeholder: entry.f.kind === "income" ? "What, like Salary" : "What or where, like Taxi"
+            placeholder: entry.f.kind === "income" ? "Qué, como Sueldo" : "Qué o dónde, como Taxi"
             text: entry.f.description
             onEdited: Hanami.mform.description = text
             onAccepted: entry.save()
@@ -388,23 +409,23 @@ Column {
             Drop {
                 visible: entry.f.kind === "expense"
                 width: parent.width - 190
-                label: "Category"
+                label: "Categoría"
                 k: "mentrycat"
-                groups: [{ items: [["", "No category"]].concat(root.cats.map(c => [c, c])) }]
+                groups: [{ items: [["", "Sin categoría"]].concat(root.cats.map(c => [c, c])) }]
                 value: entry.f.category
                 onPicked: x => entry.set({ category: x })
             }
         }
-        Btn { text: "Add"; onClicked: entry.save() }
+        Btn { text: "Agregar"; onClicked: entry.save() }
     }
 
     // ================================================================ Accounts
     Group {
         visible: Hanami.ytab === "accounts"
-        title: "Check every"
-        desc: "How often I look for new bank mails while I run."
+        title: "Revisar cada"
+        desc: "Cada cuánto busco correos nuevos del banco mientras corro."
         Picks {
-            label: "Check every"
+            label: "Revisar cada"
             model: (root.m?.everys ?? []).map(n => [n, `${n} min`])
             value: root.m?.every ?? 0
             onPicked: x => Hanami.act(`mailevery:${x}`)
@@ -412,11 +433,11 @@ Column {
     }
     Group {
         visible: Hanami.ytab === "accounts"
-        title: "Mail accounts"
-        desc: "Read-only: nothing is moved, marked or deleted."
+        title: "Cuentas de correo"
+        desc: "Solo lectura: nada se mueve, marca ni borra."
         Text {
             visible: !(root.m?.accounts?.length)
-            text: "No account yet: add one to read your bank mails."
+            text: "Aún no hay cuentas: añade una para leer los correos de tu banco."
             font { family: Theme.ui; pixelSize: 14 }
             color: Theme.mute
         }
@@ -429,23 +450,23 @@ Column {
                     required property var modelData
                     readonly property var a: modelData
                     text: `${a.label} · ${a.email}`
-                    sub: a.status ? `${a.status.text}${a.status.at ? ` · ${Hanami.ago(a.status.at)}` : ""}` : "Not checked yet"
+                    sub: a.status ? `${a.status.text}${a.status.at ? ` · ${Hanami.ago(a.status.at)}` : ""}` : "Sin revisar aún"
                     subLate: a.status?.state === "error"
-                    Lnk { text: "Test"; Accessible.name: `Test the connection to ${acct.a.email}`; onClicked: Hanami.act(`mail_test:${acct.a.id}`) }
-                    Arm { label: "Remove"; k: `mail-remove:${acct.a.id}`; action: `mail_remove:${acct.a.id}`; Accessible.name: `Remove ${acct.a.email} and its app password` }
+                    Lnk { text: "Probar"; Accessible.name: `Probar la conexión con ${acct.a.email}`; onClicked: Hanami.act(`mail_test:${acct.a.id}`) }
+                    Arm { label: "Quitar"; k: `mail-remove:${acct.a.id}`; action: `mail_remove:${acct.a.id}`; Accessible.name: `Quitar ${acct.a.email} y su contraseña de aplicación` }
                 }
             }
         }
     }
     Group {
         visible: Hanami.ytab === "accounts"
-        title: "Your own accounts"
-        desc: "Transfers to them are neither spending nor income."
+        title: "Tus propias cuentas"
+        desc: "Las transferencias a ellas no son gasto ni ingreso."
         Text {
             visible: !(root.v?.own?.length)
             width: parent.width
             wrapMode: Text.Wrap
-            text: "None yet: select a transfer on Movements and mark it as yours."
+            text: "Ninguna aún: elige una transferencia en Tabla y márcala como tuya."
             font { family: Theme.ui; pixelSize: 14 }
             color: Theme.mute
         }
@@ -457,10 +478,10 @@ Column {
                     id: own
                     required property var modelData
                     text: modelData.name
-                    sub: `${modelData.count} transfer${modelData.count === 1 ? "" : "s"}, not counted`
+                    sub: `${modelData.count} transferencia${modelData.count === 1 ? "" : "s"}, no cuenta${modelData.count === 1 ? "" : "n"}`
                     Lnk {
-                        text: "Unmark"
-                        Accessible.name: `Unmark ${own.modelData.name} as your own account`
+                        text: "Desmarcar"
+                        Accessible.name: `Desmarcar ${own.modelData.name} como cuenta tuya`
                         onClicked: { Hanami.askFirst(); Hanami.moneyDo("own", { action: "unmark", key: own.modelData.key }); }
                     }
                 }
@@ -472,7 +493,7 @@ Column {
     Group {
         id: add
         visible: Hanami.ytab === "add"
-        title: "Add an account"
+        title: "Añadir una cuenta"
         function save() {
             const email = addr.text.trim(), password = pass.text.trim();
             if (!email) return addr.focus_();
@@ -483,8 +504,8 @@ Column {
             Hanami.ytab = "accounts";
         }
         Picks {
-            label: "Provider"
-            model: [["gmail", "Gmail"], ["yahoo", "Yahoo"], ["outlook", "Outlook (soon)"]]
+            label: "Proveedor"
+            model: [["gmail", "Gmail"], ["yahoo", "Yahoo"], ["outlook", "Outlook (pronto)"]]
             value: Hanami.mprov
             onPicked: x => Hanami.mprov = x
         }
@@ -495,19 +516,19 @@ Column {
             font { family: Theme.ui; pixelSize: 13 }
             color: Theme.grey
         }
-        Field { id: addr; visible: Hanami.mprov !== "outlook"; placeholder: "Email address"; maxLength: 200; onAccepted: add.save() }
+        Field { id: addr; visible: Hanami.mprov !== "outlook"; placeholder: "Correo"; maxLength: 200; onAccepted: add.save() }
         Row {
             visible: Hanami.mprov !== "outlook"
             width: parent.width
             spacing: 10
-            Field { id: pass; width: parent.width - mailSave.width - 10; password: true; placeholder: "App password"; maxLength: 200; onAccepted: add.save() }
-            Btn { id: mailSave; text: "Save"; onClicked: add.save() }
+            Field { id: pass; width: parent.width - mailSave.width - 10; password: true; placeholder: "Contraseña de aplicación"; maxLength: 200; onAccepted: add.save() }
+            Btn { id: mailSave; text: "Guardar"; onClicked: add.save() }
         }
         Text {
             visible: Hanami.mprov !== "outlook"
             width: parent.width
             wrapMode: Text.Wrap
-            text: `The app password stays in ${Hanami.where()}. I only read your banks' mails and never move, mark or delete anything.`
+            text: `La contraseña de aplicación se guarda en ${root.kept}. Solo leo los correos de tus bancos y nunca muevo, marco ni borro nada.`
             font { family: Theme.ui; pixelSize: 13 }
             color: Theme.grey
         }

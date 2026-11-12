@@ -32,7 +32,7 @@ Singleton {
     property string mtab: "facts"
     property string vtab: "replies"
     property string atab: "look"
-    property string ytab: "moves"
+    property string ytab: "over"
     property string mprov: "gmail"
     property string q: ""        // Memory's search
     property var bindShown: []   // shortcut commands shown after copying them failed
@@ -50,6 +50,15 @@ Singleton {
     property bool mnew: false
     property bool mren: false
     property var mform: ({ kind: "expense", amount: "", currency: "PEN", description: "", date: "", category: "" })
+    // Money's overview (contract S12) as the sidecar last sent it, the period asked for (its start; "" the current one) and
+    // the chart's range; the movement open in the edit sheet (its row as sent) and the sheet's form; changes sent and not
+    // answered yet (each answer, a view or a refusal, asks for the overview again)
+    property var oview: null
+    property string operiod: ""
+    property string orange: "3m"
+    property var oedit: null
+    property var oform: ({})
+    property int opending: 0
 
     // ---- the looks, drawn: Hanami draws each look as a sheet of frames (this JS engine can't run its drawing code) and
     // says where it put it: {kind:"looks", form, sheets:[{id, file, frames, columns, fps, width, height}]}, one frame
@@ -106,7 +115,7 @@ Singleton {
         }
         if (linked) send({ type: "panel_open" });
         else retryNow();
-        if (page === "money") moneyAsk();
+        if (page === "money") moneyLoad();
         wantLooks();
     }
     // the panel closing itself: Hanami is told
@@ -128,7 +137,7 @@ Singleton {
         if (name === page) return;
         page = name;
         reset();
-        if (name === "money") moneyAsk();
+        if (name === "money") moneyLoad();
     }
 
     // ---- to Hanami ----
@@ -157,6 +166,7 @@ Singleton {
     // Esc: the innermost thing open closes first, then the panel
     function back() {
         if (dd) dd = "";
+        else if (page === "money" && oedit) oedit = null;
         else if (page === "money" && (msel.length || mren)) { clearSel(); mren = false; }
         else if (key || arm) { key = ""; arm = ""; }
         else close();
@@ -170,7 +180,31 @@ Singleton {
     }
     function moneyDo(op, args) { send(Object.assign({ type: "panel_money", op: op }, args ?? {}, { query: mquery() })); }
     function moneyAsk() { moneyDo("list"); }
-    function askFirst() { note("Confirm it is you: the prompt is by your Hanami."); }
+    function askFirst() { note("Confirma que eres tú: la huella se pide junto a tu Hanami."); }
+    // what the open tab shows: the overview, or the table (Accounts lists your own accounts from it too)
+    function moneyLoad() { if (ytab === "over") overviewAsk(); else moneyAsk(); }
+    function overviewAsk() {
+        const a = { type: "panel_money", op: "overview", range: orange };
+        if (operiod) a.period = operiod;
+        send(a);
+    }
+    // a change made from the overview (edit_entry, revert_entry, set_salary, delete_entry). The first three answer with
+    // the overview they're told to look at (look), so the page stays on its period and range
+    function overviewDo(op, args) {
+        opending++;
+        const look = { range: orange, period: operiod || oview?.period?.start };
+        if (!look.period) delete look.period;
+        send(Object.assign({ type: "panel_money", op: op }, args, op === "delete_entry" ? {} : { look: look }));
+    }
+    function answered() {
+        if (opending <= 0) return;
+        opending--;
+        overviewAsk();
+    }
+    function takeOverview(v) {
+        oview = v;
+        if (operiod && !(v.periods ?? []).some(p => p.start === operiod)) operiod = "";
+    }
     function clearSel() {
         msel = [];
         mnew = false;
@@ -189,8 +223,16 @@ Singleton {
         moneyAsk();
     }
     // a table from the sidecar: kept unless the filters changed since it was asked for (a newer one is on its way)
-    function takeMoney(v) {
-        if (!v) return;
+    function takeMoney(v, m) {
+        // the overview: its fields in the view, or beside view:"overview" in the message
+        const ov = v?.view === "overview" ? v : v === "overview" ? m : null;
+        if (ov) {
+            takeOverview(ov);
+            if (opending > 0) opending--; // a change answered with the overview: nothing more to ask
+            return;
+        }
+        if (opending > 0) answered();
+        if (!v || !Array.isArray(v.rows)) return;
         if (v.dropped !== undefined && mcat !== "" && JSON.parse(mcat) === v.dropped) mcat = "";
         const n = mquery();
         if (["month", "category", "group", "text"].some(k => (v.query?.[k] ?? "") !== (n[k] ?? ""))) return;
@@ -206,11 +248,14 @@ Singleton {
         if (!m || typeof m !== "object") return;
         if (m.kind === "state") {
             state = m.state;
-            if (page === "money" && shown) moneyAsk();
+            if (page === "money" && shown) moneyLoad();
             wantLooks();
         } else if (m.kind === "looks") takeLooks(m);
-        else if (m.kind === "money") takeMoney(m.view);
-        else if (m.kind === "note") note(m.text ?? "", m.bad);
+        else if (m.kind === "money") takeMoney(m.view, m);
+        else if (m.kind === "note") {
+            note(m.text ?? "", m.bad);
+            if (m.bad) answered();
+        }
         else if (m.kind === "copied") {
             if (!m.ok && state?.bind?.[m.which] && !bindShown.includes(m.which)) bindShown = bindShown.concat([m.which]);
             note(m.ok ? "Copied. Paste it into a new custom shortcut." : "Couldn't copy it. Select the command and copy it instead.", !m.ok);
@@ -240,10 +285,13 @@ Singleton {
                 // only while it shows: a hidden panel that said "open" made Hanami count it open, and the first
                 // tray click then closed it
                 if (root.shown) root.send({ type: "panel_open" });
-                if (root.shown && root.page === "money") root.moneyAsk();
+                if (root.shown && root.page === "money") root.moneyLoad();
             } else {
                 root.state = null;
                 root.mview = null;
+                root.oview = null;
+                root.oedit = null;
+                root.opending = 0;
                 // a new Hanami draws its own
                 root.sheets = {};
                 root.looksAsked = "";
