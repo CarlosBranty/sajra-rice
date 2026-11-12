@@ -1,5 +1,9 @@
-# личное: свои бинды hypr и фото наушников (buds/<устройство>.png, рендер с nothing.tech)
-config/hypr/user.lua
+# personal fork: config/hypr/user.lua is tracked here on purpose
+# earbud photos (buds/<device>.png, rendered from nothing.tech)
 config/quickshell/glyph/buds/*.png
 # fontconfig пишет его в config/fonts после fc-cache (install.sh): у каждого свой
 config/fonts/.uuid
+# glyph-tok's Qt WebEngine profile (cookies, sessions) — never commit
+/glyph-tok/
+# generated on every launch by config/bin/glyph-vault from glyph's palette
+config/rofi/glyph-colors.rasi
