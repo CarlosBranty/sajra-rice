@@ -1441,16 +1441,22 @@ pub(crate) fn open_releases_page() {
 // user, not the music) and while it speaks a reply, and comes back after. It goes through `pactl`, which talks to
 // PulseAudio and to PipeWire's pulse server alike: each app's playback stream (a "sink input") is set to a percentage
 // of the volume it has at that moment. What each one had is kept in $XDG_RUNTIME_DIR/roamies/duck.json for as long
-// as it is down: {"streams": [{"index": 419, "pid": 1281, "volumes": [65536, 65536]}]}. A note still there at start
-// means Roamies went away with the volumes down, so they go back up then. With the switch off pactl is never run.
+// as it is down: {"streams": [{"index": 419, "pid": 1281, "volumes": [65536, 65536], "app": "glyph-tok", "lowered":
+// [32768, 32768]}]}. A note still there at start means Roamies went away with the volumes down, so they go back up
+// then. With the switch off pactl is never run.
 
 /// A playback stream as `pactl -f json list sink-inputs` lists it: its index, the process that plays it (None for a
 /// stream no app owns: a filter chain's output, a loopback) and each channel's volume in channel order (65536 is 100 %).
-#[derive(Clone, PartialEq, Debug)]
+/// `app` is its application.name. A stream that was lowered also keeps what it was lowered to (`lowered`; empty for
+/// one that is only listed): an app that closes its stream and opens another meanwhile (TikTok's next video) gets the
+/// new one at that volume from the sound server, which keeps one volume per app, so that one is given back too.
+#[derive(Clone, PartialEq, Debug, Default)]
 struct Stream {
     index: u32,
     pid: Option<u32>,
     volumes: Vec<u32>,
+    app: Option<String>,
+    lowered: Vec<u32>,
 }
 
 /// The streams in pactl's listing, or None when it isn't one (no sound server, or a pactl too old to write JSON).
@@ -1463,7 +1469,8 @@ fn streams_from(text: &str) -> Option<Vec<Stream>> {
         // By the channel map, which is the order volumes are set in (the listing's own order isn't kept on reading).
         let volumes: Vec<u32> = s.get("channel_map")?.as_str()?.split(',').map(|ch| volume.get(ch)?.get("value")?.as_u64().and_then(|v| u32::try_from(v).ok())).collect::<Option<_>>()?;
         let pid = s.pointer("/properties/application.process.id").and_then(Value::as_str).and_then(|p| p.parse().ok());
-        (volumes.len() == volume.len()).then_some(Stream { index, pid, volumes })
+        let app = s.pointer("/properties/application.name").and_then(Value::as_str).map(str::to_string);
+        (volumes.len() == volume.len()).then_some(Stream { index, pid, volumes, app, lowered: Vec::new() })
     });
     Some(streams.collect())
 }
@@ -1512,15 +1519,41 @@ fn plan_lower(streams: &[Stream], level: u32, own: impl Fn(u32) -> bool, held: &
     streams.iter().filter(|s| s.pid.is_some_and(|p| !own(p)) && !held.iter().any(|h| same_stream(h, s))).map(|s| (s.clone(), s.volumes.iter().map(lowered).collect())).collect()
 }
 
-/// What to give back: what each stream had, for the ones that are still there. A stream that started meanwhile was
-/// never touched, and isn't now.
+/// How far a volume may be from the one lowered to and still be it (the sound server keeps it as a float).
+const LOWERED_SLACK: u32 = 64;
+
+/// What to give back: what each stream had, for the ones that are still there. When one has gone, a stream its app
+/// opened meanwhile at exactly the volume the old one was lowered to gets it (the sound server started it there);
+/// any other stream that started meanwhile was never touched, and isn't now, nor one the user has moved since.
 fn plan_restore(held: &[Stream], streams: &[Stream]) -> Vec<Stream> {
-    held.iter().filter(|h| streams.iter().any(|s| same_stream(h, s) && s.volumes.len() == h.volumes.len())).cloned().collect()
+    let mut out: Vec<Stream> = Vec::new();
+    for h in held {
+        if streams.iter().any(|s| same_stream(h, s) && s.volumes.len() == h.volumes.len()) {
+            out.push(h.clone());
+            continue;
+        }
+        let at_lowered = |s: &Stream| s.volumes.len() == h.lowered.len() && s.volumes.iter().zip(&h.lowered).all(|(v, l)| v.abs_diff(*l) <= LOWERED_SLACK);
+        let reopened = streams.iter().filter(|s| {
+            h.app.is_some() && s.app == h.app && !h.lowered.is_empty() && at_lowered(s) && !held.iter().any(|o| same_stream(o, s)) && !out.iter().any(|o| o.index == s.index)
+        });
+        out.extend(reopened.map(|s| Stream { volumes: h.volumes.clone(), ..s.clone() }).collect::<Vec<_>>());
+    }
+    out
 }
 
 /// duck.json: the streams that are down, with what they had.
 fn duck_note(held: &[Stream]) -> String {
-    json!({ "streams": held.iter().map(|s| json!({ "index": s.index, "pid": s.pid, "volumes": s.volumes })).collect::<Vec<_>>() }).to_string()
+    let note = |s: &Stream| {
+        let mut n = json!({ "index": s.index, "pid": s.pid, "volumes": s.volumes });
+        if let Some(app) = &s.app {
+            n["app"] = json!(app);
+        }
+        if !s.lowered.is_empty() {
+            n["lowered"] = json!(s.lowered);
+        }
+        n
+    };
+    json!({ "streams": held.iter().map(note).collect::<Vec<_>>() }).to_string()
 }
 
 /// The streams in a duck.json; none from a note that can't be read.
@@ -1531,7 +1564,10 @@ fn duck_from(text: &str) -> Vec<Stream> {
     list.iter()
         .filter_map(|s| {
             let volumes: Vec<u32> = s.get("volumes")?.as_array()?.iter().map(n).collect::<Option<_>>()?;
-            (!volumes.is_empty()).then_some(Stream { index: n(s.get("index")?)?, pid: Some(n(s.get("pid")?)?), volumes })
+            // A note from before these were written has neither: only the stream itself gets its volume back then.
+            let app = s.get("app").and_then(Value::as_str).map(str::to_string);
+            let lowered = s.get("lowered").and_then(Value::as_array).and_then(|l| l.iter().map(n).collect::<Option<Vec<u32>>>()).unwrap_or_default();
+            (!volumes.is_empty()).then_some(Stream { index: n(s.get("index")?)?, pid: Some(n(s.get("pid")?)?), volumes, app, lowered })
         })
         .collect()
 }
@@ -1640,7 +1676,7 @@ fn lower(mixer: &mut impl Mixer, dir: &Path, level: u32, own: impl Fn(u32) -> bo
     if plan.is_empty() {
         return;
     }
-    let all: Vec<Stream> = held.iter().cloned().chain(plan.iter().map(|(s, _)| s.clone())).collect();
+    let all: Vec<Stream> = held.iter().cloned().chain(plan.iter().map(|(s, to)| Stream { lowered: to.clone(), ..s.clone() })).collect();
     if !duck_save(dir, &all) {
         return;
     }
@@ -1838,7 +1874,7 @@ mod tests {
     const SINK_INPUTS: &str = r#"[{"index":38,"driver":"PipeWire","owner_module":null,"client":null,"sink":73,"sample_specification":"float32le 2ch 48000Hz","channel_map":"front-left,front-right","corked":true,"mute":false,"volume":{"front-left":{"value":65536,"value_percent":"100%","db":"0.00 dB"},"front-right":{"value":65536,"value_percent":"100%","db":"0.00 dB"}},"balance":0.00,"properties":{"node.virtual":"true","media.class":"Stream/Output/Audio","object.serial":"38"}},{"index":419,"driver":"PipeWire","owner_module":null,"client":"160","sink":37,"sample_specification":"float32le 2ch 48000Hz","channel_map":"front-left,front-right","corked":true,"mute":false,"volume":{"front-left":{"value":65536,"value_percent":"100%","db":"0.00 dB"},"front-right":{"value":65536,"value_percent":"100%","db":"0.00 dB"}},"balance":0.00,"properties":{"client.api":"pipewire-pulse","application.process.id":"1281","media.class":"Stream/Output/Audio","object.serial":"419"}}]"#;
 
     fn stream(index: u32, pid: Option<u32>, volumes: &[u32]) -> Stream {
-        Stream { index, pid, volumes: volumes.to_vec() }
+        Stream { index, pid, volumes: volumes.to_vec(), ..Stream::default() }
     }
 
     /// A sound server made of a list: what was set is applied to it and counted.
@@ -1956,6 +1992,30 @@ mod tests {
     }
 
     #[test]
+    fn a_stream_its_app_opened_again_while_down_gets_back_what_the_old_one_had() {
+        let dir = scratch("reopen");
+        let tok = |index, volumes: &[u32]| Stream { app: Some("glyph-tok".into()), ..stream(index, Some(26291), volumes) };
+        let mut mixer = FakeMixer::with(&[tok(1447, &[65536, 65536]), Stream { app: Some("mpv".into()), ..stream(9, Some(70), &[65536]) }]);
+        let mut held = Vec::new();
+        lower(&mut mixer, &dir, 50, |_| false, &mut held);
+        assert_eq!(duck_load(&dir), held, "the app and what it was lowered to are written down too");
+        // The app closes its stream and opens another (the next video); the sound server starts it at the volume the
+        // app last had, the lowered one. mpv's stream closes and another app's opens at that same volume.
+        mixer.now = Some(vec![tok(1502, &[32768, 32768]), Stream { app: Some("other".into()), ..stream(10, Some(80), &[32768]) }]);
+        mixer.sets.clear();
+        give_back(&mut mixer, &dir, &mut held);
+        assert_eq!(mixer.sets, vec![(1502, vec![65536, 65536])], "only the app's own new stream, still where it was put");
+        // The user moved it meanwhile: left as they set it.
+        let mut mixer = FakeMixer::with(&[tok(1447, &[65536, 65536])]);
+        lower(&mut mixer, &dir, 50, |_| false, &mut held);
+        mixer.now = Some(vec![tok(1502, &[50000, 50000])]);
+        mixer.sets.clear();
+        give_back(&mut mixer, &dir, &mut held);
+        assert_eq!(mixer.sets, vec![]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn what_was_lowered_is_written_down_and_read_back() {
         let held = vec![stream(419, Some(1281), &[65536, 65536]), stream(7, Some(900), &[1, 2, 3, 4, 5, 6])];
         assert_eq!(serde_json::from_str::<Value>(&duck_note(&held[..1])).unwrap(), json!({ "streams": [{ "index": 419, "pid": 1281, "volumes": [65536, 65536] }] }));
@@ -1986,12 +2046,13 @@ mod tests {
         let mut held = Vec::new();
         lower(&mut mixer, &dir, 30, own, &mut held);
         assert_eq!(mixer.sets, vec![(1, vec![19661, 19661]), (5, vec![15729, 7864])]);
-        assert_eq!(held, vec![playing[0].clone(), playing[2].clone()], "what they had is remembered");
+        let was = vec![Stream { lowered: vec![19661, 19661], ..playing[0].clone() }, Stream { lowered: vec![15729, 7864], ..playing[2].clone() }];
+        assert_eq!(held, was, "what they had is remembered, and what they were lowered to");
         assert_eq!(duck_load(&dir), held, "and written down");
         // Asked again while they're down: nothing is lowered twice, and what they really had is still what's kept.
         lower(&mut mixer, &dir, 30, own, &mut held);
         assert_eq!(mixer.sets.len(), 2);
-        assert_eq!(duck_load(&dir), vec![playing[0].clone(), playing[2].clone()]);
+        assert_eq!(duck_load(&dir), was);
         // Meanwhile 5 closes and 6 starts (left alone, then and after).
         mixer.now = Some(vec![stream(1, Some(1281), &[19661, 19661]), stream(2, Some(500), &[65536]), stream(6, Some(40), &[65536])]);
         mixer.sets.clear();
@@ -2034,7 +2095,8 @@ mod tests {
         assert!(dir.join("duck.json").is_file());
         // The next start, with the sound server away: nothing can be given back yet, so it's all kept.
         let mut away = FakeMixer { now: None, lists: 0, sets: Vec::new(), moves: Vec::new() };
-        assert_eq!(duck_recover(&mut away, &dir), before.to_vec());
+        let kept = vec![Stream { lowered: vec![13107, 13107], ..before[0].clone() }, Stream { lowered: vec![10486, 5243], ..before[1].clone() }];
+        assert_eq!(duck_recover(&mut away, &dir), kept);
         assert!(dir.join("duck.json").is_file());
         // The next start: back to what they had, and the note is gone.
         mixer.sets.clear();
