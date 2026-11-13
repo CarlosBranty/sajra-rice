@@ -37,5 +37,7 @@ hl.bind("CTRL + ALT + H", hl.dsp.global("shell:hanami"))
 
 -- Start it at login. Hyprland doesn't read ~/.config/autostart, so it starts here
 hl.on("hyprland.start", function()
-    hl.exec_cmd(bin)
+    -- Hyprland always has layer-shell: said outright, so Hanami never takes X11 windows when the compositor is still
+    -- too busy at login to answer its question (a tiled, blurred see-through window)
+    hl.exec_cmd("env ROAMIES_LAYER_SHELL=1 " .. bin)
 end)
