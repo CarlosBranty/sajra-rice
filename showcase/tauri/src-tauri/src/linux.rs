@@ -62,6 +62,21 @@ fn layer_from(session: Session, wanted: Option<&str>, offered: impl FnOnce() -> 
     }
 }
 
+/// The compositor's answer, asked again while it gives none: started with the session (the compositor's own autostart),
+/// it can be too busy to answer in time, and no answer meant X11 windows, a tiled and blurred see-through window on
+/// Hyprland. A plain "no" (Some(false)) is taken at once.
+fn ask_until_answered(mut ask: impl FnMut() -> Option<bool>, tries: u32, wait: Duration) -> Option<bool> {
+    for i in 0..tries {
+        if let Some(v) = ask() {
+            return Some(v);
+        }
+        if i + 1 < tries {
+            std::thread::sleep(wait);
+        }
+    }
+    None
+}
+
 /// The compositor's socket: WAYLAND_DISPLAY when it is a whole path, else that name ("wayland-0" when there is
 /// none) in XDG_RUNTIME_DIR.
 fn wayland_socket(runtime_dir: Option<&str>, display: Option<&str>) -> Option<PathBuf> {
@@ -144,7 +159,8 @@ pub(crate) fn init() {
     let env = |k: &str| std::env::var(k).ok();
     let s = session_from(env("XDG_SESSION_TYPE").as_deref(), env("WAYLAND_DISPLAY").as_deref());
     let _ = SESSION.set(s);
-    let offered = || compositor_offers(&wayland_socket(env("XDG_RUNTIME_DIR").as_deref(), env("WAYLAND_DISPLAY").as_deref())?, "zwlr_layer_shell_v1");
+    let ask = || compositor_offers(&wayland_socket(env("XDG_RUNTIME_DIR").as_deref(), env("WAYLAND_DISPLAY").as_deref())?, "zwlr_layer_shell_v1");
+    let offered = || ask_until_answered(ask, 8, Duration::from_millis(400));
     let layer = layer_from(s, env("ROAMIES_LAYER_SHELL").as_deref(), offered);
     let _ = LAYER.set(layer);
     if trace() {
@@ -2520,6 +2536,19 @@ mod tests {
 
     fn wl_done() -> Vec<u8> {
         wl_msg(3, 0, &7u32.to_ne_bytes())
+    }
+
+    #[test]
+    fn a_compositor_busy_at_login_is_asked_again_until_it_answers() {
+        let mut n = 0;
+        assert_eq!(ask_until_answered(|| { n += 1; if n < 3 { None } else { Some(true) } }, 8, Duration::ZERO), Some(true));
+        assert_eq!(n, 3, "asked until it answered");
+        let mut m = 0;
+        assert_eq!(ask_until_answered(|| { m += 1; Some(false) }, 8, Duration::ZERO), Some(false));
+        assert_eq!(m, 1, "a plain no is taken at once");
+        let mut k = 0;
+        assert_eq!(ask_until_answered(|| { k += 1; None }, 8, Duration::ZERO), None);
+        assert_eq!(k, 8, "never answering: given up after the tries");
     }
 
     #[test]
