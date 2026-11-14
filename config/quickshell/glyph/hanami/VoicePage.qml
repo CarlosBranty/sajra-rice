@@ -155,6 +155,14 @@ Column {
             on: !!root.s?.pen?.on
             onFlip: Hanami.act("pen")
         }
+        // Dictation key: words typed as they settle, or pasted at once when it is let go (panel.js, the same switch)
+        Sw {
+            visible: !!root.s?.dictation
+            label: "Type as I speak"
+            hint: root.s?.dictation?.live ? "Words go in as they settle; one can come out wrong" : "Pasted at once when you let go of the key"
+            on: !!root.s?.dictation?.live
+            onFlip: Hanami.act("dictlive")
+        }
     }
     Group {
         visible: root.tab === "talking" && !!root.s?.wake
