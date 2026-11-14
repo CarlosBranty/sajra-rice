@@ -10,6 +10,7 @@ import "cal"
 import "charms"
 import "clip"
 import "deck"
+import "dl"
 import "glyph"
 import "hanami"
 import "home"
@@ -51,6 +52,8 @@ ShellRoot {
     HanamiPanel { id: hanami }
     // keystroke overlay (keyviz-like), input from showmethekey-cli via pkexec
     Keys { id: keys }
+    // download manager (aria2c via ~/.local/bin/glyph-dl)
+    Downloads { id: downloads }
 
     Variants {
         model: Quickshell.screens
@@ -162,6 +165,7 @@ ShellRoot {
     Shortcut { name: "music"; description: "музыка: плеер и библиотека ~/Music"; onPressed: music.toggle() }
     Shortcut { name: "game"; description: "игровой режим"; onPressed: Rules.store.game = !Rules.store.game }
     Shortcut { name: "keys"; description: "keys: keystroke overlay"; onPressed: keys.toggle() }
+    Shortcut { name: "downloads"; description: "downloads: aria2 download manager"; onPressed: downloads.toggle() }
     Shortcut { name: "hanami"; description: "hanami: its settings panel"; onPressed: hanami.toggle() }
 
     // палитра наружу — для своих приложений вне шелла (glyph-tok: Qt WebEngine в qs не грузится, живёт отдельным процессом).

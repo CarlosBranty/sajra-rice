@@ -83,6 +83,7 @@ LINKS=(
     "config/bin/musica                          .local/bin/musica"
     "config/bin/musica-index                    .local/bin/musica-index"
     "config/bin/glyph-charge-setup              .local/bin/glyph-charge-setup"
+    "config/bin/glyph-dl                        .local/bin/glyph-dl"
 )
 
 # Hanami is on when these gitignored links exist (user.lua and kitty.conf read them only then)

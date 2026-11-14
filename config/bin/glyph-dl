@@ -1,0 +1,189 @@
+#!/usr/bin/env python3
+"""glyph-dl: IDM-style download manager on top of aria2c (JSON-RPC daemon).
+
+Usage:
+  glyph-dl add URL [URL...]   queue downloads (starts the daemon if needed)
+  glyph-dl status             JSON snapshot for the glyph panel (never starts the daemon)
+  glyph-dl pause|resume|remove GID
+  glyph-dl pause-all|resume-all
+  glyph-dl clear              forget finished / failed / removed entries
+  glyph-dl open GID           open the folder that holds the download
+  glyph-dl start|stop         start or stop the aria2c daemon
+
+Downloads go to $GLYPH_DL_DIR or ~/Downloads with 16 connections per file.
+The session is saved, so unfinished downloads resume after a reboot.
+"""
+
+import json
+import os
+import re
+import secrets
+import shutil
+import subprocess
+import sys
+import time
+import urllib.error
+import urllib.request
+
+HOME = os.path.expanduser("~")
+CONF = os.path.join(os.environ.get("XDG_CONFIG_HOME") or f"{HOME}/.config", "glyph-dl")
+STATE = os.path.join(os.environ.get("XDG_STATE_HOME") or f"{HOME}/.local/state", "glyph-dl")
+TOKEN_FILE = os.path.join(CONF, "token")
+SESSION = os.path.join(STATE, "session")
+DIR = os.environ.get("GLYPH_DL_DIR") or os.path.join(HOME, "Downloads")
+PORT = int(os.environ.get("GLYPH_DL_PORT", "6801"))
+URL = f"http://127.0.0.1:{PORT}/jsonrpc"
+KEYS = ["gid", "status", "totalLength", "completedLength", "downloadSpeed", "connections",
+        "dir", "files", "errorMessage", "bittorrent", "followedBy"]
+
+
+def token():
+    try:
+        with open(TOKEN_FILE) as f:
+            return f.read().strip()
+    except FileNotFoundError:
+        os.makedirs(CONF, exist_ok=True)
+        t = secrets.token_hex(16)
+        fd = os.open(TOKEN_FILE, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w") as f:
+            f.write(t)
+        return t
+
+
+def rpc(method, *params, timeout=2):
+    body = json.dumps({"jsonrpc": "2.0", "id": "glyph", "method": f"aria2.{method}",
+                       "params": [f"token:{token()}", *params]}).encode()
+    req = urllib.request.Request(URL, body, {"Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return json.load(r)["result"]
+    except urllib.error.HTTPError as e:
+        msg = json.load(e).get("error", {}).get("message", str(e))
+        raise SystemExit(f"glyph-dl: aria2: {msg}")
+
+
+def alive():
+    try:
+        rpc("getVersion", timeout=0.5)
+        return True
+    except (urllib.error.URLError, OSError):
+        return False
+
+
+def start():
+    if alive():
+        return
+    if not shutil.which("aria2c"):
+        raise SystemExit("glyph-dl: aria2c not found — install it with: sudo pacman -S aria2")
+    os.makedirs(STATE, exist_ok=True)
+    os.makedirs(DIR, exist_ok=True)
+    open(SESSION, "a").close()
+    subprocess.run([
+        "aria2c", "--daemon=true", "--quiet=true",
+        "--enable-rpc=true", "--rpc-listen-all=false", f"--rpc-listen-port={PORT}",
+        f"--rpc-secret={token()}",
+        f"--dir={DIR}", "--continue=true", "--auto-file-renaming=true",
+        # IDM-like: split every file into many segments over parallel connections
+        "--max-connection-per-server=16", "--split=16", "--min-split-size=1M",
+        "--max-concurrent-downloads=5", "--file-allocation=falloc",
+        "--max-tries=5", "--retry-wait=3", "--connect-timeout=15",
+        f"--input-file={SESSION}", f"--save-session={SESSION}", "--save-session-interval=30",
+        "--force-save=false", "--seed-time=0",
+        f"--on-download-complete={os.path.realpath(__file__)}",
+        f"--on-download-error={os.path.realpath(__file__)}",
+    ], check=True)
+    for _ in range(30):
+        if alive():
+            return
+        time.sleep(0.1)
+    raise SystemExit("glyph-dl: aria2c did not answer on its RPC port")
+
+
+def item(d):
+    files = d.get("files") or []
+    path = files[0]["path"] if files and files[0].get("path") else ""
+    name = (d.get("bittorrent") or {}).get("info", {}).get("name") or os.path.basename(path)
+    if not name and files and files[0].get("uris"):
+        name = files[0]["uris"][0]["uri"].split("?")[0].rstrip("/").rsplit("/", 1)[-1]
+    return {
+        "gid": d["gid"], "status": d["status"], "name": name or d["gid"],
+        "total": int(d.get("totalLength", 0)), "done": int(d.get("completedLength", 0)),
+        "speed": int(d.get("downloadSpeed", 0)), "conns": int(d.get("connections", 0)),
+        "dir": d.get("dir", DIR), "path": path, "error": d.get("errorMessage", ""),
+    }
+
+
+def status():
+    if not alive():
+        return {"running": False, "speed": 0, "items": []}
+    out = [item(d) for d in rpc("tellActive", KEYS)]
+    out += [item(d) for d in rpc("tellWaiting", 0, 100, KEYS)]
+    # metadata-only entries (a .torrent link) are replaced by the real download; hide them
+    out += [item(d) for d in reversed(rpc("tellStopped", 0, 100, KEYS)) if not d.get("followedBy")]
+    speed = int(rpc("getGlobalStat")["downloadSpeed"])
+    return {"running": True, "speed": speed, "items": out}
+
+
+def notify(title, body):
+    if shutil.which("notify-send"):
+        subprocess.run(["notify-send", "-a", "Downloads", "-i", "folder-download", title, body], check=False)
+
+
+def hook(gid, path):
+    # aria2 calls us as: glyph-dl GID NUM_FILES PATH
+    name = os.path.basename(path) or gid
+    try:
+        d = rpc("tellStatus", gid, ["status", "errorMessage"])
+    except (urllib.error.URLError, OSError):
+        d = {}
+    if d.get("status") == "error":
+        notify("Download failed", f"{name}\n{d.get('errorMessage', '')}")
+    else:
+        notify("Download complete", name)
+
+
+def main(argv):
+    if len(argv) >= 1 and re.fullmatch(r"[0-9a-f]{16}", argv[0]):
+        return hook(argv[0], argv[2] if len(argv) > 2 else "")
+    cmd, args = (argv[0], argv[1:]) if argv else ("status", [])
+    if cmd == "add":
+        if not args:
+            raise SystemExit("glyph-dl: add needs at least one URL")
+        start()
+        for u in args:
+            rpc("addUri", [u.strip()])
+    elif cmd == "status":
+        print(json.dumps(status()))
+    elif cmd in ("pause", "resume", "remove", "open"):
+        if len(args) != 1:
+            raise SystemExit(f"glyph-dl: {cmd} needs one GID")
+        gid = args[0]
+        if cmd == "open":
+            d = item(rpc("tellStatus", gid, KEYS))
+            subprocess.Popen(["xdg-open", os.path.dirname(d["path"]) if d["path"] else d["dir"]])
+        elif cmd == "remove":
+            st = rpc("tellStatus", gid, ["status"])["status"]
+            rpc("removeDownloadResult" if st in ("complete", "error", "removed") else "forceRemove", gid)
+        else:
+            rpc("forcePause" if cmd == "pause" else "unpause", gid)
+    elif cmd in ("pause-all", "resume-all"):
+        rpc("forcePauseAll" if cmd == "pause-all" else "unpauseAll")
+    elif cmd == "clear":
+        rpc("purgeDownloadResult")
+    elif cmd == "start":
+        start()
+    elif cmd == "stop":
+        if alive():
+            rpc("saveSession")
+            rpc("shutdown")
+    else:
+        print(__doc__.strip(), file=sys.stderr)
+        return 2
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main(sys.argv[1:]))
+    except urllib.error.URLError:
+        sys.exit("glyph-dl: aria2c daemon is not running (try: glyph-dl start)")

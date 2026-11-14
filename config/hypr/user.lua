@@ -28,6 +28,7 @@ hl.bind("SUPER + ALT + M", hl.dsp.global("shell:music"))   -- panel de música d
 -- Teclas en pantalla estilo keyviz (glyph keys/Keys.qml, datos de showmethekey-cli vía pkexec)
 hl.bind("SUPER + ALT + K", hl.dsp.global("shell:keys"))
 hl.layer_rule({ match = { namespace = "glyph-keys" }, blur = true, ignore_alpha = 0.2 })
+hl.bind("SUPER + ALT + D", hl.dsp.global("shell:downloads"))   -- gestor de descargas (aria2 + panel glyph)
 
 -- TikTok estilo glyph (~/Projects/glyph-tok), en todos los escritorios. Modo fijo: la app se coloca en la franja que
 -- reserva glyph (tok/TokDock.qml); modo flotante: 420x910 abajo a la derecha. Esto es solo la posición inicial
