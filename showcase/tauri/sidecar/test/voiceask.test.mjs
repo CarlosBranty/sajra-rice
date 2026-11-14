@@ -128,7 +128,7 @@ assert.match(wait, /Roamie\.voiceOut\.finished\(m\.speech \?\? null\)/, 'once th
 assert.match(wait, /send\(\{ type: 'ask_listen', id: m\.id \}\);/);
 // Barge-in: the setting, the panel, the shell.
 assert.match(side, /barge: LINUX && VOICE_OK \? bargeOf\(config, deviceName\(config\.micDevice\)\) : null,/, 'the panel is told (state.barge)');
-assert.match(side, /micGain: micGain\(config\), barge: config\.bargeIn !== false \}/, 'voice_config carries the wish; the shell checks the microphone');
+assert.match(side, /micGain: micGain\(config\), barge: config\.bargeIn !== false[ ,]/, 'voice_config carries the wish; the shell checks the microphone');
 assert.match(side, /else if \(id === 'bargein' && LINUX\) \{ if \(bargeOf\(config, deviceName\(config\.micDevice\)\)\.aec\) \{ config\.bargeIn = config\.bargeIn === false; saveConfig\(\); voiceConfig\(\); menu\(\); \} \}/, 'switchable only with the echo-cancelled microphone');
 assert.match(side, /if \(m\.type === 'voice_state' && m\.state === 'listening'\) \{ if \(!choiceAsks\.size\) interruptQuietly\(\); speech\.stop\(\); warmUp\(\); \}/, 'a barge stops the reply as the talk keys do: its take starts listening');
 const panel = read('../../../panel/panel.js');

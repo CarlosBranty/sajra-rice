@@ -1781,6 +1781,7 @@ fn handle_sidecar(app: &AppHandle, msg: Value) {
                 voice::set_mic(app, voice::device_of(&msg, "mic"));
                 // Talking over a reply stops it: wanted, and only on an echo-cancelled microphone (after set_mic).
                 voice::set_barge(app, voice::barge_of(&msg));
+                voice::set_dictation_live(voice::dictation_live_of(&msg));
                 voice::set_gain(app, voice::gain_of(&msg));
                 linux::set_speaker(voice::device_of(&msg, "speaker"));
             }

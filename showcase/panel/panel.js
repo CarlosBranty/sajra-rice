@@ -589,7 +589,9 @@
         // Linux on a layer surface: the mouse circles or underlines things while I listen, and has every click meanwhile.
         state.pen ? toggle('Draw with the mouse while I listen', 'Drag round what you mean; a click without dragging stops it', state.pen.on, () => act('pen'), 'pen') : null,
         // Linux: talking over a reply stops it, only where the microphone takes my own voice out (else I'd stop myself).
-        state.barge ? bargeToggle(state.barge, v.on) : null) : null,
+        state.barge ? bargeToggle(state.barge, v.on) : null,
+        // Linux: the dictation key's words typed as they settle, or pasted at once when it is let go.
+        state.dictation ? toggle('Type as I speak', state.dictation.live ? 'Words go in as they settle; one can come out wrong' : 'Pasted at once when you let go of the key', state.dictation.live, () => act('dictlive'), 'dictlive') : null) : null,
       // Linux: saying the phrase starts listening, as the talk shortcut does. The microphone stays on to hear it.
       state.wake ? group('Wake word', 'Say a phrase and I listen, no key needed. The microphone stays on to hear it; nothing leaves this computer until you say it.', null,
         toggle('Wake word', !v?.on ? 'Needs Voice control on' : state.wake.phrase ? `Say "${state.wake.phrase}" to talk to me` : 'Pick a phrase to call me with', state.wake.on, () => {

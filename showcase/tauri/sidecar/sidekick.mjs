@@ -105,6 +105,7 @@ const DEFAULTS = {
   micDevice: '', speakerDevice: '', micGain: 100, // Linux: micGain, how much louder Hanami hears the microphone (%); the microphone and speaker Hanami uses ('' = the system's default; audiodev.mjs)
   wakeWord: false, wakePhrase: '', // Linux: saying the phrase starts listening, with no key; the microphone stays on for it (speech.mjs wakeOf)
   bargeIn: true, // Linux: talking over a reply stops it, only with an echo-cancelled microphone (speech.mjs bargeOf)
+  dictationLive: false, // Linux: dictated words are typed as they settle; off, the take is pasted at once when the key is let go
   penMouse: true, // Linux on a layer surface: while it listens, the mouse draws on the screen (platform.mjs mousePen)
   theme: 'classic', // the interface's colours: 'classic', or 'system' to follow the desktop's light or dark and its colours (speech.mjs themeOf)
   // Money: the mail accounts bank notifications are read from ({ provider, email }; their app passwords are only in the
@@ -1452,6 +1453,8 @@ function panelState() {
     wake: LINUX && VOICE_OK ? wakeOf(config) : null,
     // Barge-in (menu id 'bargein'): on only with an echo-cancelled microphone; aec says whether the one picked is.
     barge: LINUX && VOICE_OK ? bargeOf(config, deviceName(config.micDevice)) : null,
+    // Dictation (menu id 'dictlive'): typed live as the words settle, or pasted at once at the end.
+    dictation: LINUX && VOICE_OK ? { live: config.dictationLive === true } : null,
     audio: LINUX && audioDevices ? { ...audioDevices, mic: deviceName(config.micDevice), speaker: deviceName(config.speakerDevice), gain: micGain(config), gains: MIC_GAINS } : null,
     pen: PEN_MOUSE ? { on: penOn() } : null,
     voice: VOICE_OK ? {
@@ -1470,7 +1473,7 @@ function panelState() {
 
 // duck (Linux): the percentage other apps' sound is lowered to while it listens and speaks, 0 when that's off.
 // wake (Linux): the phrase the voice helper listens for to start a take, '' when the wake word is off.
-const voiceConfig = () => send({ type: 'voice_config', enabled: VOICE_OK && config.voice && voiceReady(), mute: config.muteWhileTalking !== false, sound: !!config.sound, ...(NEEDS_MODEL ? { model: MODEL_DIR } : {}), ...(LINUX ? { duck: duckLevel(config), wake: wakeFor(config), mic: deviceName(config.micDevice), speaker: deviceName(config.speakerDevice), micGain: micGain(config), barge: config.bargeIn !== false } : {}) });
+const voiceConfig = () => send({ type: 'voice_config', enabled: VOICE_OK && config.voice && voiceReady(), mute: config.muteWhileTalking !== false, sound: !!config.sound, ...(NEEDS_MODEL ? { model: MODEL_DIR } : {}), ...(LINUX ? { duck: duckLevel(config), wake: wakeFor(config), mic: deviceName(config.micDevice), speaker: deviceName(config.speakerDevice), micGain: micGain(config), barge: config.bargeIn !== false, dictationLive: config.dictationLive === true } : {}) });
 // Linux: the microphones and speakers there are, for the Voice page; asked again now and then (one plugged in or out).
 async function refreshAudio() {
   if (!LINUX) return;
@@ -1682,6 +1685,7 @@ async function onMenu(id) {
   else if (id.startsWith('ducklevel:') && LINUX && DUCK_LEVELS.includes(Number(id.slice(10)))) { config.duckLevel = Number(id.slice(10)); saveConfig(); voiceConfig(); menu(); }
   // Only with an echo-cancelled microphone: elsewhere the switch is off and can't be turned on (the Devices tab).
   else if (id === 'bargein' && LINUX) { if (bargeOf(config, deviceName(config.micDevice)).aec) { config.bargeIn = config.bargeIn === false; saveConfig(); voiceConfig(); menu(); } }
+  else if (id === 'dictlive' && LINUX) { config.dictationLive = config.dictationLive !== true; saveConfig(); voiceConfig(); menu(); }
   else if (id === 'wake' && LINUX) { config.wakeWord = !wakeOf(config).on; saveConfig(); voiceConfig(); menu(); }
   else if (id === 'pen' && PEN_MOUSE) { config.penMouse = !penOn(); saveConfig(); ui({ kind: 'pen', on: penOn() }); menu(); }
   else if (id === 'voicedl') startVoiceDownload();

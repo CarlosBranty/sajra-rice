@@ -59,6 +59,7 @@ pub(crate) fn dictate(app: &AppHandle) {
         return;
     }
     DICTATE.store(true, Ordering::Relaxed);
+    *LIVE.lock().unwrap() = (0, Vec::new());
     to_voice(app, &json!({ "cmd": "hold" }));
     watch_dictation_key(app);
 }
@@ -147,14 +148,160 @@ fn dictation_text(text: &str) -> Option<String> {
     (!t.is_empty()).then(|| format!("{t} "))
 }
 
-/// Types the words into the app that has the keyboard, on a thread of its own (wtype takes a moment per word).
+/// Live dictation (the Voice page's "Type as I speak"): the words go in while the key is held, as they settle, instead
+/// of all at once when it is let go.
 #[cfg(target_os = "linux")]
-fn type_dictation(text: String) {
-    thread::spawn(move || match Command::new("wtype").arg("--").arg(&text).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::piped()).output() {
+static DICTATE_LIVE: AtomicBool = AtomicBool::new(false);
+
+/// The take dictated live: how many of its words are typed, and the read before the latest one.
+#[cfg(target_os = "linux")]
+static LIVE: Mutex<(usize, Vec<String>)> = Mutex::new((0, Vec::new()));
+
+/// The setting in voice_config (missing: off, as an older sidecar: pasted at the end).
+#[cfg(target_os = "linux")]
+pub(crate) fn dictation_live_of(msg: &Value) -> bool {
+    msg.get("dictationLive").and_then(Value::as_bool) == Some(true)
+}
+
+#[cfg(target_os = "linux")]
+pub(crate) fn set_dictation_live(on: bool) {
+    DICTATE_LIVE.store(on, Ordering::Relaxed);
+}
+
+/// What live dictation types after a new read: the words it and the read before agree on (a word that changed stops
+/// it), never the last word heard (it may be cut), past the `typed` ones. With the new count of typed words.
+#[cfg(target_os = "linux")]
+fn live_words(typed: usize, prev: &[String], cur: &[String]) -> Option<(String, usize)> {
+    let agreed = prev.iter().zip(cur).take_while(|(a, b)| a == b).count();
+    let settled = agreed.min(cur.len().saturating_sub(1));
+    (settled > typed).then(|| (format!("{} ", cur[typed..settled].join(" ")), settled))
+}
+
+/// What the take's closing read leaves to type once `typed` of its words went in live (all of it when none did).
+/// A word the closing read heard differently than live can't be taken back: it stays as typed.
+#[cfg(target_os = "linux")]
+fn final_rest(typed: usize, text: &str) -> Option<String> {
+    let words: Vec<&str> = text.split_whitespace().collect();
+    words.get(typed..).and_then(|rest| dictation_text(&rest.join(" ")))
+}
+
+/// The apps that paste with Ctrl+Shift+V (Ctrl+V is a key of their own there), by Hyprland window class.
+#[cfg(target_os = "linux")]
+const TERMINALS: [&str; 14] = [
+    "kitty", "foot", "footclient", "alacritty", "wezterm", "org.wezfurlong.wezterm", "ghostty", "com.mitchellh.ghostty",
+    "konsole", "org.kde.konsole", "org.gnome.console", "org.gnome.terminal", "xterm", "tilix",
+];
+
+/// wtype's arguments for the paste shortcut of a window of this class.
+#[cfg(target_os = "linux")]
+fn paste_keys(class: &str) -> Vec<&'static str> {
+    if TERMINALS.contains(&class.to_ascii_lowercase().as_str()) {
+        vec!["-M", "ctrl", "-M", "shift", "v", "-m", "shift", "-m", "ctrl"]
+    } else {
+        vec!["-M", "ctrl", "v", "-m", "ctrl"]
+    }
+}
+
+/// What dictation hands the app with the keyboard: words typed key by key, or pasted at once.
+#[cfg(target_os = "linux")]
+enum Out {
+    Type(String),
+    Paste(String),
+}
+
+/// One thread delivers everything in the order it was said (live words, then the rest of the take).
+#[cfg(target_os = "linux")]
+static OUT: Mutex<Option<std::sync::mpsc::Sender<Out>>> = Mutex::new(None);
+
+#[cfg(target_os = "linux")]
+fn deliver(out: Out) {
+    let mut tx = OUT.lock().unwrap();
+    let tx = tx.get_or_insert_with(|| {
+        let (tx, rx) = std::sync::mpsc::channel();
+        thread::spawn(move || {
+            for out in rx {
+                match out {
+                    Out::Type(t) => type_text(&t),
+                    // No clipboard tools, or the paste didn't go: typed instead.
+                    Out::Paste(t) => {
+                        if !paste_text(&t) {
+                            type_text(&t);
+                        }
+                    }
+                }
+            }
+        });
+        tx
+    });
+    let _ = tx.send(out);
+}
+
+/// Types the words into the app that has the keyboard (wtype takes a moment per word).
+#[cfg(target_os = "linux")]
+fn type_text(text: &str) {
+    match Command::new("wtype").arg("--").arg(text).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::piped()).output() {
         Ok(o) if o.status.success() => {}
         Ok(o) => eprintln!("dictation: wtype failed: {}", String::from_utf8_lossy(&o.stderr).trim()),
         Err(e) => eprintln!("dictation: wtype could not run ({e}); install wtype to type dictated words"),
-    });
+    }
+}
+
+/// A command's output when it ran and succeeded.
+#[cfg(target_os = "linux")]
+fn run_ok(cmd: &str, args: &[&str]) -> Option<Vec<u8>> {
+    let o = Command::new(cmd).args(args).stdin(Stdio::null()).stderr(Stdio::null()).output().ok()?;
+    o.status.success().then_some(o.stdout)
+}
+
+/// wl-copy with these bytes on its stdin (it forks to serve them and returns).
+#[cfg(target_os = "linux")]
+fn copy(args: &[&str], bytes: &[u8]) -> bool {
+    let Ok(mut c) = Command::new("wl-copy").args(args).stdin(Stdio::piped()).stdout(Stdio::null()).stderr(Stdio::null()).spawn() else {
+        return false;
+    };
+    let wrote = c.stdin.take().is_some_and(|mut i| i.write_all(bytes).is_ok());
+    c.wait().is_ok_and(|s| s.success()) && wrote
+}
+
+/// Pastes the words at once: into the clipboard (marked sensitive, so the clipboard history skips it), the window's
+/// paste shortcut, then the clipboard gets back what it held (any type: text, an image), or is emptied if it held
+/// nothing. False when it couldn't paste.
+#[cfg(target_os = "linux")]
+fn paste_text(text: &str) -> bool {
+    let saved = run_ok("wl-paste", &["--list-types"])
+        .and_then(|t| String::from_utf8_lossy(&t).lines().next().map(str::to_owned))
+        .and_then(|mime| run_ok("wl-paste", &["--no-newline", "--type", &mime]).map(|b| (mime, b)));
+    if !copy(&["--sensitive", "--type", "text/plain;charset=utf-8"], text.as_bytes()) {
+        return false;
+    }
+    let class = run_ok("hyprctl", &["activewindow", "-j"])
+        .and_then(|j| serde_json::from_slice::<Value>(&j).ok())
+        .and_then(|v| v.get("class").and_then(Value::as_str).map(str::to_owned))
+        .unwrap_or_default();
+    let pasted = run_ok("wtype", &paste_keys(&class)).is_some();
+    // The app reads the clipboard after the shortcut, in its own time.
+    thread::sleep(Duration::from_millis(500));
+    match saved {
+        Some((mime, bytes)) => {
+            copy(&["--type", &mime], &bytes);
+        }
+        None => {
+            let _ = run_ok("wl-copy", &["--clear"]);
+        }
+    }
+    pasted
+}
+
+/// Live dictation: a new read of the take; the words it settles are typed.
+#[cfg(target_os = "linux")]
+fn dictate_live(text: &str) {
+    let cur: Vec<String> = text.split_whitespace().map(str::to_owned).collect();
+    let mut live = LIVE.lock().unwrap();
+    if let Some((words, typed)) = live_words(live.0, &live.1, &cur) {
+        deliver(Out::Type(words));
+        live.0 = typed;
+    }
+    live.1 = cur;
 }
 
 /// The microphone the user picked (Linux, the Voice page): a PipeWire/PulseAudio source's name, "" for the system's
@@ -588,14 +735,23 @@ fn handle_voice(app: &AppHandle, msg: Value) {
             to_overlays(app, &ui);
             to_sidecar(app, &json!({ "type": "voice_state", "state": msg.get("state") }));
         }
-        Some("partial") | Some("level") => to_overlays(app, &ui),
+        Some("partial") | Some("level") => {
+            // Live dictation: the words that settled go into the app as the take goes on.
+            #[cfg(target_os = "linux")]
+            if msg.get("type").and_then(Value::as_str) == Some("partial") && DICTATE.load(Ordering::Relaxed) && DICTATE_LIVE.load(Ordering::Relaxed) {
+                dictate_live(msg.get("text").and_then(Value::as_str).unwrap_or(""));
+            }
+            to_overlays(app, &ui)
+        }
         // The user talked over a reply: the take that follows stops it (its "listening"); the sidecar logs it.
         Some("barge") => to_sidecar(app, &json!({ "type": "voice_barge" })),
         // Dictation: the words are typed, never asked.
         #[cfg(target_os = "linux")]
+        // Pasted at once when it was not live; live, the rest of it is typed after the words already in.
         Some("final") if DICTATE.swap(false, Ordering::Relaxed) => {
-            if let Some(t) = dictation_text(msg.get("text").and_then(Value::as_str).unwrap_or("")) {
-                type_dictation(t);
+            let typed = std::mem::take(&mut *LIVE.lock().unwrap()).0;
+            if let Some(t) = final_rest(typed, msg.get("text").and_then(Value::as_str).unwrap_or("")) {
+                deliver(if DICTATE_LIVE.load(Ordering::Relaxed) { Out::Type(t) } else { Out::Paste(t) });
             }
         }
         Some("final") => {
@@ -683,6 +839,50 @@ mod tests {
         assert_eq!(dictation_text("  git   status \n"), Some("git status ".to_string()), "spaces tidied");
         assert_eq!(dictation_text(""), None);
         assert_eq!(dictation_text("   "), None, "no words: nothing typed");
+    }
+
+    fn w(s: &str) -> Vec<String> {
+        s.split_whitespace().map(str::to_owned).collect()
+    }
+
+    #[test]
+    fn live_dictation_types_the_words_two_reads_agree_on_never_the_last_one() {
+        // The first read: nothing to compare with yet.
+        assert_eq!(live_words(0, &[], &w("hola como")), None);
+        // Two reads agree on "hola como", and words came after it: both go.
+        assert_eq!(live_words(0, &w("hola como"), &w("hola como estás")), Some(("hola como ".to_string(), 2)));
+        // They agree on all of it, but "como" is still the last word heard (it may be cut): only "hola" goes.
+        assert_eq!(live_words(0, &w("hola como"), &w("hola como")), Some(("hola ".to_string(), 1)));
+        // Already typed words are not typed again; the newly settled ones are.
+        assert_eq!(live_words(1, &w("hola como estás"), &w("hola como estás hoy")), Some(("como estás ".to_string(), 3)));
+        // A read that changed an earlier word settles nothing past it.
+        assert_eq!(live_words(1, &w("hola como esta"), &w("hola cómo estás hoy")), None);
+        // Nothing new settled: nothing typed.
+        assert_eq!(live_words(3, &w("hola como estás hoy"), &w("hola como estás hoy")), None);
+    }
+
+    #[test]
+    fn the_closing_read_types_only_what_live_dictation_had_not_typed() {
+        assert_eq!(final_rest(0, "Hola, ¿cómo estás?"), Some("Hola, ¿cómo estás? ".to_string()), "nothing typed live: all of it");
+        assert_eq!(final_rest(1, "hola como estás"), Some("como estás ".to_string()));
+        assert_eq!(final_rest(3, "hola como estás"), None, "all typed already");
+        assert_eq!(final_rest(5, "hola como"), None, "the closing read is shorter: nothing more");
+        assert_eq!(final_rest(0, "  "), None);
+    }
+
+    #[test]
+    fn dictation_is_pasted_with_the_shortcut_the_window_takes() {
+        assert_eq!(paste_keys("kitty"), ["-M", "ctrl", "-M", "shift", "v", "-m", "shift", "-m", "ctrl"], "terminals: Ctrl+Shift+V");
+        assert_eq!(paste_keys("com.mitchellh.ghostty"), ["-M", "ctrl", "-M", "shift", "v", "-m", "shift", "-m", "ctrl"]);
+        assert_eq!(paste_keys("zen"), ["-M", "ctrl", "v", "-m", "ctrl"], "everything else: Ctrl+V");
+        assert_eq!(paste_keys(""), ["-M", "ctrl", "v", "-m", "ctrl"]);
+    }
+
+    #[test]
+    fn live_dictation_is_on_only_when_the_sidecar_says_so() {
+        assert!(dictation_live_of(&json!({ "type": "voice_config", "dictationLive": true })));
+        assert!(!dictation_live_of(&json!({ "dictationLive": false })));
+        assert!(!dictation_live_of(&json!({ "wake": "" })), "an older sidecar says nothing: pasted at the end");
     }
 
     #[test]
