@@ -147,8 +147,12 @@ PNG ≤ 4 MiB of exactly those frames), and the shell writes it to `$XDG_RUNTIME
 the same colours (`lookSig`) isn't drawn again.
 Dictation (Linux): `hanami --dictate` on a key's press and `hanami --dictate-end` on its release (two compositor
 binds, `{ release = true }` on the second) hold a take in the running voice helper (`hold` and `release` commands;
-pauses don't end it, MAX_HELD does if the release never comes) whose words are typed where the keyboard is with
-`wtype` (`voice.rs` `dictate`, `dictation_text`), not sent to the agent: no model or process of its own.
+pauses don't end it, MAX_HELD does if the release never comes) whose words go where the keyboard is, not to the
+agent: no model or process of its own. Two modes, the Voice page's "Type as I speak" (`config.dictationLive`, menu id
+`dictlive`, `dictationLive` in voice_config): off (default), the closing read is pasted at once (`wl-copy --sensitive`,
+Ctrl+V or Ctrl+Shift+V in terminals, then the clipboard gets back what it held; `wtype` if that fails); on, the words
+two live reads agree on (never the last one) are typed with `wtype` as the take goes, then the rest of the closing read
+(`voice.rs` `live_words`, `final_rest`, `paste_text`; one thread keeps them in order).
 Devices (Linux, the Voice page's Devices tab): the microphones and speakers come from `pactl -f json list
 sources|sinks` (`sidecar/audiodev.mjs`, monitors left out); a pick is a device name, '' the system's default. The voice
 helper is started with `PIPEWIRE_NODE` and `PULSE_SOURCE` set to the microphone (`voice.rs` `set_mic`; a change
