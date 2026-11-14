@@ -26,8 +26,9 @@ if not bin then return end
 
 -- Ctrl+Alt+Space to talk to it. One press starts listening; another (or a pause after you finish speaking) sends it
 hl.bind("CTRL + ALT + Space", hl.dsp.exec_cmd(bin .. " --talk"))
--- Hold Ctrl+Alt+D to dictate. What you say while holding it is typed where the cursor is (terminal, browser…) when
--- you release it, without going through the AI. Pauses don't cut it
+-- Hold Ctrl+Alt+D to dictate. What you say while holding it is pasted where the cursor is (terminal, browser…) when
+-- you release it, or typed as you speak with "Type as I speak" on (Voice page), without going through the AI. Pauses
+-- don't cut it
 hl.bind("CTRL + ALT + D", hl.dsp.exec_cmd(bin .. " --dictate"))
 hl.bind("CTRL + ALT + D", hl.dsp.exec_cmd(bin .. " --dictate-end"), { release = true })
 
