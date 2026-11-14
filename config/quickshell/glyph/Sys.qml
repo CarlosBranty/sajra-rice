@@ -169,9 +169,36 @@ Singleton {
     QsMenuOpener { id: vmenu; menu: root.verge?.menu ?? null }
     readonly property var vpnItems: ["System Proxy", "TUN Mode"]
     function vpnItem(l) { return vmenu.children.values.find(e => e.text.startsWith(l)) ?? null; }
-    readonly property bool vpn: vpnItems.some(l => vpnItem(l)?.checkState === Qt.Checked)
+    readonly property bool vpn: hasWarp ? warpOn : vpnItems.some(l => vpnItem(l)?.checkState === Qt.Checked)
     property var queue: []
+
+    // ---- vpn: Cloudflare WARP (warp-cli) takes priority over Clash Verge when installed ----
+    property bool hasWarp: false
+    property bool warpOn: false
+    Process {
+        running: true
+        command: ["sh", "-c", "command -v warp-cli"]
+        onExited: code => root.hasWarp = code === 0
+    }
+    Process {
+        id: warpPoll
+        command: ["warp-cli", "--accept-tos", "status"]
+        stdout: StdioCollector { onStreamFinished: root.warpOn = /Status update:\s*Connected/i.test(text) }
+    }
+    Timer {
+        interval: 3000
+        repeat: true
+        running: root.hasWarp
+        triggeredOnStart: true
+        onTriggered: warpPoll.running = true
+    }
+
     function toggleVpn() {
+        if (hasWarp) {
+            Quickshell.execDetached(["warp-cli", "--accept-tos", warpOn ? "disconnect" : "connect"]);
+            warpOn = !warpOn; // optimistic; the poll corrects it
+            return;
+        }
         if (!verge) return Quickshell.execDetached(["clash-verge"]); // спит — разбудить
         queue = vpn ? vpnItems.filter(l => vpnItem(l)?.checkState === Qt.Checked) : vpnItems;
         presser.start();
