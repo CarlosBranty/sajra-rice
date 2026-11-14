@@ -55,23 +55,34 @@ Singleton {
     }
     readonly property string layout: kbd.slice(0, 2).toLowerCase() // "English (US)" → en
 
-    // ---- запись и авиарежим: их же включают бинды hypr, поэтому опрос. Ночник — общий с demonshot, в его rules.json
-    // ponytail: pgrep раз в 3 с; станет заметно — следить за процессами через systemd-run --scope ----
+    // ---- запись и авиарежим: их же включают бинды hypr. Ночник — общий с demonshot, в его rules.json
+    // запись: один pgrep раз в 3 с (без sh); код выхода 0 — пишет. ponytail: станет заметно — systemd-run --scope ----
     property bool rec: false
     readonly property bool night: Rules.store.night
     property bool air: false
     Process {
         id: poll
-        command: ["sh", "-c", "pgrep -f '^gpu-screen-recorder' >/dev/null && echo rec; "
-                            + "rfkill -rno SOFT | grep -qv '^blocked' || echo air"]
-        stdout: StdioCollector {
-            onStreamFinished: {
-                root.rec = text.includes("rec");
-                root.air = text.includes("air");
+        command: ["pgrep", "-f", "^gpu-screen-recorder"]
+        onExited: code => root.rec = code === 0
+    }
+    Timer { running: true; repeat: true; interval: 3000; triggeredOnStart: true; onTriggered: poll.running = true }
+    // авиарежим без опроса: `rfkill event` сначала выдаёт все устройства, потом только изменения.
+    // op 1 — устройство ушло. Авиарежим — ни одно не разблокировано (как прежнее `rfkill -rno SOFT | grep -qv ^blocked`)
+    property var rfSoft: ({}) // idx → soft
+    Process {
+        running: true
+        command: ["rfkill", "event"]
+        stdout: SplitParser {
+            onRead: l => {
+                const m = l.match(/idx (\d+) type \d+ op (\d+) soft (\d+)/);
+                if (!m) return;
+                const s = Object.assign({}, root.rfSoft);
+                if (m[2] === "1") delete s[m[1]]; else s[m[1]] = +m[3];
+                root.rfSoft = s;
+                root.air = !Object.values(s).some(v => v === 0);
             }
         }
     }
-    Timer { running: true; repeat: true; interval: 3000; triggeredOnStart: true; onTriggered: poll.running = true }
 
     function sh(c) { Quickshell.execDetached(["sh", "-c", c]); }
     // настройки записи из Theme.state (quick/Rec) → флаги gpu-screen-recorder; их же берёт скриншотилка
