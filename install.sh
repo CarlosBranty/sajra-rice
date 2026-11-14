@@ -82,6 +82,7 @@ LINKS=(
     "config/bin/glyph-vault                     .local/bin/glyph-vault"
     "config/bin/musica                          .local/bin/musica"
     "config/bin/musica-index                    .local/bin/musica-index"
+    "config/bin/musica-remote                   .local/bin/musica-remote"
     "config/bin/glyph-charge-setup              .local/bin/glyph-charge-setup"
     "config/bin/glyph-dl                        .local/bin/glyph-dl"
 )

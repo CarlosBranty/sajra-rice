@@ -21,9 +21,20 @@ OUT = os.path.join(CACHE, "library.json")
 ART = os.path.join(CACHE, "art")
 
 
+CONF = os.path.join(os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config"), "musica", "music-dir")
+
+
 def music_dir():
     if len(sys.argv) > 1:
         return os.path.abspath(sys.argv[1])
+    # folder chosen in the panel settings (⚙ → Local); a missing one falls back to the system Music dir
+    try:
+        with open(CONF) as f:
+            d = os.path.expanduser(f.readline().strip())
+        if d and os.path.isdir(d):
+            return os.path.abspath(d)
+    except OSError:
+        pass
     try:
         d = subprocess.run(["xdg-user-dir", "MUSIC"], capture_output=True, text=True).stdout.strip()
         if d and os.path.isdir(d) and d != os.path.expanduser("~"):

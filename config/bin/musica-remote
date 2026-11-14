@@ -1,0 +1,191 @@
+#!/usr/bin/env python3
+"""musica-remote — connects the glyph music panel to a Qodi Music server.
+
+  musica-remote login URL USER   ask for the password, store the token
+  musica-remote sync             fetch the catalog → ~/.cache/musica/remote.json
+  musica-remote status           show server, user and last sync
+  musica-remote logout           forget the token and empty the cached catalog
+
+The token lives in ~/.config/musica/remote.json (0600). mpv gets it through
+~/.config/musica/mpv-auth.conf (0600, http-header-fields), never through argv,
+so it does not show up in `ps`. Covers in the cache carry ?token= because QML
+Image cannot send headers; that cache file is 0600 as well.
+Sync is incremental (/library/changes?since=), a full snapshot the first time.
+"""
+import getpass
+import json
+import os
+import sys
+import urllib.error
+import urllib.parse
+import urllib.request
+
+CONF_DIR = os.path.join(os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config"), "musica")
+CONF = os.path.join(CONF_DIR, "remote.json")
+MPV_AUTH = os.path.join(CONF_DIR, "mpv-auth.conf")
+CACHE = os.path.join(os.environ.get("XDG_CACHE_HOME") or os.path.expanduser("~/.cache"), "musica")
+OUT = os.path.join(CACHE, "remote.json")
+API = "/api/v1"
+
+
+class ApiError(Exception):
+    def __init__(self, status, code, message):
+        super().__init__(message)
+        self.status, self.code = status, code
+
+
+def write_private(path, data):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp = path + ".tmp"
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f:
+        f.write(data)
+    os.chmod(tmp, 0o600)
+    os.replace(tmp, path)
+
+
+def write_json(path, obj):
+    write_private(path, json.dumps(obj, ensure_ascii=False))
+
+
+def read_json(path):
+    try:
+        with open(path) as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return None
+
+
+def request(base, path, token=None, body=None, timeout=30):
+    req = urllib.request.Request(base + API + path, method="POST" if body is not None else "GET")
+    req.add_header("Accept", "application/json")
+    if token:
+        req.add_header("Authorization", "Bearer " + token)
+    data = None
+    if body is not None:
+        data = json.dumps(body).encode()
+        req.add_header("Content-Type", "application/json")
+    try:
+        with urllib.request.urlopen(req, data=data, timeout=timeout) as r:
+            return json.load(r)
+    except urllib.error.HTTPError as e:
+        try:
+            err = json.load(e).get("error", {})
+        except ValueError:
+            err = {}
+        raise ApiError(e.code, err.get("code", "http_error"), err.get("message", str(e))) from None
+    except (urllib.error.URLError, OSError) as e:
+        raise ApiError(0, "unreachable", str(getattr(e, "reason", e))) from None
+
+
+def normalize_url(url):
+    url = url.strip().rstrip("/")
+    if not urllib.parse.urlparse(url).scheme:
+        url = "https://" + url
+    if url.endswith(API):
+        url = url[: -len(API)]
+    return url
+
+
+def entry(base, token, t):
+    tid = t["id"]
+    q = "?token=" + urllib.parse.quote(token)
+    artist = t.get("artist") or ""
+    album_artist = t.get("album_artist") or artist
+    album = t.get("album") or ""
+    return {
+        "id": tid,
+        # path is the playable URL without the token: mpv authenticates by header,
+        # and the panel matches it against MPRIS xesam:url to highlight the track
+        "path": f"{base}{API}/tracks/{tid}/stream",
+        "folder": f"{album_artist}/{album}" if album else album_artist,
+        "title": t.get("title") or "",
+        "artist": artist,
+        "albumArtist": album_artist,
+        "album": album,
+        "track": t.get("track_number") or 0,
+        "disc": t.get("disc_number") or 0,
+        "dur": round((t.get("duration_ms") or 0) / 1000),
+        "art": f"{base}{API}/tracks/{tid}/cover{q}" if t.get("has_cover") else "",
+    }
+
+
+def save_mpv_auth(token):
+    write_private(MPV_AUTH, f'http-header-fields="Authorization: Bearer {token}"\n')
+
+
+def cmd_login(args):
+    if len(args) != 2:
+        sys.exit("usage: musica-remote login URL USER")
+    base, user = normalize_url(args[0]), args[1]
+    password = os.environ.get("MUSICA_REMOTE_PASSWORD") or getpass.getpass(f"Password for {user} at {base}: ")
+    try:
+        res = request(base, "/auth/login", body={"username": user, "password": password})
+    except ApiError as e:
+        sys.exit(f"login failed: {e}")
+    write_json(CONF, {"url": base, "user": res["user"]["username"], "token": res["token"]})
+    save_mpv_auth(res["token"])
+    # another server or user: the old catalog is no longer valid
+    if os.path.exists(OUT):
+        os.remove(OUT)
+    print(f"logged in to {base} as {res['user']['username']}")
+    return cmd_sync([])
+
+
+def cmd_sync(_args):
+    conf = read_json(CONF)
+    if not conf:
+        write_json(OUT, {"error": "not_logged_in", "tracks": []})
+        sys.exit("not logged in: musica-remote login URL USER")
+    base, token = conf["url"], conf["token"]
+    save_mpv_auth(token)  # keeps mpv in sync after a manual edit of remote.json
+    old = read_json(OUT) or {}
+    incremental = old.get("server") == base and old.get("server_time") and not old.get("error")
+    query = "?since=" + urllib.parse.quote(old["server_time"]) if incremental else ""
+    try:
+        res = request(base, "/library/changes" + query, token, timeout=120)
+    except ApiError as e:
+        code = "login_expired" if e.status == 401 else e.code
+        # keep the last known catalog so a flaky network does not empty the panel
+        write_json(OUT, {**old, "server": base, "error": code, "tracks": old.get("tracks", []) if code != "login_expired" else []})
+        sys.exit(f"sync failed: {e}")
+    tracks = {t["id"]: t for t in old.get("tracks", [])} if incremental else {}
+    for rid in res.get("removed_track_ids", []):
+        tracks.pop(rid, None)
+    for t in res.get("tracks", []):
+        tracks[t["id"]] = entry(base, token, t)
+    write_json(OUT, {"server": base, "user": conf.get("user", ""), "server_time": res.get("server_time"), "tracks": list(tracks.values())})
+    print(f"{len(tracks)} songs from {base} → {OUT}")
+
+
+def cmd_status(_args):
+    conf = read_json(CONF)
+    if not conf:
+        print("not logged in")
+        return
+    cache = read_json(OUT) or {}
+    print(f"server: {conf['url']}\nuser:   {conf.get('user', '')}")
+    print(f"songs:  {len(cache.get('tracks', []))}  (synced {cache.get('server_time') or 'never'})")
+    if cache.get("error"):
+        print(f"error:  {cache['error']}")
+
+
+def cmd_logout(_args):
+    for p in (CONF, MPV_AUTH):
+        if os.path.exists(p):
+            os.remove(p)
+    # the panel watches this file: an explicit state empties it right away
+    write_json(OUT, {"error": "not_logged_in", "tracks": []})
+    print("logged out")
+
+
+def main():
+    cmds = {"login": cmd_login, "sync": cmd_sync, "status": cmd_status, "logout": cmd_logout}
+    if len(sys.argv) < 2 or sys.argv[1] not in cmds:
+        print(__doc__.strip())
+        sys.exit(0 if len(sys.argv) > 1 and sys.argv[1] in ("-h", "--help") else 2)
+    cmds[sys.argv[1]](sys.argv[2:])
+
+
+if __name__ == "__main__":
+    main()

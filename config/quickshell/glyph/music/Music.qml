@@ -10,7 +10,10 @@ import qs.services
 // музыка: Super+Alt+M или клик по мини-плееру в быстрых настройках. Узкая плавающая панель у правого края, выезжает справа:
 // плеер mpv (~/.local/bin/musica, он же в MPRIS) и библиотека ~/Music по альбомам или папкам, с поиском. Экран не гасит;
 // клик мимо панели или Esc — закрыть. Индекс — ~/.local/bin/musica-index → ~/.cache/musica/library.json, его
-// пересобираем при каждом открытии (неизменённые файлы берутся из кэша, это доли секунды)
+// пересобираем при каждом открытии (неизменённые файлы берутся из кэша, это доли секунды).
+// Local | Server: сервер Qodi Music (~/.local/bin/musica-remote login URL USER) → ~/.cache/musica/remote.json,
+// синхронизируется при каждом открытии; песни — URL потока, mpv играет их напрямую.
+// ⚙ в шапке — настройки (MusicSettings): папка библиотеки и вход на сервер, вместо поиска и списка
 PanelWindow {
     id: root
 
@@ -20,7 +23,9 @@ PanelWindow {
     property bool open: false
     function toggle() { open = !open; }
     function close() { open = false; }
-    onOpenChanged: if (open) { indexer.running = true; search.forceActiveFocus(); }
+    property bool settings: false
+    onSettingsChanged: if (!settings) search.forceActiveFocus(); else panel.forceActiveFocus()
+    onOpenChanged: if (open) { settings = false; indexer.running = true; remoteSync.running = true; search.forceActiveFocus(); }
 
     property real t: open ? 1 : 0
     Behavior on t { NumberAnimation { duration: Theme.t; easing.type: Easing.BezierSpline; easing.bezierCurve: Theme.glide } }
@@ -34,16 +39,44 @@ PanelWindow {
     WlrLayershell.keyboardFocus: open ? WlrKeyboardFocus.Exclusive : WlrKeyboardFocus.None // сразу печатать в поиск
     WlrLayershell.namespace: "glyph-music"
 
-    // --- библиотека
-    property var lib: []
+    // --- библиотека: локальная или с сервера
+    readonly property string cache: (Quickshell.env("XDG_CACHE_HOME") || Quickshell.env("HOME") + "/.cache") + "/musica/"
+    property string source: "local" // local | server
+    property var localLib: []
+    property string localRoot: ""   // какую папку проиндексировали
+    property string musicDir: ""    // выбранная в настройках, "" — по умолчанию
+    property var remote: ({ tracks: [] }) // server, user, error, tracks
+    readonly property var lib: source === "server" ? (remote.tracks ?? []) : localLib
     FileView {
-        path: (Quickshell.env("XDG_CACHE_HOME") || Quickshell.env("HOME") + "/.cache") + "/musica/library.json"
+        path: root.cache + "library.json"
         watchChanges: true
         printErrors: false
         onFileChanged: reload()
-        onLoaded: try { root.lib = JSON.parse(text()).tracks ?? []; } catch (e) {}
+        onLoaded: try { const d = JSON.parse(text()); root.localLib = d.tracks ?? []; root.localRoot = d.root ?? ""; } catch (e) {}
+    }
+    FileView {
+        path: (Quickshell.env("XDG_CONFIG_HOME") || Quickshell.env("HOME") + "/.config") + "/musica/music-dir"
+        watchChanges: true
+        printErrors: false
+        onFileChanged: reload()
+        onLoaded: root.musicDir = text().split("\n")[0].trim()
+    }
+    FileView {
+        path: root.cache + "remote.json"
+        watchChanges: true
+        printErrors: false
+        onFileChanged: reload()
+        onLoaded: try { root.remote = JSON.parse(text()); } catch (e) {}
     }
     Process { id: indexer; command: [root.bin + "musica-index"] }
+    Process { id: remoteSync; command: [root.bin + "musica-remote", "sync"] }
+    readonly property string remoteNote: {
+        const e = remote.error;
+        if (e === "not_logged_in" || (!remote.server && !e)) return "not connected · musica-remote login URL USER";
+        if (e === "login_expired") return "session expired · musica-remote login URL USER";
+        if (e) return `server unreachable · ${e}`;
+        return "";
+    }
 
     property string mode: "album" // album | folder
     property string q: ""
@@ -100,14 +133,20 @@ PanelWindow {
     function play(g, i) {
         Quickshell.execDetached(["env", "MUSICA_QUIET=1", bin + "musica", "lista", String(i)].concat(g.tracks.map(t => t.path)));
     }
-    function shuffleAll() { Quickshell.execDetached(["env", "MUSICA_QUIET=1", bin + "musica", "aleatorio"]); }
+    function shuffleAll() {
+        if (source === "local") return Quickshell.execDetached(["env", "MUSICA_QUIET=1", bin + "musica", "aleatorio"]);
+        const a = lib.map(t => t.path);
+        for (let i = a.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [a[i], a[j]] = [a[j], a[i]]; }
+        if (a.length) Quickshell.execDetached(["env", "MUSICA_QUIET=1", bin + "musica", "lista", "0"].concat(a));
+    }
 
     // --- плеер: свой mpv, иначе любой играющий
     readonly property MprisPlayer pl: Media.players.find(p => p.identity === "mpv") ?? Media.player
     readonly property bool mine: pl?.identity === "mpv"
     readonly property string now: {
         const u = mine ? String(pl.metadata?.["xesam:url"] ?? "") : "";
-        return u.startsWith("file://") ? decodeURIComponent(u.slice(7)) : "";
+        if (u.startsWith("file://")) return decodeURIComponent(u.slice(7));
+        return /^https?:\/\//.test(u) ? u.split("?")[0] : ""; // поток с сервера: path в remote.json без токена
     }
     property real pos: 0
     Timer {
@@ -131,8 +170,8 @@ PanelWindow {
             color: Theme.s1
             border { width: 1; color: Theme.s2 }
             focus: true
-            Keys.onEscapePressed: root.close()
-            MouseArea { anchors.fill: parent; onClicked: search.forceActiveFocus() }
+            Keys.onEscapePressed: root.settings ? root.settings = false : root.close() // из настроек — назад к списку
+            MouseArea { anchors.fill: parent; onClicked: if (!root.settings) search.forceActiveFocus() }
 
             Column {
                 id: head
@@ -149,12 +188,13 @@ PanelWindow {
                         x: 6
                         anchors.verticalCenter: parent.verticalCenter
                         Text { text: "Music"; font { family: Theme.ui; pixelSize: 20; weight: Font.DemiBold } color: Theme.fg }
-                        Lb { px: 10; text: root.q ? `${root.count} found` : `${root.lib.length} songs · ${root.groups.length} ${root.mode === "album" ? "albums" : "folders"}` }
+                        Lb { px: 10; text: root.settings ? "settings" : root.q ? `${root.count} found` : `${root.lib.length} songs · ${root.groups.length} ${root.mode === "album" ? "albums" : "folders"}` }
                     }
                     Row {
                         anchors { right: parent.right; verticalCenter: parent.verticalCenter }
                         spacing: 10
                         MusicBtn { icon: "\u{F049D}"; onClicked: root.shuffleAll() }
+                        MusicBtn { icon: "\u{F0493}"; on: root.settings; onClicked: root.settings = !root.settings }
                         MusicBtn { icon: "\u{F0156}"; onClicked: root.close() }
                     }
                 }
@@ -227,6 +267,7 @@ PanelWindow {
 
                 // поиск
                 Rectangle {
+                    visible: !root.settings
                     width: parent.width
                     height: 48
                     radius: Theme.corner(24)
@@ -272,43 +313,29 @@ PanelWindow {
                     }
                 }
 
-                // по альбомам / по папкам (Tab в поиске): белая заливка переезжает, как у режимов питания
-                Rectangle {
-                    id: modes
+                // своя библиотека или сервер Qodi Music
+                MusicTabs {
+                    visible: !root.settings
                     width: parent.width
-                    height: 44
-                    radius: Theme.corner(22)
-                    color: Theme.s2
-                    readonly property var opts: [["album", "albums"], ["folder", "folders"]]
-                    readonly property real cell: (width - 10) / opts.length
-                    Rectangle {
-                        x: 5 + modes.cell * (root.mode === "album" ? 0 : 1)
-                        y: 5
-                        width: modes.cell
-                        height: parent.height - 10
-                        radius: height / 2
-                        color: Theme.fg
-                        Behavior on x { NumberAnimation { duration: Theme.t; easing.type: Easing.BezierSpline; easing.bezierCurve: Theme.glide } }
-                    }
-                    Repeater {
-                        model: modes.opts
-                        Item {
-                            required property var modelData
-                            required property int index
-                            x: 5 + modes.cell * index
-                            width: modes.cell
-                            height: modes.height
-                            Lb { anchors.centerIn: parent; text: parent.modelData[1]; color: root.mode === parent.modelData[0] ? Theme.ink : Theme.grey }
-                            TapHandler { onTapped: root.mode = parent.modelData[0] }
-                            HoverHandler { cursorShape: Qt.PointingHandCursor }
-                        }
-                    }
+                    opts: [["local", "local"], ["server", "server"]]
+                    value: root.source
+                    onPicked: v => { root.source = v; root.fold = {}; }
+                }
+
+                // по альбомам / по папкам (Tab в поиске)
+                MusicTabs {
+                    visible: !root.settings
+                    width: parent.width
+                    opts: [["album", "albums"], ["folder", "folders"]]
+                    value: root.mode
+                    onPicked: v => root.mode = v
                 }
             }
 
             // библиотека
             Flickable {
                 id: list
+                visible: !root.settings
                 anchors { left: parent.left; leftMargin: 12; right: parent.right; rightMargin: 12; top: head.bottom; topMargin: 12; bottom: parent.bottom; bottomMargin: 14 }
                 clip: true
                 contentHeight: groupsCol.height
@@ -336,8 +363,31 @@ PanelWindow {
                         width: groupsCol.width
                         topPadding: 30
                         horizontalAlignment: Text.AlignHCenter
-                        text: root.lib.length ? "nothing found" : "no music in ~/Music"
+                        text: root.source === "server" && root.remoteNote ? root.remoteNote
+                            : root.lib.length ? "nothing found"
+                            : root.source === "server" ? "no music on the server" : "no music in ~/Music"
                     }
+                }
+            }
+
+            // настройки: вместо поиска и списка, своя прокрутка (форма входа длиннее, чем помещается)
+            Flickable {
+                id: prefs
+                visible: root.settings
+                anchors { left: parent.left; leftMargin: 18; right: parent.right; rightMargin: 18; top: head.bottom; topMargin: 4; bottom: parent.bottom; bottomMargin: 14 }
+                clip: true
+                contentHeight: form.height
+                boundsBehavior: Flickable.StopAtBounds
+                MusicSettings {
+                    id: form
+                    width: prefs.width
+                    bin: root.bin
+                    dir: root.musicDir
+                    indexed: root.localRoot
+                    localCount: root.localLib.length
+                    remote: root.remote
+                    remoteNote: root.remoteNote
+                    onDirSaved: indexer.running = true
                 }
             }
         }

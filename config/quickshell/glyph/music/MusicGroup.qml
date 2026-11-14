@@ -19,7 +19,10 @@ Column {
 
     spacing: 2
 
-    function fileUrl(p) { return p ? "file://" + p.split("/").map(encodeURIComponent).join("/") : ""; }
+    function fileUrl(p) {
+        if (!p) return "";
+        return /^https?:\/\//.test(p) ? p : "file://" + p.split("/").map(encodeURIComponent).join("/");
+    }
 
     Rectangle {
         width: root.width
