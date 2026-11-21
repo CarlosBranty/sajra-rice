@@ -50,4 +50,10 @@ a.start('5', 'web_search', {}); a.stopped(); assert.equal(a.doing(), null);
   assert.equal(b.doing(), null);
   assert.deepEqual(b.stopped(), [], 'nothing left after');
 }
+{
+  const c = createActivity({ max: 3, now: () => 1 });
+  assert.equal(c.start('r', 'show_report', { title: 't' }), 'Making a report');
+  c.end('r', false);
+  assert.equal(c.recent[0].text, 'Opened a report');
+}
 console.log('activity tests: passed');

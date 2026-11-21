@@ -176,6 +176,14 @@ Usage (`sidecar/usage.mjs`): the agent's `token_usage` tool sums `~/.gg/sidekick
 provider, route, model, token counts, never what was said) for today, yesterday, the last 7 days, this month or all,
 and says how it answers now: Anthropic signed in with Claude (Claude Code, the user's subscription), another
 provider's account, or an API key.
+Web search: on the API with Anthropic, OpenAI or Gemini it is the provider's own (`webSearch` in `sidekick.mjs`);
+signed in with Claude it is Claude Code's `WebSearch`, the one Claude Code tool allowed there (`claudecode.mjs`, option
+`webSearch`; WebFetch, Bash and file tools stay denied, and a warm process made with it is never reused without it).
+Either way the overlay shows it as a web search and the results' links reach the model. Reports (`sidecar/report.mjs`,
+the `show_report` tool): a summary, tables, bar and line charts (plain SVG, values on hover) and the sources, written as
+a new HTML file in the user's Documents folder (`Hanami/`, XDG's on Linux) and opened in the default browser. What it
+shows may come from the web, so all of it is escaped, links are web only, and the page's Content-Security-Policy
+allows no script.
 Shortcuts (`sidecar/shortcuts.mjs`, Hyprland with a Lua config such as the glyph dotfiles): `desktop_shortcuts` reads
 `~/.config/hypr/hyprland/keybinds.lua` (keys from `variables.lua`, `user.lua` overrides) each time, and `use_shortcut`
 runs the bind's own action in the compositor's Lua (`hyprctl eval`, with the config's `variables` and

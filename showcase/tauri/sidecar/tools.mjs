@@ -6,6 +6,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { z } from 'zod';
+import { documentsDir, reportSchema, writeReport } from './report.mjs';
 import { parseSipsSize, readProblem, rematch, sameBounds, shotFits, shotMap, shotProblem, snapRect, toScreen } from './pointing.mjs';
 import { ASK, BLOCK, checkDrawAction, checkOpen, checkRead, checkUrl, checkWrite, classifyCommand, isPrivateAddress, isRiskyClick, isYes, riskyKind } from './safety.mjs';
 import dns from 'node:dns/promises';
@@ -244,7 +245,7 @@ const GIT_SAFE = {
 // askShell: Linux asks the app itself for screenshots and copying ({type:'screenshot'|'clipboard', …} → its answer).
 // waits: how a drawing's beat waits here (this computer's way unless a test says otherwise).
 // winSource: where windows are without the helper ({ windows(), front() }, as WINDOWS; null: nowhere).
-export function createTools({ allowActions, ui, ask, openUrl, onCommitments, showList, fmtWhen, commitmentsText, userName, onPlan = () => {}, speak = () => false, onHandoff = () => {}, watchClicks = () => {}, onInkGone = () => {}, askShell = async () => ({ ok: false, error: 'Hanami isn\'t running.' }), waits = WAITS, winSource = WINDOWS }) {
+export function createTools({ allowActions, ui, ask, openUrl, onCommitments, showList, fmtWhen, commitmentsText, userName, onPlan = () => {}, speak = () => false, onHandoff = () => {}, watchClicks = () => {}, onInkGone = () => {}, askShell = async () => ({ ok: false, error: 'Hanami isn\'t running.' }), waits = WAITS, winSource = WINDOWS, reportsDir = path.join(documentsDir(HOME), 'Hanami'), openFile = null }) {
   let axNudged = 0;
   let lastShot = null; // how the latest screenshot's pixels map to screen points (see pointing.mjs)
   let lastRead = null; // { win, controls } from the latest read_window, to catch ids that went stale
@@ -940,6 +941,17 @@ export function createTools({ allowActions, ui, ask, openUrl, onCommitments, sho
         if (r.err) throw new Error(r.stderr.trim() || `Couldn't open ${t}.`);
         if (lastShot) lastShot.used = true;
         return `Opened ${t}${inApp.length ? ` in ${app}` : ''}.`;
+      },
+    },
+    {
+      name: 'show_report',
+      description: `Make a page with what you found (a summary, tables, bar or line charts, and the links to your sources) and open it in ${userName}'s browser. Use it when they ask for a table, a chart, a comparison or a report to look at, or when an answer has more numbers than a bubble can hold (prices across shops, a trend over months); then say in a few words what it shows. Put only facts you found or were given, each with its source in sources. It is saved in their Documents folder, so they keep it.`,
+      parameters: reportSchema,
+      execute: async (report) => {
+        const file = writeReport(report, { dir: reportsDir });
+        const opener = openFile ?? ((f) => tools.find((t) => t.name === 'open').execute({ target: f }));
+        try { await opener(file); } catch (e) { return `Saved the report at ${file}, but it didn't open: ${e?.message ?? e}`; }
+        return `Opened the report "${report.title}" in the browser (saved at ${file}).`;
       },
     },
     {
