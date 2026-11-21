@@ -215,7 +215,11 @@ for (const [name, flags] of [['a layer surface', { ROAMIE_LINUX: 'wayland', ROAM
   host({ kind: 'ask', id: 'yn2', prompt: 'Run it?', choices: ['Allow', "Don't allow"] }); run(1); tick();
   const answered = p.answers().length;
   host({ kind: 'voice', type: 'state', state: 'listening', mode: 'hold' }); run(1); tick();
+  await wait(20); // the bubble's closing is a promise
   assert.equal(p.answers().length, answered, 'not answered by starting to talk');
+  assert.ok(a.bubble?.input?.choices, 'its buttons stay on screen while it listens (no listening bubble over them)');
+  host({ kind: 'voice', type: 'partial', text: 'sí' }); host({ kind: 'voice', type: 'level', v: 0.5 }); run(0.5); await wait(20);
+  assert.equal(p.answers().length, answered, 'nor by the words as they come');
   host({ kind: 'cancel_ask', id: 'yn2' }); run(1); tick();
   assert.equal(p.answers().length, answered, 'closed by the sidecar without an answer of its own');
   host({ kind: 'voice', type: 'state', state: 'idle' }); run(1);

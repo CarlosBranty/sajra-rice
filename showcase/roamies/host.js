@@ -506,6 +506,9 @@
       endTalk();
       heard = null;
       panel()?.close();
+      // A yes/no listens in place: the Roamie has one bubble, so a listening bubble (or stepping away) would take the
+      // question's and close it, which counted as Don't allow before the answer was heard. Its buttons stay.
+      if (ask?.choices) { Roamie.sfx?.play('listen'); return; }
       // macOS: the listening shows as voice bars beside the cursor, so the sidekick steps away until it answers.
       if (m.wave) {
         waveTurn = true;
