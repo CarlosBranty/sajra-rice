@@ -185,6 +185,31 @@ assert.equal(stopped.getMessages().at(-1).content[0].isError, true, 'the open to
   assert.ok(closes >= 1, 'a spare made for other options is closed, not used');
   closeSpare();
 }
+// A spare warmed with web search is never taken by a run without it (it would get a tool it wasn't given).
+{
+  const starts = [], cold = fakeQuery(toolRun);
+  const startup = async ({ options }) => { starts.push(options); return { query: (prompt) => fakeQuery(toolRun).query({ prompt, options }), close: () => {} }; };
+  const opts = { model: 'm', system: 's', tools: [readFile], executable: '/bin/claude', cwd: '/', env: {}, onRateLimit: () => {}, keepWarm: true, startup };
+  new ClaudeCodeAgent({ ...opts, webSearch: true, query: fakeQuery(toolRun).query }).warm();
+  await new Promise((r) => setTimeout(r, 0));
+  assert.deepEqual(starts[0].tools, ['WebSearch']);
+  for await (const _ of agentEvents(new ClaudeCodeAgent({ ...opts, query: cold.query }).prompt('hi'))) {}
+  assert.ok(cold.calls.options, 'it started its own Claude Code');
+  assert.deepEqual(cold.calls.options.tools, [], 'without web search');
+  closeSpare();
+}
+// Without web search a WebSearch call (one Claude Code refused) stays a failed tool call, not a search.
+{
+  const refused = fakeQuery(async function* (ctx) {
+    await ctx.nextInput();
+    yield { type: 'assistant', parent_tool_use_id: null, message: { id: 'r1', model: 'm', content: [{ type: 'tool_use', id: 'w1', name: 'WebSearch', input: { query: 'x' } }] } };
+    yield { type: 'user', parent_tool_use_id: null, message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'w1', content: 'WebSearch is not available in Hanami.', is_error: true }] } };
+    yield { type: 'result', subtype: 'success', is_error: false, result: '' };
+  });
+  const seen = [];
+  for await (const e of agentEvents(new ClaudeCodeAgent({ model: 'm', system: 's', tools: [], executable: '/bin/claude', cwd: '/', env: {}, query: refused.query, onRateLimit: () => {} }).prompt('go'))) seen.push(e.type);
+  assert.deepEqual(seen, ['tool_call_start', 'tool_call_end', 'checkpoint', 'agent_done']);
+}
 // A spare that died while waiting: the prompt falls back to a fresh start.
 {
   const cold = fakeQuery(toolRun);

@@ -181,7 +181,7 @@ class SdkMessageMapper {
     for (const b of blocks) {
       const part = fromSdkBlock(b);
       this.#current.message.content.push(part);
-      if (part.type === 'tool_call' && b.name === WEB_SEARCH) { this.#searches.add(part.id); events.push({ type: 'server_tool_call', id: part.id, name: 'web_search', input: part.args }); }
+      if (part.type === 'tool_call' && b.name === WEB_SEARCH && this.o.webSearch) { this.#searches.add(part.id); events.push({ type: 'server_tool_call', id: part.id, name: 'web_search', input: part.args }); }
       else if (part.type === 'server_tool_call') events.push({ type: 'server_tool_call', id: part.id, name: part.name, input: part.input });
       else if (part.type === 'server_tool_result') events.push({ type: 'server_tool_result', toolUseId: part.toolUseId, resultType: part.resultType, data: part.data });
     }
@@ -336,7 +336,7 @@ const isAbortLike = (err) => /abort/i.test(err instanceof Error ? err.message : 
 // prompt, tools, session to resume) starts cold as before. At most one, let go after SPARE_IDLE_MS unused.
 let spare = null;
 const sha = (x) => crypto.createHash('sha256').update(typeof x === 'string' ? x : JSON.stringify(x)).digest('hex').slice(0, 16);
-const spareKey = (o, resume) => sha([o.executable, o.cwd, o.model, sha(o.system ?? ''), (o.tools ?? []).map((t) => t.name), o.maxTurns ?? 0, o.thinking ?? null, resume ?? null, sha(o.env ?? {})]);
+const spareKey = (o, resume) => sha([o.executable, o.cwd, o.model, sha(o.system ?? ''), (o.tools ?? []).map((t) => t.name), o.maxTurns ?? 0, o.thinking ?? null, !!o.webSearch, resume ?? null, sha(o.env ?? {})]);
 export function closeSpare() {
   const s = spare; spare = null;
   if (!s) return;
@@ -421,7 +421,7 @@ async function* claudeCodeLoop(messages, o) {
       channel.push({ kind: 'error', error });
     }
   };
-  const mapper = new SdkMessageMapper({ messages, takeResult: (id) => run.bridge.takeResult(id), onSessionId: o.onSessionId, onRateLimit: o.onRateLimit });
+  const mapper = new SdkMessageMapper({ messages, webSearch: !!o.webSearch, takeResult: (id) => run.bridge.takeResult(id), onSessionId: o.onSessionId, onRateLimit: o.onRateLimit });
   void begin(o.keepWarm ? takeSpare(o, o.resume) : null);
 
   let killTimer;
