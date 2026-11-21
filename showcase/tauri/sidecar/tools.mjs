@@ -948,7 +948,7 @@ export function createTools({ allowActions, ui, ask, openUrl, onCommitments, sho
       description: `Make a page with what you found (a summary, tables, bar or line charts, and the links to your sources) and open it in ${userName}'s browser. Use it when they ask for a table, a chart, a comparison or a report to look at, or when an answer has more numbers than a bubble can hold (prices across shops, a trend over months); then say in a few words what it shows. Put only facts you found or were given, each with its source in sources. It is saved in their Documents folder, so they keep it.`,
       parameters: reportSchema,
       execute: async (report) => {
-        const file = writeReport(report, { dir: reportsDir });
+        const file = writeReport(report, { dir: reportsDir, check: (f) => allowed(checkWrite(f, HOME)) });
         const opener = openFile ?? ((f) => tools.find((t) => t.name === 'open').execute({ target: f }));
         try { await opener(file); } catch (e) { return `Saved the report at ${file}, but it didn't open: ${e?.message ?? e}`; }
         return `Opened the report "${report.title}" in the browser (saved at ${file}).`;

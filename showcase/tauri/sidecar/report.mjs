@@ -181,13 +181,16 @@ ${sources.length ? `<h2>Sources</h2><ol class="sources">${sources.map((s) => `<l
 
 const slug = (s) => String(s).normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 48).replace(/-$/, '') || 'report';
 
-/** Writes the page as a new file in `dir` (made if missing) and returns its path; never overwrites one. */
-export function writeReport(r, { dir, now = new Date() }) {
+/** Writes the page as a new file in `dir` (made if missing) and returns its path; never overwrites one. check(file)
+ *  throws to refuse a path (tools.mjs: safety.mjs checkWrite), before anything is made. */
+export function writeReport(r, { dir, now = new Date(), check = () => {} }) {
+  check(path.join(dir, 'report.html'));
   fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
   const d = now, base = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}-${slug(r.title)}`;
   const html = renderReport(r, { now });
   for (let n = 1; ; n++) {
     const file = path.join(dir, `${base}${n > 1 ? `-${n}` : ''}.html`);
+    check(file);
     try { fs.writeFileSync(file, html, { flag: 'wx', mode: 0o600 }); return file; } catch (e) { if (e.code !== 'EEXIST' || n >= 100) throw e; }
   }
 }

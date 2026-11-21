@@ -99,6 +99,11 @@ const report = {
   assert.equal(opened.length, 1, 'opened once, even with actions off');
   assert.ok(opened[0].startsWith(dir) && fs.existsSync(opened[0]));
   assert.match(out, /Opened the report/);
+  // The folder goes through the same write check as write_file: never somewhere protected.
+  const ssh = path.join(os.homedir(), '.ssh', 'hanami-report-test');
+  const blocked = createTools({ allowActions: () => false, ui: () => {}, ask: async () => false, openUrl: noop, onCommitments: noop, showList: noop, fmtWhen: String, commitmentsText: () => '', userName: 'Test', reportsDir: ssh, openFile: async (f) => { opened.push(f); } }).tools.find((t) => t.name === 'show_report');
+  await assert.rejects(blocked.execute(tool.parameters.parse(report)), /Blocked for safety/);
+  assert.ok(!fs.existsSync(ssh) && opened.length === 1, 'nothing made or opened');
   assert.throws(() => tool.parameters.parse({ title: 't', sections: [{ chart: { kind: 'pie', labels: ['a'], series: [{ name: 's', values: [1] }] } }] }));
   fs.rmSync(dir, { recursive: true });
 }
