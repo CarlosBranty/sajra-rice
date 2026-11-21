@@ -20,6 +20,9 @@ const STDERR_TAIL_CHARS = 4_000;
 const SYNTHETIC_MODEL = '<synthetic>';
 const SPARE_IDLE_MS = 5 * 60_000; // a warm process unused this long is let go (it holds ~250 MB)
 
+// Claude Code's own tools that may run (webSearch on): its web search, which runs on Anthropic's side and returns
+// titles and links. Shown as the provider's web search; never WebFetch, Bash or file tools (they skip safety.mjs).
+const WEB_SEARCH = 'WebSearch';
 export const stripToolPrefix = (name) => (name.startsWith(TOOL_PREFIX) ? name.slice(TOOL_PREFIX.length) : name);
 export const effortForThinking = (level) => (!level ? undefined : level === 'ultra' ? 'max' : level);
 
@@ -110,7 +113,7 @@ export function renderTranscript(messages, maxChars) {
 // Stateful, one per run. `result` messages are left to the loop.
 class SdkMessageMapper {
   turn = 0; totalUsage = { inputTokens: 0, outputTokens: 0 }; lastAssistant; syntheticError;
-  #current; #startedAt; #stopReason = 'end_turn'; #usage = { inputTokens: 0, outputTokens: 0 };
+  #current; #startedAt; #searches = new Set(); #stopReason = 'end_turn'; #usage = { inputTokens: 0, outputTokens: 0 };
   constructor(o) { this.o = o; }
   unpairedToolCalls() {
     const last = this.o.messages.at(-1);
@@ -178,7 +181,8 @@ class SdkMessageMapper {
     for (const b of blocks) {
       const part = fromSdkBlock(b);
       this.#current.message.content.push(part);
-      if (part.type === 'server_tool_call') events.push({ type: 'server_tool_call', id: part.id, name: part.name, input: part.input });
+      if (part.type === 'tool_call' && b.name === WEB_SEARCH) { this.#searches.add(part.id); events.push({ type: 'server_tool_call', id: part.id, name: 'web_search', input: part.args }); }
+      else if (part.type === 'server_tool_call') events.push({ type: 'server_tool_call', id: part.id, name: part.name, input: part.input });
       else if (part.type === 'server_tool_result') events.push({ type: 'server_tool_result', toolUseId: part.toolUseId, resultType: part.resultType, data: part.data });
     }
     return events;
@@ -194,6 +198,7 @@ class SdkMessageMapper {
       const bridged = this.o.takeResult(id);
       if (bridged) return bridged;
       const result = fromSdkToolResult(b), call = calls.get(id);
+      if (this.#searches.delete(id)) { events.push({ type: 'server_tool_result', toolUseId: id, resultType: 'web_search_result', data: null }); return result; }
       events.push(
         { type: 'tool_call_start', toolCallId: id, name: call?.name ?? 'tool', args: call?.args ?? {} },
         { type: 'tool_call_end', toolCallId: id, result: resultText(result.content), isError: !!result.isError, durationMs: 0 },
@@ -347,12 +352,14 @@ function sdkOptions(o, resume, link) {
     cwd: o.cwd,
     model: o.model,
     systemPrompt: { type: 'custom', prompt: o.system ?? '' },
-    tools: [], // none of Claude Code's own tools: only ours, through the bridge (and its safety checks)
+    // None of Claude Code's own tools but its web search when asked for: only ours, through the bridge (and its safety
+    // checks).
+    tools: o.webSearch ? [WEB_SEARCH] : [],
     settingSources: [],
     strictMcpConfig: true,
     mcpServers: { [MCP_SERVER]: bridge.config },
-    allowedTools: bridge.allowedTools(),
-    canUseTool: async (name, toolInput) => (name.startsWith(TOOL_PREFIX) ? { behavior: 'allow', updatedInput: toolInput } : { behavior: 'deny', message: `${name} is not available in Hanami.` }),
+    allowedTools: [...bridge.allowedTools(), ...(o.webSearch ? [WEB_SEARCH] : [])],
+    canUseTool: async (name, toolInput) => (name.startsWith(TOOL_PREFIX) || (o.webSearch && name === WEB_SEARCH) ? { behavior: 'allow', updatedInput: toolInput } : { behavior: 'deny', message: `${name} is not available in Hanami.` }),
     includePartialMessages: true,
     pathToClaudeCodeExecutable: o.executable,
     env: o.env,

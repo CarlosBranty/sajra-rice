@@ -278,6 +278,8 @@ const PLATFORM = platformLine(process.platform, { macVersion, arch: os.arch(), r
 const HANDS_OK = hasHands(process.platform, process.env.ROAMIES_HANDS);
 const SNAP_OK = canSnap(process.platform, process.env.ROAMIES_HANDS, { session: SESSION, layer: process.env.ROAMIES_LAYER || '', slurp: process.env.ROAMIES_SLURP || '' });
 // The prompt's lines about pointing and walkthroughs, worded for what this computer can do (platform.mjs).
+// The provider's own web search: on the API with these, and through Claude Code's when signed in with Claude.
+const searchesWeb = () => ['anthropic', 'openai', 'gemini'].includes(config.provider);
 const SHOW = promptWords({ hands: HANDS_OK, waits: WAITS, example: process.platform === 'darwin' ? '"how do I add a layer mask"' : 'a how-to' });
 const CIRCLE_OK = canCircle(process.platform, process.env.ROAMIES_LAYER || '');
 // Linux on a layer surface: circling is the mouse's, while a take is heard, and the Voice page can switch it off.
@@ -449,7 +451,7 @@ Name apps and things the way ${userName} knows them (Gmail, the Downloads folder
 When you write as ${userName} (an email, a message, a post, a form answer), sound like them, plain and in their words, never like you: no cheekiness, emoji or tags in it.
 Their facts are theirs: never invent ${userName}'s details (a name, address, account, date, link, number, or who someone is) or fill in dummy data where theirs belongs. Use what they told you, what you remember and what's on screen; if something only they know is still missing, do the part that doesn't need it, then ask one short, bundled question for the rest. On a small ambiguity, take the likeliest reading and go.
 Anything that goes to other people (an email, message, post, comment, invite) is a draft until ${userName} has seen that exact text and said yes, unless they dictated it word for word: write it, show it, then wait.
-You can really help: look at the screen or just one app's window, open apps, websites and files, read and search files, fetch web pages, and, when the user has allowed it, write files, run shell commands${HANDS_OK ? ' and work other apps for them: fill in forms, type, click buttons (read_window, then act_in_app)' : ''}. Whether that's allowed right now is in the <live-state> block.
+You can really help: look at the screen or just one app's window, open apps, websites and files, read and search files, ${searchesWeb() ? 'search the web (current prices, news, facts: give the links you used) and ' : ''}fetch web pages, and, when the user has allowed it, write files, run shell commands${HANDS_OK ? ' and work other apps for them: fill in forms, type, click buttons (read_window, then act_in_app)' : ''}. Whether that's allowed right now is in the <live-state> block.
 When they mention a specific app ("my browser", "this form", "Figma"), screenshot that app, not the whole screen.
 Show, don't just tell. ${SHOW.show} When they ask what they're looking at or where something is, mark it on screen with draw (ring, frame, label, point) instead of describing where it is. When a picture explains it better (a concept, numbers over time, a comparison, a molecule, a machine), draw cards on calm space while you explain (card, graph, timeline, photo, molecule, model). Before you call draw, write one short line first: the answer to anything they said or asked besides the drawing ("I'm good, thanks!"), or what you're about to show. It's said while the drawing is made, so they hear you straight away and in order. Each beat's line is spoken and captioned while its marks draw, so your reply after draw never repeats or rephrases them (no restating the steps): add one short new line (a question, what comes next) or nothing. Use a fresh look for each request (earlier marks clear by themselves); to change something already drawn ("make that red", "move it", "never mind"), edit it by its part id.
 Be fast: every tool call is a round trip, so use as few as the task needs. ${SHOW.fast}
@@ -584,7 +586,7 @@ function makeAgent(cc) {
   if (cc) {
     const sid = session?.id;
     agent = new ClaudeCodeAgent({
-      ...common, executable: cc.executable, env: cc.env, cwd: HOME, keepWarm: true,
+      ...common, executable: cc.executable, env: cc.env, cwd: HOME, keepWarm: true, webSearch: true, // Claude Code's own
       resume: ccResume?.session === sid ? ccResume.state : null,
       onResume: (state) => { ccResume = { session: sid, state }; },
     });
@@ -596,7 +598,7 @@ function makeAgent(cc) {
     // One hour on Anthropic (falls back to 5 min elsewhere); the key keeps one conversation on one cache.
     cacheRetention: 'long',
     promptCacheKey: session?.id ? `roamies-${session.id}` : undefined,
-    webSearch: ['anthropic', 'openai', 'gemini'].includes(config.provider),
+    webSearch: searchesWeb(),
     resolveCredentials: async () => {
       const c = await credsFor();
       return { apiKey: c.accessToken, ...(c.accountId !== undefined ? { accountId: c.accountId } : {}) };

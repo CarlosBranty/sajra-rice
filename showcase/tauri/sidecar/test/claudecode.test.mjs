@@ -74,6 +74,7 @@ assert.deepEqual(o.allowedTools, ['mcp__gg__read_file']);
 assert.equal(o.cwd, '/home/me'); assert.equal(o.pathToClaudeCodeExecutable, '/bin/claude'); assert.deepEqual(o.env, { A: '1' });
 assert.equal(o.effort, 'low'); assert.equal(o.maxTurns, 24); assert.equal(o.resume, undefined, 'a fresh session');
 assert.deepEqual((await o.canUseTool('Bash', {})).behavior, 'deny', 'anything not ours is denied');
+assert.deepEqual((await o.canUseTool('WebSearch', {})).behavior, 'deny', 'no web search unless asked for');
 const sent = calls.inputs[0].message.content.map((p) => p.text).join('\n');
 assert.match(sent, /<conversation_so_far>[\s\S]*User: hi[\s\S]*Assistant: hello!/, 'a fresh session is seeded with the history');
 assert.match(sent, /<live-state>now<\/live-state>\n\nwhat is in a\.txt\?$/, 'the pending turn carries the live block');
@@ -104,6 +105,43 @@ async function* failing(ctx) {
 }
 const bad = new ClaudeCodeAgent({ model: 'm', system: 's', tools: [], executable: '/bin/claude', cwd: '/', env: {}, query: fakeQuery(failing).query, onRateLimit: () => {} });
 await assert.rejects(async () => { for await (const _ of agentEvents(bad.prompt('hi'))); }, /401 not logged in/);
+
+// webSearch: Claude Code's own WebSearch (and only it) is on; Claude Code runs it, and it shows as a web search.
+{
+  const SEARCH_ID = 'srvtoolu_1';
+  const searching = fakeQuery(async function* (ctx) {
+    await ctx.nextInput();
+    yield { type: 'system', subtype: 'init', session_id: SESSION };
+    yield ev({ type: 'message_start', message: { id: 'm1', usage: {} } });
+    yield { type: 'assistant', parent_tool_use_id: null, message: { id: 'm1', model: 'm', content: [{ type: 'tool_use', id: SEARCH_ID, name: 'WebSearch', input: { query: 'precio dólar hoy' } }] } };
+    yield ev({ type: 'message_delta', delta: { stop_reason: 'tool_use' }, usage: {} });
+    yield ev({ type: 'message_stop' });
+    // Claude Code's search runs inside its own request; it reports its own subcalls with a parent id (ignored).
+    yield { type: 'assistant', parent_tool_use_id: SEARCH_ID, message: { id: 'sub', model: 'm', content: [{ type: 'text', text: 'inner' }] } };
+    yield { type: 'user', parent_tool_use_id: null, message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: SEARCH_ID, content: 'Links: [{"title":"BCRP","url":"https://www.bcrp.gob.pe"}]' }] } };
+    yield ev({ type: 'message_start', message: { id: 'm2', usage: {} } });
+    yield ev({ type: 'content_block_delta', delta: { type: 'text_delta', text: 'S/ 3.75 ([BCRP](https://www.bcrp.gob.pe)).' } });
+    yield { type: 'assistant', parent_tool_use_id: null, message: { id: 'm2', model: 'm', content: [{ type: 'text', text: 'S/ 3.75 ([BCRP](https://www.bcrp.gob.pe)).' }] } };
+    yield ev({ type: 'message_delta', delta: { stop_reason: 'end_turn' }, usage: {} });
+    yield ev({ type: 'message_stop' });
+    yield { type: 'result', subtype: 'success', is_error: false, result: '', session_id: SESSION };
+  });
+  const a = new ClaudeCodeAgent({ model: 'm', system: 's', tools: [readFile], webSearch: true, executable: '/bin/claude', cwd: '/', env: {}, query: searching.query, onRateLimit: () => {} });
+  const seen = [];
+  for await (const e of agentEvents(a.prompt('¿a cuánto está el dólar?'))) seen.push(e);
+  const so = searching.calls.options;
+  assert.deepEqual(so.tools, ['WebSearch'], "only Claude Code's web search among its own tools");
+  assert.deepEqual(so.allowedTools, ['mcp__gg__read_file', 'WebSearch']);
+  assert.equal((await so.canUseTool('WebSearch', { query: 'x' })).behavior, 'allow');
+  for (const other of ['WebFetch', 'Bash', 'Read']) assert.equal((await so.canUseTool(other, {})).behavior, 'deny', `${other} stays off`);
+  assert.deepEqual(seen.map((e) => e.type), ['server_tool_call', 'turn_end', 'server_tool_result', 'checkpoint', 'text_delta', 'turn_end', 'agent_done'], 'a search maps to the web search events, not a tool of ours');
+  const call = seen.find((e) => e.type === 'server_tool_call');
+  assert.deepEqual([call.id, call.name, call.input], [SEARCH_ID, 'web_search', { query: 'precio dólar hoy' }]);
+  assert.equal(seen.find((e) => e.type === 'server_tool_result').toolUseId, SEARCH_ID);
+  const m = a.getMessages();
+  assert.deepEqual(m.map((x) => x.role), ['system', 'user', 'assistant', 'tool', 'assistant'], 'the search stays paired in the transcript');
+  assert.match(m[3].content[0].content, /bcrp\.gob\.pe/, 'its links reach the transcript');
+}
 
 // Stop: the run ends quietly and the dangling tool call gets a result.
 const stopper = fakeQuery(async function* (ctx) {
