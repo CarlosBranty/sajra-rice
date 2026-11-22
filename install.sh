@@ -49,12 +49,14 @@ declare -A EXTRA=(
     [spotify]="spotify-launcher spicetify-cli spicetify-marketplace-bin" # Super+M
     [vault]="rbw rofi rofi-rbw wtype"                                    # Super+Alt+P (Vaultwarden via glyph-vault)
     [clash]="clash-verge-rev-bin"                                        # VPN panel, Super+P
+    [tok]="qt6-webengine cmake"                                          # glyph-tok, built from apps/glyph-tok
 )
 # Picker order and descriptions (no commas: gum's --selected splits on them). hanami is not an EXTRA: it has its
 # own steps (package, enable links, fprintd)
-COMPONENTS=(hanami telegram spotify vault clash)
+COMPONENTS=(hanami tok telegram spotify vault clash)
 declare -A DESC=(
     [hanami]="Asistente de voz Hanami: habla (Ctrl+Alt+Espacio) · dicta (Ctrl+Alt+D) · controla el escritorio · ~1 GB de modelos de voz al primer uso"
+    [tok]="glyph-tok: TikTok o Netflix en una ventana tipo celular fija a la derecha (Super+Alt+T) · se compila aquí"
     [telegram]="Telegram Desktop (Super+D)"
     [spotify]="Spotify con Spicetify (Super+M)"
     [vault]="Contraseñas: Vaultwarden con rbw y rofi (Super+Alt+P)"
@@ -496,6 +498,20 @@ st_hanami_disable() {
     [ -z "${HYPRLAND_INSTANCE_SIGNATURE:-}" ] || x hyprctl reload
 }
 
+# glyph-tok from apps/glyph-tok: Qt WebEngine app plus Brave's ad blocker (adblock-rust, built by cargo), installed
+# to ~/.local/bin, where user.lua's binds look for it
+st_tok() {
+    local src="$DOTS/apps/glyph-tok" build="<tmp>"
+    command -v cargo >/dev/null || x sudo pacman -S --needed --noconfirm rust
+    [ "$DRY" -eq 1 ] || build="$(mktemp -d)"
+    x cmake -S "$src" -B "$build" -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$HOME/.local"
+    x cmake --build "$build" -j"$(nproc)"
+    x cmake --install "$build"
+    x rm -rf "$build"
+    # the ad-block lists: downloaded once here, glyph-tok rebuilds its engine from them
+    x "$HOME/.local/bin/glyph-tok-adblock-update" || note "glyph-tok: no se pudieron bajar las listas de bloqueo; corre glyph-tok-adblock-update luego"
+}
+
 st_fprintd() { x sudo pacman -S --needed --noconfirm fprintd; }
 
 # Login theme. A copy, not a link: the sddm user can't read a closed $HOME. fonts in the theme is a link to
@@ -673,6 +689,7 @@ main() {
             command -v yay >/dev/null || plan 1 0 st_yay "yay (ayudante del AUR)"
             plan 0 0 st_aur "Paquetes del AUR"
             [ ${#EXT[@]} -eq 0 ] || plan 0 0 st_extras "Componentes: ${EXT_NAMES[*]}"
+            [[ " ${EXT_NAMES[*]-} " != *" tok "* ]] || plan 0 0 st_tok "glyph-tok (compilación)"
             plan 1 0 st_links "Enlaces simbólicos"
             plan 0 0 st_services "Servicios"
             if [ "$HANAMI" -eq 1 ]; then

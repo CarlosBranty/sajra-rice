@@ -1,0 +1,129 @@
+#!/usr/bin/env python3
+"""Download the ad-block lists glyph-tok uses: the ones Brave enables by default on desktop, taken from Brave's own
+catalog, plus the scriptlet / redirect resources: Brave's own and uBlock Origin's (converted from the source of its
+latest release by ubo-resources.py, which reads it as text: nothing from uBlock is executed). Writes
+~/.local/share/glyph-tok/adblock/{lists/*.txt,resources.json,ubo-resources.json}; glyph-tok rebuilds its engine from
+them on the next start.
+
+A source that fails to download keeps its previous copy, so a bad network never leaves glyph-tok without a blocker.
+"""
+import io
+import json
+import os
+import shutil
+import subprocess
+import sys
+import tarfile
+import tempfile
+import urllib.request
+
+CATALOG = "https://raw.githubusercontent.com/brave/adblock-resources/master/filter_lists/list_catalog.json"
+RESOURCES = "https://raw.githubusercontent.com/brave/adblock-resources/master/dist/resources.json"
+UBO_RELEASE = "https://api.github.com/repos/gorhill/uBlock/releases/latest"
+# what ubo-resources.py reads from uBlock's source tree
+UBO_FILES = ("src/js/resources/", "src/js/redirect-resources.js", "src/web_accessible_resources/",
+             "src/js/arglist-parser.js", "src/js/jsonpath.js", "src/js/urlskip.js")
+# Brave's default lists that apply to a desktop browser (its iOS / Android / mobile-promo ones don't)
+LISTS = {
+    "Brave Default Adblock Filters",
+    "Brave Default Privacy Filters",
+    "Brave First Party Adblock Filters",
+    "Cookie notice blocker",
+}
+SKIP = ("android-specific", "ios-specific")
+
+DIR = os.path.join(os.environ.get("XDG_DATA_HOME", os.path.expanduser("~/.local/share")), "glyph-tok", "adblock")
+
+
+def fetch(url):
+    req = urllib.request.Request(url, headers={"User-Agent": "glyph-tok-adblock-update"})
+    with urllib.request.urlopen(req, timeout=60) as r:
+        return r.read()
+
+
+def put(path, data):
+    # temp file + rename: glyph-tok never reads half a list
+    fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path))
+    with os.fdopen(fd, "wb") as f:
+        f.write(data)
+    os.replace(tmp, path)
+
+
+def converter():
+    """ubo-resources.py: next to this script (source tree) or in ../libexec/glyph-tok (installed)"""
+    here = os.path.dirname(os.path.realpath(__file__))
+    for p in (os.path.join(here, "ubo-resources.py"), os.path.join(here, "..", "libexec", "glyph-tok", "ubo-resources.py")):
+        if os.path.isfile(p):
+            return p
+    return None
+
+
+def ubo_resources(out):
+    tag = json.loads(fetch(UBO_RELEASE))["tag_name"]
+    data = fetch(f"https://github.com/gorhill/uBlock/archive/refs/tags/{tag}.tar.gz")
+    tmp = tempfile.mkdtemp(prefix="glyph-tok-ubo-")
+    try:
+        with tarfile.open(fileobj=io.BytesIO(data)) as t:
+            members = [m for m in t.getmembers() if "/" in m.name and m.name.split("/", 1)[1].startswith(UBO_FILES)]
+            t.extractall(tmp, members=members, filter="data")
+        root = os.path.join(tmp, os.listdir(tmp)[0])
+        res = os.path.join(tmp, "out.json")
+        subprocess.run([sys.executable, "-I", converter(), root, res], check=True)
+        put(out, open(res, "rb").read())
+        return tag
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def main():
+    lists_dir = os.path.join(DIR, "lists")
+    os.makedirs(lists_dir, exist_ok=True)
+    try:
+        catalog = json.loads(fetch(CATALOG))
+    except Exception as e:
+        print(f"adblock: can't read Brave's list catalog: {e}", file=sys.stderr)
+        return 1
+
+    urls = [s["url"] for l in catalog if l.get("title") in LISTS for s in l.get("sources", [])
+            if s.get("url") and not any(k in s["url"] for k in SKIP)]
+    wanted, ok, failed = set(), 0, 0
+    for i, url in enumerate(urls):
+        name = f"{i:02d}-{os.path.basename(url.split('?')[0])}"
+        if not name.endswith(".txt"):
+            name += ".txt"
+        wanted.add(name)
+        try:
+            put(os.path.join(lists_dir, name), fetch(url))
+            ok += 1
+        except Exception as e:
+            failed += 1
+            print(f"adblock: {url}: {e} (keeping the previous copy)", file=sys.stderr)
+    # lists Brave dropped from its catalog
+    for f in os.listdir(lists_dir):
+        if f.endswith(".txt") and f not in wanted:
+            os.remove(os.path.join(lists_dir, f))
+
+    try:
+        res = fetch(RESOURCES)
+        json.loads(res)  # only replace it with something that parses
+        put(os.path.join(DIR, "resources.json"), res)
+    except Exception as e:
+        failed += 1
+        print(f"adblock: resources: {e} (keeping the previous copy)", file=sys.stderr)
+
+    try:
+        if not converter():
+            raise RuntimeError("ubo-resources.py not found")
+        tag = ubo_resources(os.path.join(DIR, "ubo-resources.json"))
+        print(f"adblock: uBlock Origin {tag} scriptlets")
+    except Exception as e:
+        failed += 1
+        print(f"adblock: uBlock scriptlets: {e} (keeping the previous copy)", file=sys.stderr)
+
+    print(f"adblock: {ok}/{len(urls)} lists updated in {lists_dir}" + (f", {failed} failed" if failed else ""))
+    print("adblock: restart glyph-tok to use them (glyph-tok quit)")
+    return 0 if ok else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())
