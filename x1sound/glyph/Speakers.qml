@@ -41,12 +41,21 @@ Column {
         }
     }
     FileView {
+        id: stateFile
         path: Quickshell.env("XDG_RUNTIME_DIR") + "/x1sound/state.json"
         watchChanges: true
         printErrors: false
         onFileChanged: reload()
         onLoaded: root.stateText = text()
         onLoadFailed: root.stateText = ""
+    }
+    // FileView stops watching when the parent dir does not exist yet (shell starts before the daemon
+    // creates $XDG_RUNTIME_DIR/x1sound), so retry until the state shows up
+    Timer {
+        interval: 2000
+        repeat: true
+        running: root.stateText === ""
+        onTriggered: stateFile.reload()
     }
 
     // EQ presets: the list x1sound writes (and the user may extend) in ~/.config/x1sound/eq-presets.json

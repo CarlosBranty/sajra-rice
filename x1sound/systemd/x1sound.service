@@ -8,6 +8,7 @@ Type=simple
 ExecStart=%h/.local/bin/x1sound daemon
 Restart=on-failure
 RestartSec=2
+ExecStopPost=/bin/rm -f %t/x1sound/state.json
 Nice=5
 
 [Install]
