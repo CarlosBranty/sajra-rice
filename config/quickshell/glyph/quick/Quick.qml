@@ -203,7 +203,9 @@ PanelWindow {
                     Rec { width: parent.width; visible: root.pick === "rec"; onTouched: root.pin(); onStart: { root.close(); Sys.toggleRec(); } }
 
                     Slider { icon: "\u{F00E0}"; visible: Sys.hasBri; value: Sys.bri; onMoved: v => Sys.setBri(v) }
-                    Slider { icon: Sys.muted ? "\u{F075F}" : "\u{F057E}"; value: Sys.muted ? 0 : Sys.vol; onMoved: v => Sys.setVol(v) }
+                    // right click — per-app mixer below it
+                    Slider { icon: Sys.muted ? "\u{F075F}" : "\u{F057E}"; value: Sys.muted ? 0 : Sys.vol; onMoved: v => Sys.setVol(v); onMenu: root.pick = root.pick === "mix" ? "" : "mix" }
+                    Mixer { width: parent.width; visible: root.pick === "mix"; onTouched: root.pin() }
 
                     // режим питания, как в caelestia: четыре клетки, белая заливка переезжает к выбранной; засечки — сила.
                     // ultra — ещё 60 Гц и без анимаций, blur и теней (Rules.modes)
@@ -488,7 +490,8 @@ PanelWindow {
         property real value
         property string icon
         signal moved(real v)
-        readonly property real shown: area.pressed ? area.v : value
+        signal menu // right click
+        readonly property real shown: area.pressed && area.pressedButtons & Qt.LeftButton ? area.v : value
         width: col.width
         height: 54
         radius: Theme.corner(27)
@@ -524,11 +527,12 @@ PanelWindow {
             property real wacc: 0
             anchors.fill: parent
             preventStealing: true
+            acceptedButtons: Qt.LeftButton | Qt.RightButton
             function set(x) { v = Math.max(0, Math.min(1, x / width)); sl.moved(v); }
             // pin на отпускании: в панели, открытой наведением, он отдаёт ей клавиатуру (None → Exclusive), и Hyprland на это
             // отпускает все кнопки мыши — первый drag после peek доезжал до точки клика и обрывался
-            onPressed: e => set(e.x)
-            onPositionChanged: e => set(e.x)
+            onPressed: e => { if (e.button === Qt.RightButton) sl.menu(); else set(e.x); }
+            onPositionChanged: e => { if (pressedButtons & Qt.LeftButton) set(e.x); }
             onReleased: root.pin()
             // колесо: засечка — 5 %, тачпад (у него фаза жеста, у колеса нет) вчетверо медленнее, иначе свайп — полшкалы.
             // Копим до 2 %: мелкие шаги тачпада съедает округление подсветки, и каждый пускал бы brightnessctl.
