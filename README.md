@@ -216,11 +216,12 @@ NixOS: change the `/usr/lib` agent paths in `hypr/hyprland/execs.lua` and the Pa
 
 <h2 align="center">Colours</h2>
 
-<div align="center"><img src="assets/palette.svg" width="720" alt="Palette, dark: #000000 #0E0E0E #1A1A1A #2A2A2A #4A4A4A #8C8C8C #F2F2F2 #D71921; light: #E9E9E9 #FFFFFF #F1F1F1 #D9D9D9 #B8B8B8 #6E6E6E #0B0B0B #D71921"></div>
+<div align="center"><img src="assets/palette.svg" width="720" alt="Palette, dark: #000000 #130D04 #20190E #332817 #544836 #988A76 #FBF1E2 #AC8DD7; light: #F2E8D9 #FFFFFF #FAF0E1 #E6D7C1 #C4B6A1 #796C59 #100A02 #8263AA"></div>
 
 <br>
 
-Dark and light. Red marks the one live thing on screen.
+Dark and light, as the shell builds them from a warm wallpaper tone (Style → wallpaper, expressive variant). Purple
+marks the one live thing on screen. Style → Nothing brings back glyph's black, white and red.
 Fonts: Doto, Space Grotesk, Space Mono, JetBrains Mono Nerd Font.
 
 <div align="center"><img src="assets/divider-glyph.svg" width="720" alt=""></div>
