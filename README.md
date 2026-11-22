@@ -1,16 +1,63 @@
 <div align="center">
 
-<img src="assets/title.svg" width="760" alt="Glyph: a Nothing OS rice for Hyprland + Quickshell">
+<img src="assets/title.svg" width="760" alt="sajra-rice: a Nothing OS style rice for Hyprland + Quickshell">
 
-Black, white dots, one red. A sibling of [Demon's Shot](https://github.com/Nebelung-cloud/demons-shot-rice).
+**sajra-rice** · my Hyprland + Quickshell desktop, ready to install on another machine.<br>
+Based on [glyph-rice](https://github.com/Nebelung-cloud/glyph-rice), [Caelestia](https://github.com/caelestia-dots/shell) and others
+(see [Based on](#based-on)).
 
 <br>
 
-![Glyph desktop](screenshots/desktop.png)
+![sajra-rice desktop](screenshots/desktop.png)
 
 </div>
 
 <div align="center"><img src="assets/divider-dots.svg" width="720" alt=""></div>
+
+<h2 align="center">Based on</h2>
+
+This rice is not built from scratch. It stands on the work of these projects, and keeps their history and licenses:
+
+| Project | What it gives this rice |
+|---|---|
+| [**glyph-rice**](https://github.com/Nebelung-cloud/glyph-rice) by Nebelung and contributors (GPL-3.0) | The base: the Quickshell shell, Hyprland config, installer, login theme, fonts and the Nothing OS look. Its full history is in this repository. |
+| [**Caelestia**](https://github.com/caelestia-dots/shell) | The model glyph-rice follows for the deck, hardware detection, optional components and where the colour comes from (wallpaper, Material You, palettes). |
+| [**Demon's Shot**](https://github.com/Nebelung-cloud/demons-shot-rice) | glyph's sibling rice; `rice switch` changes between them. |
+| [**Roamies**](https://github.com/KenKaiii/Roamies) by Ken Kai (AGPL-3.0-only) | The base of **Hanami**, the desktop assistant in [`hanami/`](hanami/). |
+| [**Qodi Music**](https://github.com/cbranty/qodi-music) | The self-hosted music server the music panel can stream from (a separate project). |
+| [Nothing OS](https://nothing.tech), [Doto](https://github.com/oliverlalan/Doto), [Gadgetbridge](https://codeberg.org/Freeyourgadget/Gadgetbridge) | The look and the Glyph lights, the dot matrix font, the earbuds protocol in `glyph/ear`. |
+
+<h2 align="center">What sajra-rice adds</h2>
+
+| | | |
+|---|---|:---:|
+| **Hanami** | voice assistant that lives on the desktop: talk, dictate into any app, reminders, finance overview, desktop control; its settings open as a native glyph side panel | `Ctrl` `Alt` `Space` · `Ctrl` `Alt` `H` |
+| **Music** | music panel: library by albums or folders, search, shuffle and repeat, plays through `mpv` in the background (MPRIS, media keys). **Local** plays `~/Music`; **Server** streams from a [Qodi Music](https://github.com/cbranty/qodi-music) server, with login and library folder in its settings | `Super` `Alt` `M` · `Super` `M` play/pause |
+| **Downloads** | aria2-based download manager panel (`glyph-dl`) | |
+| **Speakers** | Prefs → SPEAKERS: Dolby-style profiles, 8-band EQ, loudness and balance, driven by [x1sound](x1sound/) | `Super` `I` |
+| **Mixer** | per-app volume on the volume slider's right click | |
+| **Vault** | Vaultwarden password picker (rbw + rofi) | `Super` `Alt` `P` |
+| **Keys** | keystroke overlay in glyph style | `Super` `Alt` `K` |
+| **Power** | battery charge limit dial (`glyph-charge-setup`), caffeine that holds a logind idle/sleep lock and survives restarts | |
+| **Lock** | unlock with the fingerprint alongside the password; ThinkPads light the LED by the reader | `Super` `L` |
+| **Layout** | per-monitor scaling, bar styles, window opacity and blur in Prefs | |
+| **Theme** | light mode reaches GTK, Qt and the system colour scheme | |
+| **VPN** | Cloudflare WARP for the VPN toggle when it's installed | |
+| **Stats** | Intel GPU load and CPU temperature on Home | |
+| **Prompt** | a Pure-style starship prompt for fish (`config/starship/starship-pure.toml`) | |
+
+<h2 align="center">Repository layout</h2>
+
+| Path | What it is |
+|---|---|
+| `config/` | the rice: Hyprland, Quickshell (glyph shell and its panels), kitty, fish, rofi, fonts, sddm theme, scripts in `config/bin` |
+| `install.sh` | guided installer for Arch (see [Install](#install)) |
+| `hanami/` | Hanami's source (Tauri + Node sidecar), AGPL-3.0-only, with its own [README](hanami/README.md) and [NOTICE](hanami/NOTICE) |
+| `packaging/hanami-bin/` | PKGBUILD that repacks Hanami's `.deb` for Arch |
+| `x1sound/` | speaker controller for the ThinkPad X1 Carbon Gen 9 (Rust daemon, PipeWire DSP chain, udev); hardware-specific, installed by hand ([README](x1sound/README.md)) |
+| `system/` | system files outside `$HOME` the installer applies when they fit the machine |
+
+<div align="center"><img src="assets/divider-glyph.svg" width="720" alt=""></div>
 
 <h2 align="center">What's inside</h2>
 
@@ -54,15 +101,19 @@ Also: Hyprland (Lua), hypridle, kitty, fish, starship, fastfetch, btop, cava (do
 <h2 align="center">Install</h2>
 
 ```sh
-git clone https://github.com/Nebelung-cloud/glyph-rice ~/.local/share/glyph
-~/.local/share/glyph/install.sh                  # Arch: packages, services, symlinks, login theme
-~/.local/share/glyph/install.sh --with telegram  # same, components picked up front (--with "" for the rice only)
-~/.local/share/glyph/install.sh --with hanami    # same, with the Hanami assistant
-~/.local/share/glyph/install.sh --links          # any distro: symlinks only
-~/.local/share/glyph/install.sh --sddm           # login theme only (sudo); run again after editing it
-~/.local/share/glyph/install.sh --dry-run        # print every action, change nothing
-~/.local/share/glyph/install.sh --help           # all the flags
+git clone https://github.com/cbranty/sajra-rice ~/.local/share/sajra-rice
+cd ~/.local/share/sajra-rice
+./install.sh                  # Arch: packages, services, symlinks, login theme
+./install.sh --with telegram  # same, components picked up front (--with "" for the rice only)
+./install.sh --with hanami    # same, with the Hanami assistant (from a release, when there is one)
+./install.sh --hanami-build   # same, building Hanami from hanami/ (Rust, Node, tauri-cli; takes a while)
+./install.sh --links          # any distro: symlinks only
+./install.sh --sddm           # login theme only (sudo); run again after editing it
+./install.sh --dry-run        # print every action, change nothing
+./install.sh --help           # all the flags
 ```
+
+The symlinks point into the clone, so keep it where you cloned it.
 
 The installer is a terminal UI made with [gum](https://github.com/charmbracelet/gum) (it offers to install it from
 `extra/gum` first): a welcome screen with what it detected (distro, GPU, laptop, fingerprint reader), a component
@@ -79,8 +130,9 @@ gifs for the home cat tile from `~/Pictures/Gifs` (pick one in prefs → home, o
 
 **Hanami** (optional) is a voice assistant on the desktop: `Ctrl` `Alt` `Space` to talk to it, hold `Ctrl` `Alt` `D`
 to dictate into any app, and it can read and type into windows and kitty. Sign in to Claude in its panel; the voice
-models (~1 GB) download on first use. It is installed prebuilt from its release `.deb` through
-`packaging/hanami-bin/PKGBUILD` (`--hanami-deb <file>` installs a local build instead), and turned on by two
+models (~1 GB) download on first use. It is installed from a `.deb` through `packaging/hanami-bin/PKGBUILD`: the
+latest release of this repository, a local file (`--hanami-deb <file>`), or one built from [`hanami/`](hanami/) by
+`--hanami-build`. It is turned on by two
 gitignored links the installer makes: `hypr/hanami-enabled.lua` → `hanami.lua` (keys and autostart, loaded by
 `user.lua`) and `kitty/hanami.conf` → `hanami-remote.conf` (kitty's remote control over a private socket). Delete
 both, or run `install.sh --no-hanami`, to turn it off. Hanami is a modified version of
@@ -119,6 +171,24 @@ hl.bind("SUPER + G", hl.dsp.global("shell:game"))  -- game mode has no key by de
 
 <div align="center"><img src="assets/divider-glyph.svg" width="720" alt=""></div>
 
+<h2 align="center">Machine-specific</h2>
+
+The installer applies what fits the machine and leaves the rest to you:
+
+- **ThinkPad power LED** — when `/sys/class/leds/tpacpi::power` exists, `install.sh` installs
+  [`system/udev/90-thinkpad-power-led.rules`](system/udev/90-thinkpad-power-led.rules) so the lock screen can light it.
+- **Battery charge limit** — `glyph-charge-setup` (linked to `~/.local/bin`) installs its udev rule when you first set a
+  limit in Prefs → POWER.
+- **x1sound** (ThinkPad X1 Carbon Gen 9 only, Realtek ALC287 `17aa:22d5`) — not run by `install.sh`: it touches the
+  codec's DAC routing and needs Lenovo's Dolby impulse response, which can't be redistributed. Follow
+  [x1sound/README.md](x1sound/README.md): `sudo x1sound/hw/phase2-root.sh`, reboot, then `x1sound/install.sh`.
+  Prefs → SPEAKERS is already in the shell and stays empty without it.
+- **Fingerprint for sudo and login** — not automated (it edits PAM). If you want it, add
+  `auth sufficient pam_fprintd.so` as the first `auth` line of `/etc/pam.d/sudo` and `/etc/pam.d/sddm`, after
+  `fprintd-enroll`.
+- **Qodi Music server** — optional, for the music panel's **Server** tab: see
+  [cbranty/qodi-music](https://github.com/cbranty/qodi-music).
+
 <h2 align="center">Dependencies</h2>
 
 | | |
@@ -128,7 +198,8 @@ hl.bind("SUPER + G", hl.dsp.global("shell:game"))  -- game mode has no key by de
 | **Capture** | `grim` · `slurp` · `imagemagick` · `libvips` · `gpu-screen-recorder` · `cliphist` · `wl-clipboard` |
 | **Terminal** | `kitty` · `fish` · `starship` · `fastfetch` · `btop` · `cava` · `eza` · `zoxide` · `direnv` |
 | **Look** | `papirus-icon-theme` · `adw-gtk-theme` · JetBrains Mono Nerd Font · `noto-fonts-emoji` (Emoji 17) · `noto-fonts-cjk` · Bibata · `qtengine` · `darkly` |
-| **Optional** | `clash-verge-rev` · `nvidia-utils` · `ydotool` · `hyprpicker` · `swappy` · `trash-cli` |
+| **sajra-rice** | `mpv` · `mpv-mpris` · `ffmpeg` (music) · `aria2` (downloads) · `showmethekey` (keystroke overlay) |
+| **Optional** | `cloudflare-warp-bin` · `clash-verge-rev` · `nvidia-utils` · `ydotool` · `hyprpicker` · `swappy` · `trash-cli` |
 
 From the AUR only `qtengine`, `darkly`, Bibata and Zen, plus Spicetify and Clash Verge if picked; all optional. The VPN panel expects Clash Verge in English.
 NixOS: change the `/usr/lib` agent paths in `hypr/hyprland/execs.lua` and the Papirus path in `quickshell/rice/rice`. Take `quickshell` from nixos-unstable: 26.05 ships 0.3.0, where Prefs → AUDIO crashes the shell.
@@ -157,7 +228,8 @@ Fonts: Doto, Space Grotesk, Space Mono, JetBrains Mono Nerd Font.
 
 <h2 align="center">License</h2>
 
-[GPL-3.0](LICENSE). Fonts are under the [OFL](config/fonts/OFL.txt), cava shaders keep their MIT headers.
+[GPL-3.0](LICENSE), including `x1sound/`. [`hanami/`](hanami/) is under the [AGPL-3.0-only](hanami/LICENSE).
+Fonts are under the [OFL](config/fonts/OFL.txt), cava shaders keep their MIT headers.
 Nothing, Nothing OS and Glyph are trademarks of Nothing Technology Ltd; this is a fan project, not affiliated with Nothing.
 
 <div align="center"><img src="assets/divider-dots.svg" width="720" alt=""></div>
@@ -191,7 +263,8 @@ Nothing, Nothing OS and Glyph are trademarks of Nothing Technology Ltd; this is 
 
 ## Credits
 
-This is a modified version of [glyph-rice](https://github.com/Nebelung-cloud/glyph-rice) by Nebelung and its
-contributors (GPL-3.0), modified and maintained by Carlos Branty Conza Mendoza (losbrantybc@yahoo.com) to his own needs: the guided installer,
-the Hanami assistant as an optional component, and the light theme reaching gtk, qt and the system. Hanami is a
-modified version of [Roamies](https://github.com/KenKaiii/Roamies) by Ken Kai (AGPL-3.0-only).
+sajra-rice is maintained by Carlos Branty Conza Mendoza ([@cbranty](https://github.com/cbranty)). It is a modified
+version of [glyph-rice](https://github.com/Nebelung-cloud/glyph-rice) by Nebelung and its contributors (GPL-3.0), whose
+history this repository keeps. Hanami is a modified version of [Roamies](https://github.com/KenKaiii/Roamies) by Ken Kai
+(AGPL-3.0-only); what changed is listed in [hanami/NOTICE](hanami/NOTICE). Thanks to
+[Caelestia](https://github.com/caelestia-dots/shell) and every project listed in [Based on](#based-on).

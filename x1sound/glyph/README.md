@@ -1,6 +1,6 @@
 # Panel SPEAKERS para glyph
 
-`Speakers.qml` y `EqBand.qml` van en `~/.local/share/glyph/config/quickshell/glyph/prefs/`.
+`Speakers.qml` y `EqBand.qml` ya vienen en `config/quickshell/glyph/prefs/` de sajra-rice; estas copias son la referencia de x1sound.
 En `prefs/Prefs.qml` hacen falta dos cambios:
 
 1. Añadir `"SPEAKERS"` al final de `sections`:
