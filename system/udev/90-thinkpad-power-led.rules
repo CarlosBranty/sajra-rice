@@ -1,0 +1,2 @@
+# glyph: la pantalla de bloqueo usa la luz junto al lector de huella (tpacpi::power) para mostrar su estado
+ACTION=="add", SUBSYSTEM=="leds", KERNEL=="tpacpi::power", RUN+="/bin/chgrp video /sys%p/brightness", RUN+="/bin/chmod g+w /sys%p/brightness"

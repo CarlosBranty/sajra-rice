@@ -10,8 +10,7 @@ install -Dm644 wireplumber/51-x1c9-softmixer.conf ~/.config/wireplumber/wireplum
 install -Dm644 pipewire/x1sound.conf ~/.config/pipewire/pipewire.conf.d/x1sound.conf
 install -Dm644 systemd/x1sound.service ~/.config/systemd/user/x1sound.service
 install -Dm644 systemd/x1sound-clamp.service ~/.config/systemd/user/x1sound-clamp.service
-G=~/.local/share/glyph/config/quickshell/glyph/prefs
-[ -d "$G" ] && install -Dm644 glyph/Speakers.qml "$G/Speakers.qml" && install -Dm644 glyph/EqBand.qml "$G/EqBand.qml"
+# The SPEAKERS panel (glyph/Speakers.qml, glyph/EqBand.qml) already ships in sajra-rice's glyph config: nothing to copy
 [ -f ~/.local/share/x1sound/ir/dolby-balanced.irs ] || echo "AVISO: falta ~/.local/share/x1sound/ir/dolby-balanced.irs: la cadena no cargará"
 systemctl --user daemon-reload
 systemctl --user enable x1sound-clamp.service

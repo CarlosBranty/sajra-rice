@@ -3,6 +3,7 @@
 #   ./install.sh                       packages + services + symlinks; asks which optional components to add
 #   ./install.sh --with telegram       same, components picked up front (--with "" installs only the rice)
 #   ./install.sh --with hanami         same, with the Hanami assistant
+#   ./install.sh --hanami-build        same, building Hanami from hanami/ in this repo (no release needed)
 #   ./install.sh --links               symlinks only (on an already set-up system, any distro)
 #   ./install.sh --sddm                login theme only (sudo); run again after editing config/sddm
 #   ./install.sh --dry-run             prints every action, changes nothing
@@ -31,6 +32,8 @@ PACMAN=(
     kitty fish starship fastfetch btop cava eza zoxide direnv
     # apps from variables.lua
     thunar pavucontrol
+    # music panel and musica (mpv over MPRIS, ffprobe/ffmpeg for the index), downloads panel, keystroke overlay
+    mpv mpv-mpris ffmpeg aria2 showmethekey
     # fonts (cjk: kaomoji in Charms), icons (Papirus-Dark: the base of Rice's folder theme), dark base for gtk.css
     ttf-jetbrains-mono-nerd noto-fonts noto-fonts-cjk noto-fonts-emoji papirus-icon-theme adw-gtk-theme
 )
@@ -69,6 +72,7 @@ LINKS=(
     "config/qtengine                            .config/qtengine"
     "$G/term/qtengine.colors                    .config/qtengine.colors"
     "$G/term/starship.toml                      .config/starship.toml"
+    "config/starship/starship-pure.toml         .config/starship-pure.toml"
     "$G/term/fastfetch                          .config/fastfetch"
     "$G/term/btop                               .config/btop"
     "$G/term/cava                               .config/cava"
@@ -91,10 +95,11 @@ LINKS=(
 HANAMI_HYPR="config/hypr/hanami-enabled.lua"   # → hanami.lua
 HANAMI_KITTY="config/kitty/hanami.conf"        # → hanami-remote.conf
 HANAMI_PKGBUILD="packaging/hanami-bin/PKGBUILD"
+HANAMI_SRC="hanami/showcase/tauri"             # Hanami's source, built by --hanami-build
 
 # ── options ──────────────────────────────────────────────────────────────────────────────────────────────────────────
 
-MODE=full DRY=0 YES=0 WITH_SET=0 WITH="" NO_HANAMI=0
+MODE=full DRY=0 YES=0 WITH_SET=0 WITH="" NO_HANAMI=0 HANAMI_BUILD=0
 HANAMI_DEB="${HANAMI_DEB:-}" # the environment variable works like --hanami-deb
 
 usage() {
@@ -108,6 +113,8 @@ Uso: $0 [opciones]
   --no-hanami             sin Hanami; si estaba activado, lo desactiva (quita sus enlaces)
   --hanami-deb <ruta>     instala Hanami desde un .deb local (Hanami_<versión>_amd64.deb) en vez de la release;
                           implica --with hanami. También: HANAMI_DEB=<ruta> ./install.sh
+  --hanami-build          compila Hanami desde hanami/ (Rust, Node y tauri-cli; tarda) y lo instala;
+                          implica --with hanami
   --links                 solo los enlaces simbólicos (cualquier distribución)
   --sddm                  solo el tema de inicio de sesión (sudo)
   --yes, -y               sin preguntas: valores por defecto y texto plano
@@ -129,6 +136,7 @@ parse_args() {
             --no-hanami) NO_HANAMI=1 ;;
             --hanami-deb) [ $# -ge 2 ] || die "--hanami-deb needs a path"; HANAMI_DEB="$2"; shift ;;
             --hanami-deb=*) HANAMI_DEB="${1#--hanami-deb=}" ;;
+            --hanami-build) HANAMI_BUILD=1 ;;
             --links) MODE=links ;;
             --sddm) MODE=sddm ;;
             --yes|-y) YES=1 ;;
@@ -292,7 +300,7 @@ pick_components() {
             for w in "${COMPONENTS[@]}"; do
                 [ "$w" != hanami ] || [ "$NO_HANAMI" -eq 0 ] || continue
                 o="$(printf '%-9s %s' "$w" "${DESC[$w]}")"; opts+=("$o")
-                if [ "$w" = hanami ] && { [ "$HANAMI_ON" -eq 1 ] || [ -n "$HANAMI_DEB" ]; }; then sel+=("$o"); fi
+                if [ "$w" = hanami ] && { [ "$HANAMI_ON" -eq 1 ] || [ -n "$HANAMI_DEB" ] || [ "$HANAMI_BUILD" -eq 1 ]; }; then sel+=("$o"); fi
             done
             selected="$(IFS=,; printf '%s' "${sel[*]-}")"
             picked="$(gum choose --no-limit --height 12 --selected "$selected" \
@@ -309,7 +317,7 @@ pick_components() {
     fi
 
     PICK=() EXT=() EXT_NAMES=() HANAMI=0
-    [ -z "$HANAMI_DEB" ] || HANAMI=1
+    [ -z "$HANAMI_DEB" ] && [ "$HANAMI_BUILD" -eq 0 ] || HANAMI=1
     for w in "${names[@]+"${names[@]}"}"; do
         if [ "$w" = hanami ]; then HANAMI=1; continue; fi
         [ -n "${EXTRA[$w]-}" ] || die "no such component: $w (available: ${COMPONENTS[*]})" # typed in the plain prompt
@@ -398,6 +406,12 @@ st_services() {
     x systemctl --user enable pipewire-pulse.socket wireplumber ydotool
     x sudo usermod -aG input,video "$USER" # ydotool (uinput), brightnessctl
     x xdg-user-dirs-update
+    # ThinkPads: the lock screen lights the LED next to the fingerprint reader (tpacpi::power), writable by video
+    if [ -e /sys/class/leds/tpacpi::power ]; then
+        x sudo install -Dm644 "$DOTS/system/udev/90-thinkpad-power-led.rules" /etc/udev/rules.d/90-thinkpad-power-led.rules
+        x sudo udevadm control --reload
+        x sudo udevadm trigger --subsystem-match=leds
+    fi
 }
 
 # Hanami's version: from the .deb's name (Hanami_<version>_amd64.deb), else from its control file
@@ -412,8 +426,12 @@ deb_version() {
 st_hanami_package() {
     local repo ver build="<tmp>"
     repo="$(sed -n 's/^_repo=//p' "$DOTS/$HANAMI_PKGBUILD")"
+    # built here, in the same step: each step runs in its own subshell, so HANAMI_DEB can't come from another one
+    [ "$HANAMI_BUILD" -eq 0 ] || st_hanami_build || return 1
     if [ -n "$HANAMI_DEB" ]; then
-        if [ "$DRY" -eq 1 ] && [ ! -f "$HANAMI_DEB" ]; then
+        if [ "$DRY" -eq 1 ] && [ "$HANAMI_BUILD" -eq 1 ]; then
+            ver="<version>"
+        elif [ "$DRY" -eq 1 ] && [ ! -f "$HANAMI_DEB" ]; then
             echo "    (--dry-run: $HANAMI_DEB doesn't exist; a real install would stop before starting)"
             ver="<version>"
         else
@@ -421,15 +439,19 @@ st_hanami_package() {
             [ -n "$ver" ] || { echo "can't read the version of $HANAMI_DEB"; return 1; }
         fi
     elif [ "$repo" = OWNER/REPO ]; then
-        note "Hanami: aún no hay release publicada (falta OWNER/REPO en $HANAMI_PKGBUILD). Instálalo luego con ./install.sh --hanami-deb <ruta>; sus atajos ya quedan activados."
+        note "Hanami: aún no hay release publicada (falta OWNER/REPO en $HANAMI_PKGBUILD). Compílalo con ./install.sh --hanami-build o usa --hanami-deb <ruta>; sus atajos ya quedan activados."
         echo "    no release repository yet (OWNER/REPO placeholder): package skipped"
         return 0
     elif [ "$DRY" -eq 1 ]; then
         ver="<latest release of $repo>"
     else
-        ver="$(curl -fsSL "https://api.github.com/repos/$repo/releases/latest" | jq -r '.tag_name // empty')"
+        ver="$(curl -fsSL "https://api.github.com/repos/$repo/releases/latest" | jq -r '.tag_name // empty' || true)"
         ver="${ver#v}"
-        [ -n "$ver" ] || { echo "no release found in $repo"; return 1; }
+        if [ -z "$ver" ]; then
+            note "Hanami: $repo aún no publica una release. Compílalo desde este repo con ./install.sh --hanami-build; sus atajos ya quedan activados."
+            echo "    no release found in $repo: package skipped"
+            return 0
+        fi
     fi
     [ "$DRY" -eq 1 ] || build="$(mktemp -d)"
     x cp "$DOTS/$HANAMI_PKGBUILD" "$build/"
@@ -438,6 +460,28 @@ st_hanami_package() {
     if [ "$DRY" -eq 1 ]; then x cd "$build" "&&" HANAMI_VERSION="$ver" makepkg -si --needed --noconfirm
     else (cd "$build" && HANAMI_VERSION="$ver" makepkg -si --needed --noconfirm); fi
     x rm -rf "$build"
+}
+
+# Hanami from source: hanami/showcase/tauri/build.sh with only the .deb bundle, which st_hanami_package then
+# repacks like a release one. Needs Rust, Node (the sidecar is bundled with esbuild from npm) and tauri-cli 2
+st_hanami_build() {
+    local src="$DOTS/$HANAMI_SRC" deb pkgs=()
+    # only what's missing: rust would conflict with an installed rustup
+    command -v cargo >/dev/null || pkgs+=(rust)
+    command -v node >/dev/null || pkgs+=(nodejs)
+    command -v npm >/dev/null || pkgs+=(npm)
+    [ ${#pkgs[@]} -eq 0 ] || x sudo pacman -S --needed --noconfirm "${pkgs[@]}"
+    if ! cargo tauri --version >/dev/null 2>&1; then x cargo install tauri-cli --version "^2" --locked; fi
+    x npm ci --prefix "$src/sidecar"
+    if [ "$DRY" -eq 1 ]; then
+        x TAURI_BUNDLES=deb "$src/build.sh"
+        HANAMI_DEB="$src/src-tauri/target/release/bundle/deb/Hanami_<version>_amd64.deb"
+        return 0
+    fi
+    TAURI_BUNDLES=deb "$src/build.sh"
+    deb="$(ls -t "$src"/src-tauri/target/release/bundle/deb/Hanami_*_amd64.deb 2>/dev/null | head -1)"
+    [ -n "$deb" ] || { echo "the build finished without a Hanami_*_amd64.deb"; return 1; }
+    HANAMI_DEB="$deb"
 }
 
 st_hanami_enable() {

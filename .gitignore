@@ -10,3 +10,6 @@ config/rofi/glyph-colors.rasi
 # Hanami is optional: install.sh links these to turn it on (hanami.lua, hanami-remote.conf), each machine its own
 config/hypr/hanami-enabled.lua
 config/kitty/hanami.conf
+# local agent workspace: feature logbooks and the skill registry
+/odd/
+/.atl/
