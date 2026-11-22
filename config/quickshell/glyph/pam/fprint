@@ -1,0 +1,4 @@
+#%PAM-1.0
+# блокировка glyph: отпечаток (fprintd), параллельно с паролем (lock.qml). Нет fprintd или пальцев — pam_fprintd
+# отвечает «нет данных» сразу, и lock.qml больше не спрашивает
+auth    required    pam_fprintd.so    max-tries=3 timeout=30

@@ -1,0 +1,40 @@
+# Hanami, prebuilt: the .deb from the fork's GitHub release, repacked for Arch.
+# Hanami is a modified version of Roamies by Ken Kai (https://github.com/KenKaiii/Roamies), AGPL-3.0-only.
+#
+# install.sh builds this in a temporary copy (makepkg -si). To test with a local build, put the .deb next to this
+# file under the name the source array expects, or run: HANAMI_VERSION=<x.y.z> makepkg -si
+# (install.sh --hanami-deb <path> does both for you).
+
+# >>> PLACEHOLDER: the GitHub OWNER/REPO that publishes Hanami's releases. Set it once the fork is on GitHub. <<<
+_repo=OWNER/REPO
+
+_debver=${HANAMI_VERSION:-0.1.0}
+pkgname=hanami-bin
+pkgver=${_debver//-/_}
+pkgrel=1
+pkgdesc="Hanami: a voice assistant that lives on your desktop (talk, dictate, desktop control); prebuilt"
+arch=('x86_64')
+url="https://github.com/${_repo}"
+license=('AGPL-3.0-only')
+depends=(
+    'webkit2gtk-4.1' 'gtk3' 'libayatana-appindicator' 'gtk-layer-shell'
+    'wtype' 'libpulse' 'pipewire'
+)
+optdepends=(
+    'fprintd: fingerprint for the prompt that confirms protected changes'
+    'slurp: Ask About an Area on layer-shell compositors'
+    'kitty: typing into and reading terminals in the background'
+)
+provides=('hanami')
+conflicts=('hanami')
+options=('!strip' '!debug')
+_deb="Hanami_${_debver}_amd64.deb"
+source_x86_64=("${_deb}::https://github.com/${_repo}/releases/download/v${_debver}/${_deb}")
+# TODO: replace SKIP with the release asset's sha256 once it is published (a local --hanami-deb build can't be known)
+sha256sums_x86_64=('SKIP')
+
+package() {
+    # makepkg already unpacked the .deb (an ar archive) into $srcdir: the files are in data.tar.*
+    bsdtar -xf "$srcdir"/data.tar.* -C "$pkgdir"
+    chmod -R u=rwX,go=rX "$pkgdir"/usr
+}

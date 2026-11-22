@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+# Password picker (rofi-rbw) themed with glyph's live palette.
+# The palette follows the wallpaper and light/dark mode, so colors are regenerated on every launch.
+set -euo pipefail
+
+palette="${XDG_STATE_HOME:-$HOME/.local/state}/rice/glyph/palette.json"
+colors="${XDG_CONFIG_HOME:-$HOME/.config}/rofi/glyph-colors.rasi"
+
+# Toggle: a second press closes the picker
+if pkill -x rofi 2>/dev/null; then exit 0; fi
+
+if [[ -r "$palette" ]]; then
+    jq -r '
+      def a(c; x): c + x;   # append hex alpha
+      "* {",
+      "    bg:      \(.bg);",
+      "    surface: \(a(.s1; "D9"));",
+      "    field:   \(a(.s2; "E6"));",
+      "    line:    \(.s3);",
+      "    mute:    \(.mute);",
+      "    dim:     \(.grey);",
+      "    fg:      \(.fg);",
+      "    accent:  \(.accent);",
+      "    accent-soft: \(a(.accent; "26"));",
+      "    on-accent: \(if .light then "#ffffff" else .bg end);",
+      "}"' "$palette" > "$colors"
+fi
+
+exec rofi-rbw "$@"

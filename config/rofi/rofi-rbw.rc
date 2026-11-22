@@ -1,0 +1,8 @@
+selector = rofi
+clipboarder = wl-copy
+typer = wtype
+action = type
+clear-after = 15
+prompt = 󰌋 Vault
+selector-args = -theme ~/.config/rofi/glyph.rasi
+no-help = true

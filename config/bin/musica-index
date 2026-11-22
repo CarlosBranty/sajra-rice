@@ -1,0 +1,153 @@
+#!/usr/bin/env python3
+"""musica-index — indexa ~/Music para el panel de música de glyph.
+
+Escribe ~/.cache/musica/library.json con una entrada por canción (ruta, carpeta,
+título, artista, álbum, pista, duración, carátula). Reutiliza las entradas cuyo
+archivo no cambió (mtime + tamaño), así que volver a indexar es casi instantáneo.
+Carátula por carpeta: cover/folder/front.(jpg|png) o cualquier imagen; si no hay,
+la embebida en la primera canción, extraída a ~/.cache/musica/art/.
+"""
+import hashlib
+import json
+import os
+import subprocess
+import sys
+from concurrent.futures import ThreadPoolExecutor
+
+AUDIO = {".flac", ".mp3", ".ogg", ".opus", ".m4a", ".aac", ".wav", ".wv", ".ape", ".alac", ".aif", ".aiff"}
+IMAGES = (".jpg", ".jpeg", ".png", ".webp")
+CACHE = os.path.join(os.environ.get("XDG_CACHE_HOME") or os.path.expanduser("~/.cache"), "musica")
+OUT = os.path.join(CACHE, "library.json")
+ART = os.path.join(CACHE, "art")
+
+
+CONF = os.path.join(os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config"), "musica", "music-dir")
+
+
+def music_dir():
+    if len(sys.argv) > 1:
+        return os.path.abspath(sys.argv[1])
+    # folder chosen in the panel settings (⚙ → Local); a missing one falls back to the system Music dir
+    try:
+        with open(CONF) as f:
+            d = os.path.expanduser(f.readline().strip())
+        if d and os.path.isdir(d):
+            return os.path.abspath(d)
+    except OSError:
+        pass
+    try:
+        d = subprocess.run(["xdg-user-dir", "MUSIC"], capture_output=True, text=True).stdout.strip()
+        if d and os.path.isdir(d) and d != os.path.expanduser("~"):
+            return d
+    except OSError:
+        pass
+    return os.path.expanduser("~/Music")
+
+
+def num(v):
+    try:
+        return int(str(v).split("/")[0])
+    except (ValueError, TypeError):
+        return 0
+
+
+def probe(path):
+    try:
+        r = subprocess.run(
+            ["ffprobe", "-v", "quiet", "-print_format", "json", "-show_format", path],
+            capture_output=True, text=True, timeout=20,
+        )
+        fmt = json.loads(r.stdout or "{}").get("format", {})
+    except (OSError, subprocess.TimeoutExpired, json.JSONDecodeError):
+        fmt = {}
+    tags = {k.lower(): v for k, v in (fmt.get("tags") or {}).items()}
+    base = os.path.splitext(os.path.basename(path))[0]
+    return {
+        "title": tags.get("title") or base,
+        "artist": tags.get("artist") or tags.get("album_artist") or "",
+        "albumArtist": tags.get("album_artist") or tags.get("albumartist") or tags.get("artist") or "",
+        "album": tags.get("album") or "",
+        "track": num(tags.get("track")),
+        "disc": num(tags.get("disc")),
+        "dur": round(float(fmt.get("duration") or 0)),
+    }
+
+
+def folder_art(folder, first_track):
+    try:
+        imgs = sorted(f for f in os.listdir(folder) if f.lower().endswith(IMAGES))
+    except OSError:
+        imgs = []
+    for pref in ("cover", "folder", "front", "album"):
+        for f in imgs:
+            if os.path.splitext(f)[0].lower() == pref:
+                return os.path.join(folder, f)
+    if imgs:
+        return os.path.join(folder, imgs[0])
+    # embebida: se extrae una vez por carpeta
+    out = os.path.join(ART, hashlib.sha1(folder.encode()).hexdigest() + ".jpg")
+    if os.path.exists(out):
+        return out if os.path.getsize(out) > 0 else ""
+    os.makedirs(ART, exist_ok=True)
+    subprocess.run(
+        ["ffmpeg", "-v", "quiet", "-y", "-i", first_track, "-an", "-frames:v", "1",
+         "-vf", "scale=512:512:force_original_aspect_ratio=decrease", out],
+        capture_output=True, timeout=30,
+    )
+    if not os.path.exists(out):
+        open(out, "w").close()  # marca "sin carátula" para no reintentar
+        return ""
+    return out if os.path.getsize(out) > 0 else ""
+
+
+def main():
+    root = music_dir()
+    try:
+        with open(OUT) as f:
+            old = {t["path"]: t for t in json.load(f).get("tracks", [])}
+    except (OSError, ValueError):
+        old = {}
+
+    files = []
+    for dirpath, dirnames, filenames in os.walk(root, followlinks=True):
+        dirnames[:] = sorted(d for d in dirnames if not d.startswith("."))
+        for fn in filenames:
+            if os.path.splitext(fn)[1].lower() in AUDIO:
+                p = os.path.join(dirpath, fn)
+                try:
+                    st = os.stat(p)
+                except OSError:
+                    continue
+                files.append((p, int(st.st_mtime), st.st_size))
+
+    def entry(item):
+        p, mtime, size = item
+        prev = old.get(p)
+        if prev and prev.get("mtime") == mtime and prev.get("size") == size:
+            return prev
+        e = probe(p)
+        e.update(path=p, mtime=mtime, size=size)
+        return e
+
+    with ThreadPoolExecutor(max_workers=8) as ex:
+        tracks = list(ex.map(entry, files))
+
+    arts = {}
+    for t in tracks:
+        folder = os.path.dirname(t["path"])
+        rel = os.path.relpath(folder, root)
+        t["folder"] = "" if rel == "." else rel
+        if folder not in arts:
+            arts[folder] = folder_art(folder, t["path"])
+        t["art"] = arts[folder]
+
+    os.makedirs(CACHE, exist_ok=True)
+    tmp = OUT + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump({"root": root, "tracks": tracks}, f, ensure_ascii=False)
+    os.replace(tmp, OUT)
+    print(f"{len(tracks)} canciones → {OUT}")
+
+
+if __name__ == "__main__":
+    main()

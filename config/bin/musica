@@ -1,0 +1,90 @@
+#!/usr/bin/env bash
+# musica — reproduce ~/Music en segundo plano con mpv, sin ventana.
+# Gracias a mpv-mpris aparece en el widget de medios de glyph y responde a las
+# teclas multimedia (playerctl) que ya están en los keybinds.
+#
+#   musica              si ya suena: pausa/reanuda; si no: toda la biblioteca en orden
+#   musica elegir       menú (wofi) para elegir álbum/carpeta, o todo en aleatorio
+#   musica aleatorio    toda la biblioteca en aleatorio
+#   musica parar        detiene la reproducción
+#   musica RUTA...      reproduce esas carpetas/archivos (lo usa "Abrir con" de Thunar)
+#   musica lista N RUTA...  esas rutas en ese orden, empezando por la N (0 = primera); lo usa el panel de glyph
+#                       RUTA también puede ser una URL http(s) del servidor Qodi (ver musica-remote);
+#                       el token llega a mpv por ~/.config/musica/mpv-auth.conf, no por la línea de comandos
+
+CONF="${XDG_CONFIG_HOME:-$HOME/.config}/musica"
+# carpeta elegida en los ajustes del panel (⚙ → Local), si no la de Música del sistema
+LIB="$(head -n1 "$CONF/music-dir" 2>/dev/null)"
+LIB="${LIB/#\~/$HOME}"
+[ -d "$LIB" ] || LIB="$(xdg-user-dir MUSIC 2>/dev/null)"
+[ -d "$LIB" ] || LIB="$HOME/Music"
+RUN="${XDG_RUNTIME_DIR:-/tmp}"
+LIST="$RUN/musica.m3u"
+SOCK="$RUN/musica.sock"
+AUDIO='.*\.(flac|mp3|ogg|opus|m4a|aac|wav|wv|ape|alac|aiff?)$'
+AUTH="$CONF/mpv-auth.conf"
+
+running() { pgrep -f -- "--input-ipc-server=$SOCK" >/dev/null; }
+stop()    { pkill -f -- "--input-ipc-server=$SOCK"; }
+notify()  { command -v notify-send >/dev/null && notify-send -a "Música" -i audio-x-generic "$@"; }
+
+play() { # play [--shuffle | --start N] RUTA...
+    local extra=()
+    [ "$1" = --shuffle ] && { extra+=(--shuffle); shift; }
+    [ "$1" = --start ] && { extra+=(--playlist-start="$2"); shift 2; }
+    : > "$LIST"
+    for p in "$@"; do
+        if [[ "$p" =~ ^https?:// ]]; then
+            printf '%s\n' "$p" >> "$LIST"
+        elif [ -d "$p" ]; then
+            find -L "$p" -type f -regextype posix-extended -iregex "$AUDIO" | sort -V >> "$LIST"
+        elif [ -f "$p" ]; then
+            realpath -- "$p" >> "$LIST"
+        fi
+    done
+    if [ ! -s "$LIST" ]; then
+        notify "No encontré música" "$*"
+        exit 1
+    fi
+    grep -q '^https\?://' "$LIST" && [ -f "$AUTH" ] && extra+=(--include="$AUTH")
+    stop
+    if ! command -v mpv >/dev/null; then
+        notify "Falta mpv" "sudo pacman -S mpv mpv-mpris"
+        echo "Falta mpv: sudo pacman -S mpv mpv-mpris" >&2
+        exit 1
+    fi
+    setsid -f mpv --no-video --no-terminal --really-quiet --idle=no \
+        --input-ipc-server="$SOCK" --title=musica "${extra[@]}" \
+        --playlist="$LIST" >/dev/null 2>&1
+    local n; n=$(wc -l < "$LIST")
+    [ -n "$MUSICA_QUIET" ] || notify "Reproduciendo" "$(basename -- "$1") · $n canciones"
+}
+
+choose() {
+    local menu sel
+    menu=$(
+        echo "🔀 Todo (aleatorio)"
+        echo "▶ Todo (en orden)"
+        # carpetas que contienen audio, relativas a la biblioteca
+        find -L "$LIB" -type f -regextype posix-extended -iregex "$AUDIO" -printf '%h\n' \
+            | sort -u | sed "s|^$LIB/||" | grep -v "^$LIB$"
+    )
+    sel=$(printf '%s\n' "$menu" | wofi --dmenu --insensitive --prompt "Música") || exit 0
+    case "$sel" in
+        "🔀 Todo (aleatorio)") play --shuffle "$LIB" ;;
+        "▶ Todo (en orden)")  play "$LIB" ;;
+        "") exit 0 ;;
+        *) play "$LIB/$sel" ;;
+    esac
+}
+
+case "$1" in
+    "")         if running; then playerctl -p mpv play-pause; else play "$LIB"; fi ;;
+    elegir)     choose ;;
+    abrir)      shift; if [ $# -gt 0 ]; then play "$@"; else choose; fi ;;  # .desktop: archivos o menú
+    aleatorio)  play --shuffle "$LIB" ;;
+    parar)      stop ;;
+    lista)      shift; n="$1"; shift; [[ "$n" =~ ^[0-9]+$ ]] || n=0; play --start "$n" "$@" ;;
+    -h|--help)  sed -n '2,11p' "$0" | sed 's/^# \{0,1\}//' ;;
+    *)          play "$@" ;;
+esac
