@@ -1,0 +1,10 @@
+[Unit]
+Description=x1sound: speaker DACs (tweeters/woofers) to their configured values before audio starts
+Before=pipewire.service wireplumber.service
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/bin/x1sound clamp
+
+[Install]
+WantedBy=default.target

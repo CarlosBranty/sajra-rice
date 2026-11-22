@@ -1,0 +1,14 @@
+[Unit]
+Description=x1sound speaker controller (ThinkPad X1 Carbon Gen 9)
+After=pipewire.service wireplumber.service
+PartOf=pipewire.service
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/x1sound daemon
+Restart=on-failure
+RestartSec=2
+Nice=5
+
+[Install]
+WantedBy=pipewire.service
