@@ -1445,8 +1445,8 @@ pub(crate) fn open_releases_page() {
 // [32768, 32768]}]}. A note still there at start means Roamies went away with the volumes down, so they go back up
 // then. With the switch off pactl is never run.
 
-/// A playback stream as `pactl -f json list sink-inputs` lists it: its index, the process that plays it (None for a
-/// stream no app owns: a filter chain's output, a loopback) and each channel's volume in channel order (65536 is 100 %).
+/// A playback stream as `pactl -f json list sink-inputs` lists it: its index, the process that plays it (its own or
+/// its client's; None for a stream no app owns: a filter chain's output, a loopback) and each channel's volume in channel order (65536 is 100 %).
 /// `app` is its application.name. A stream that was lowered also keeps what it was lowered to (`lowered`; empty for
 /// one that is only listed): an app that closes its stream and opens another meanwhile (TikTok's next video) gets the
 /// new one at that volume from the sound server, which keeps one volume per app, so that one is given back too.
@@ -1459,16 +1459,28 @@ struct Stream {
     lowered: Vec<u32>,
 }
 
+/// Each client's process, from `pactl -f json list clients`, by the client's index; empty when that isn't a listing.
+/// An app that plays straight through PipeWire (mpv's pipewire output, for one) names its process on its client only.
+fn client_pids(text: &str) -> std::collections::HashMap<u64, u32> {
+    let Ok(Value::Array(list)) = serde_json::from_str::<Value>(text) else { return Default::default() };
+    list.iter().filter_map(|c| Some((c.get("index")?.as_u64()?, c.pointer("/properties/application.process.id")?.as_str()?.parse().ok()?))).collect()
+}
+
 /// The streams in pactl's listing, or None when it isn't one (no sound server, or a pactl too old to write JSON).
-/// A stream whose volumes can't be read is left out, so it's left alone.
-fn streams_from(text: &str) -> Option<Vec<Stream>> {
+/// A stream whose volumes can't be read is left out, so it's left alone. One that doesn't name its process takes its
+/// client's (`clients`, from client_pids), unless a sound server module owns it (a loopback): no app is behind that.
+fn streams_from(text: &str, clients: &std::collections::HashMap<u64, u32>) -> Option<Vec<Stream>> {
     let list: Value = serde_json::from_str(text).ok()?;
     let streams = list.as_array()?.iter().filter_map(|s| {
         let index = u32::try_from(s.get("index")?.as_u64()?).ok()?;
         let volume = s.get("volume")?.as_object()?;
         // By the channel map, which is the order volumes are set in (the listing's own order isn't kept on reading).
         let volumes: Vec<u32> = s.get("channel_map")?.as_str()?.split(',').map(|ch| volume.get(ch)?.get("value")?.as_u64().and_then(|v| u32::try_from(v).ok())).collect::<Option<_>>()?;
-        let pid = s.pointer("/properties/application.process.id").and_then(Value::as_str).and_then(|p| p.parse().ok());
+        let own_pid = s.pointer("/properties/application.process.id").and_then(Value::as_str).and_then(|p| p.parse().ok());
+        // The pulse server writes the client's index as a string ("305"), and null for none.
+        let client = s.get("client").and_then(|c| c.as_u64().or_else(|| c.as_str()?.parse().ok()));
+        let by_module = s.get("owner_module").is_some_and(|m| !m.is_null());
+        let pid = own_pid.or_else(|| (!by_module).then(|| clients.get(&client?).copied()).flatten());
         let app = s.pointer("/properties/application.name").and_then(Value::as_str).map(str::to_string);
         (volumes.len() == volume.len()).then_some(Stream { index, pid, volumes, app, lowered: Vec::new() })
     });
@@ -1611,7 +1623,8 @@ impl Pactl {
 
 impl Mixer for Pactl {
     fn streams(&mut self) -> Option<Vec<Stream>> {
-        streams_from(&Self::run(&["-f", "json", "list", "sink-inputs"].map(String::from))?)
+        let clients = client_pids(&Self::run(&["-f", "json", "list", "clients"].map(String::from)).unwrap_or_default());
+        streams_from(&Self::run(&["-f", "json", "list", "sink-inputs"].map(String::from))?, &clients)
     }
     fn set(&mut self, index: u32, volumes: &[u32]) {
         let args: Vec<String> = ["set-sink-input-volume".to_string(), index.to_string()].into_iter().chain(volumes.iter().map(u32::to_string)).collect();
@@ -1873,6 +1886,8 @@ mod tests {
     // them: a filter chain's output (no app behind it; everything that plays goes through it) and a browser's tab.
     const SINK_INPUTS: &str = r#"[{"index":38,"driver":"PipeWire","owner_module":null,"client":null,"sink":73,"sample_specification":"float32le 2ch 48000Hz","channel_map":"front-left,front-right","corked":true,"mute":false,"volume":{"front-left":{"value":65536,"value_percent":"100%","db":"0.00 dB"},"front-right":{"value":65536,"value_percent":"100%","db":"0.00 dB"}},"balance":0.00,"properties":{"node.virtual":"true","media.class":"Stream/Output/Audio","object.serial":"38"}},{"index":419,"driver":"PipeWire","owner_module":null,"client":"160","sink":37,"sample_specification":"float32le 2ch 48000Hz","channel_map":"front-left,front-right","corked":true,"mute":false,"volume":{"front-left":{"value":65536,"value_percent":"100%","db":"0.00 dB"},"front-right":{"value":65536,"value_percent":"100%","db":"0.00 dB"}},"balance":0.00,"properties":{"client.api":"pipewire-pulse","application.process.id":"1281","media.class":"Stream/Output/Audio","object.serial":"419"}}]"#;
 
+    static NO_CLIENTS: std::sync::LazyLock<std::collections::HashMap<u64, u32>> = std::sync::LazyLock::new(std::collections::HashMap::new);
+
     fn stream(index: u32, pid: Option<u32>, volumes: &[u32]) -> Stream {
         Stream { index, pid, volumes: volumes.to_vec(), ..Stream::default() }
     }
@@ -1932,17 +1947,30 @@ mod tests {
 
     #[test]
     fn pactls_list_becomes_streams() {
-        assert_eq!(streams_from(SINK_INPUTS), Some(vec![stream(38, None, &[65536, 65536]), stream(419, Some(1281), &[65536, 65536])]));
+        assert_eq!(streams_from(SINK_INPUTS, &NO_CLIENTS), Some(vec![stream(38, None, &[65536, 65536]), stream(419, Some(1281), &[65536, 65536])]));
         // Volumes come in the channel map's order (the order they're set in), whatever order the listing names them in.
         let surround = r#"[{"index":7,"channel_map":"front-left,front-right,rear-left,rear-right,front-center,lfe","volume":{"lfe":{"value":6},"front-center":{"value":5},"rear-right":{"value":4},"rear-left":{"value":3},"front-right":{"value":2},"front-left":{"value":1}},"properties":{"application.process.id":"900"}}]"#;
-        assert_eq!(streams_from(surround), Some(vec![stream(7, Some(900), &[1, 2, 3, 4, 5, 6])]));
-        assert_eq!(streams_from("[]"), Some(vec![]), "nothing is playing");
+        assert_eq!(streams_from(surround, &NO_CLIENTS), Some(vec![stream(7, Some(900), &[1, 2, 3, 4, 5, 6])]));
+        assert_eq!(streams_from("[]", &NO_CLIENTS), Some(vec![]), "nothing is playing");
         // A stream whose volumes can't be read in order is left out (so it's left alone); the rest are kept.
         let odd = r#"[{"index":1,"channel_map":"mono","volume":{"front-left":{"value":9}},"properties":{}},{"index":2,"volume":{},"properties":{}},{"volume":{"mono":{"value":9}},"channel_map":"mono"},{"index":3,"channel_map":"mono","volume":{"mono":{"value":32768}},"properties":{"application.process.id":"x"}}]"#;
-        assert_eq!(streams_from(odd), Some(vec![stream(3, None, &[32768])]));
+        assert_eq!(streams_from(odd, &NO_CLIENTS), Some(vec![stream(3, None, &[32768])]));
         for bad in ["", "Connection failure: Connection refused", "{}", "3"] {
-            assert_eq!(streams_from(bad), None, "{bad}");
+            assert_eq!(streams_from(bad, &NO_CLIENTS), None, "{bad}");
         }
+    }
+
+    #[test]
+    fn a_stream_without_its_own_pid_takes_its_clients() {
+        // mpv playing straight through PipeWire names its process on its client only (and the pulse server lists the
+        // client's index as a string); a module's stream (a loopback) has a client too, but no app owns it.
+        let clients = client_pids(r#"[{"index":305,"properties":{"application.name":"mpv","application.process.id":"93335"}},{"index":7,"properties":{"application.process.id":"700"}},{"index":9,"properties":{}}]"#);
+        let list = r#"[{"index":306,"owner_module":null,"client":"305","channel_map":"front-left,front-right","volume":{"front-left":{"value":65536},"front-right":{"value":65536}},"properties":{"application.name":"mpv"}},{"index":40,"owner_module":"12","client":"7","channel_map":"mono","volume":{"mono":{"value":65536}},"properties":{}},{"index":41,"owner_module":null,"client":"9","channel_map":"mono","volume":{"mono":{"value":65536}},"properties":{}},{"index":42,"owner_module":null,"client":"305","channel_map":"mono","volume":{"mono":{"value":65536}},"properties":{"application.process.id":"1281"}}]"#;
+        let found = streams_from(list, &clients).expect("a listing");
+        assert_eq!(found.iter().map(|s| (s.index, s.pid)).collect::<Vec<_>>(), vec![(306, Some(93335)), (40, None), (41, None), (42, Some(1281))]);
+        assert_eq!(found[0].app.as_deref(), Some("mpv"));
+        // No client listing (pactl failed): only the streams' own pids, as before.
+        assert_eq!(streams_from(list, &client_pids("")).expect("a listing").iter().map(|s| s.pid).collect::<Vec<_>>(), vec![None, None, None, Some(1281)]);
     }
 
     #[test]
