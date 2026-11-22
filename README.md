@@ -33,6 +33,7 @@ This rice is not built from scratch. It stands on the work of these projects, an
 |---|---|:---:|
 | **Hanami** | voice assistant that lives on the desktop: talk, dictate into any app, reminders, finance overview, desktop control; its settings open as a native glyph side panel | `Ctrl` `Alt` `Space` · `Ctrl` `Alt` `H` |
 | **Music** | music panel: library by albums or folders, search, shuffle and repeat, plays through `mpv` in the background (MPRIS, media keys). **Local** plays `~/Music`; **Server** streams from a [Qodi Music](https://github.com/cbranty/qodi-music) server, with login and library folder in its settings | `Super` `Alt` `M` · `Super` `M` play/pause |
+| **glyph-tok** | TikTok, Netflix, Crunchyroll or Dailymotion in a glyph-styled phone window, docked on the right of every workspace (or floating, or in a corner the tiles wrap around), with Brave's ad blocker; `Super` `↑`/`↓` change videos while it shows. Source in [`apps/glyph-tok/`](apps/glyph-tok/) | `Super` `Alt` `T` |
 | **Downloads** | aria2-based download manager panel (`glyph-dl`) | |
 | **Speakers** | Prefs → SPEAKERS: Dolby-style profiles, 8-band EQ, loudness and balance, driven by [x1sound](x1sound/) | `Super` `I` |
 | **Mixer** | per-app volume on the volume slider's right click | |
@@ -52,6 +53,7 @@ This rice is not built from scratch. It stands on the work of these projects, an
 |---|---|
 | `config/` | the rice: Hyprland, Quickshell (glyph shell and its panels), kitty, fish, rofi, fonts, sddm theme, scripts in `config/bin` |
 | `install.sh` | guided installer for Arch (see [Install](#install)) |
+| `apps/glyph-tok/` | glyph-tok's source (C++/QML on Qt WebEngine, adblock-rust); `install.sh --with tok` builds it |
 | `hanami/` | Hanami's source (Tauri + Node sidecar), AGPL-3.0-only, with its own [README](hanami/README.md) and [NOTICE](hanami/NOTICE) |
 | `packaging/hanami-bin/` | PKGBUILD that repacks Hanami's `.deb` for Arch |
 | `x1sound/` | speaker controller for the ThinkPad X1 Carbon Gen 9 (Rust daemon, PipeWire DSP chain, udev); hardware-specific, installed by hand ([README](x1sound/README.md)) |
@@ -126,7 +128,8 @@ the login theme, and a summary with the next steps. Command output goes to
 screen, continue or stop. `--yes` asks nothing (defaults, plain text, as without a terminal); `--dry-run` prints the
 commands instead of running them, without sudo.
 
-Without `--with` it asks which components to add: `hanami` (below), `telegram` (`Super` `D`), `spotify` with Spicetify
+Without `--with` it asks which components to add: `hanami` (below), `tok` (glyph-tok, built from
+`apps/glyph-tok` into `~/.local/bin`), `telegram` (`Super` `D`), `spotify` with Spicetify
 (`Super` `M`), `vault` (Vaultwarden through rbw and rofi, `Super` `Alt` `P`), `clash` for the VPN panel.
 Old configs go to `~/.dots-backup-<date>/`. Wallpapers are read from `~/Pictures/Wallpapers`,
 gifs for the home cat tile from `~/Pictures/Gifs` (pick one in prefs → home, or click the tile; none there — the cat).
