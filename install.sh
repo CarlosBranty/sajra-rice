@@ -75,6 +75,7 @@ LINKS=(
     "$G/term/qtengine.colors                    .config/qtengine.colors"
     "$G/term/starship.toml                      .config/starship.toml"
     "config/starship/starship-pure.toml         .config/starship-pure.toml"
+    "config/wireplumber/52-um2-mono-mic.conf    .config/wireplumber/wireplumber.conf.d/52-um2-mono-mic.conf"
     "$G/term/fastfetch                          .config/fastfetch"
     "$G/term/btop                               .config/btop"
     "$G/term/cava                               .config/cava"

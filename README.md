@@ -199,6 +199,10 @@ The installer applies what fits the machine and leaves the rest to you:
 
 - **ThinkPad power LED** — when `/sys/class/leds/tpacpi::power` exists, `install.sh` installs
   [`system/udev/90-thinkpad-power-led.rules`](system/udev/90-thinkpad-power-led.rules) so the lock screen can light it.
+- **Behringer U-Phoria UM2** — its mic input arrives on the left channel only. `install.sh` links
+  [`config/wireplumber/52-um2-mono-mic.conf`](config/wireplumber/52-um2-mono-mic.conf), which opens the UM2's capture in
+  its hardware mono mode, so the mic reaches both ears in every app. It does nothing without a UM2 plugged in. Set the
+  mic level with the UM2's GAIN knob and keep the input volume at 100%.
 - **Battery charge limit** — `glyph-charge-setup` (linked to `~/.local/bin`) installs its udev rule when you first set a
   limit in Prefs → POWER.
 - **x1sound** (ThinkPad X1 Carbon Gen 9 only, Realtek ALC287 `17aa:22d5`) — not run by `install.sh`: it touches the
