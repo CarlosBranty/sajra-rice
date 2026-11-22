@@ -8,7 +8,7 @@ Based on [glyph-rice](https://github.com/Nebelung-cloud/glyph-rice), [Caelestia]
 
 <br>
 
-![sajra-rice desktop: hug bar, light palette, glyph-tok docked on the right](screenshots/desktop.webp)
+![sajra-rice desktop: kitty with fastfetch, hug bar, light palette, glyph-tok docked on the right](screenshots/desktop.webp)
 
 </div>
 
@@ -96,10 +96,12 @@ Also: Hyprland (Lua), hypridle, kitty, fish, starship, fastfetch, btop, cava (do
 | ![launcher](screenshots/launcher.webp) **Launcher** | ![quick](screenshots/quick.webp) **Quick** |
 | ![deck](screenshots/deck.webp) **Deck** | ![prefs](screenshots/settings.webp) **Prefs** |
 | ![music](screenshots/music.webp) **Music** | ![shot](screenshots/shot.webp) **Shot** |
-| ![power](screenshots/power.webp) **Power** | ![login](screenshots/login.png) **Login** |
+| ![zen](screenshots/zen.webp) **Zen on another workspace** | ![power](screenshots/power.webp) **Power** |
+| ![login](screenshots/login.png) **Login** | |
 
-The bar is in **hug** style (Prefs → BAR) with a light palette. On the right is **glyph-tok** in dock mode: TikTok in a
-phone-shaped window that keeps its strip on every workspace.
+The bar is in **hug** style (Prefs → BAR) with a light palette, over kitty on one workspace and an empty Zen window on
+another. On the right is **glyph-tok** in dock mode: TikTok in a phone-shaped window that keeps its strip on every
+workspace.
 
 <div align="center"><img src="assets/divider-matrix.svg" width="720" alt=""></div>
 
