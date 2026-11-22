@@ -107,6 +107,20 @@ workspace.
 
 <h2 align="center">Install</h2>
 
+One command, on Arch (it clones the repo to `~/.local/share/sajra-rice`, or updates it, and runs the installer):
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/cbranty/sajra-rice/main/setup.sh | bash
+```
+
+Installer flags go after `bash -s --`, for example
+`curl -fsSL https://raw.githubusercontent.com/cbranty/sajra-rice/main/setup.sh | bash -s -- --with hanami tok`.
+Run the same command again later to update. `SAJRA_DIR` changes where the clone lives. If you'd rather read
+[`setup.sh`](setup.sh) before running it: `curl -fsSLO https://raw.githubusercontent.com/cbranty/sajra-rice/main/setup.sh`,
+look, then `bash setup.sh`.
+
+Or by hand:
+
 ```sh
 git clone https://github.com/cbranty/sajra-rice ~/.local/share/sajra-rice
 cd ~/.local/share/sajra-rice

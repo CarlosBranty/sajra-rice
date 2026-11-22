@@ -44,7 +44,7 @@ main() {
     exec "$dir/install.sh" "$@" </dev/null
 }
 
-say() { printf '\e[38;2;130;99;170m●\e[0m %s\n' "$*"; }
+say() { if [ -t 1 ]; then printf '\e[38;2;130;99;170m●\e[0m %s\n' "$*"; else printf '● %s\n' "$*"; fi; }
 die() { printf 'setup.sh: %s\n' "$*" >&2; exit 1; }
 
 main "$@"
