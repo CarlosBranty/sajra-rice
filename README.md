@@ -157,7 +157,9 @@ latest release of this repository, a local file (`--hanami-deb <file>`), or one 
 `--hanami-build`. It is turned on by two
 gitignored links the installer makes: `hypr/hanami-enabled.lua` → `hanami.lua` (keys and autostart, loaded by
 `user.lua`) and `kitty/hanami.conf` → `hanami-remote.conf` (kitty's remote control over a private socket). Delete
-both, or run `install.sh --no-hanami`, to turn it off. Hanami is a modified version of
+both, or run `install.sh --no-hanami`, to turn it off. It also links
+[`pipewire/hanami-echo-cancel.conf`](config/pipewire/hanami-echo-cancel.conf), a mono echo-cancelled mic so Hanami
+keeps listening while it speaks: pick "Microphone (echo cancelled)" on Hanami's Voice page. Hanami is a modified version of
 [Roamies](https://github.com/KenKaiii/Roamies) by Ken Kai, under the [AGPL-3.0](https://www.gnu.org/licenses/agpl-3.0.html).
 
 Its settings open as a glyph side panel (`quickshell/glyph/hanami/`): `Ctrl` `Alt` `H`, `qs ipc call hanami toggle`,

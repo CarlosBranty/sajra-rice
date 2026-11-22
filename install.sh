@@ -99,6 +99,8 @@ HANAMI_HYPR="config/hypr/hanami-enabled.lua"   # → hanami.lua
 HANAMI_KITTY="config/kitty/hanami.conf"        # → hanami-remote.conf
 HANAMI_PKGBUILD="packaging/hanami-bin/PKGBUILD"
 HANAMI_SRC="hanami/showcase/tauri"             # Hanami's source, built by --hanami-build
+HANAMI_AEC="config/pipewire/hanami-echo-cancel.conf" # the echo-cancelled mic Hanami listens to
+HANAMI_AEC_DST=".config/pipewire/pipewire.conf.d/hanami-echo-cancel.conf"
 
 # ── options ──────────────────────────────────────────────────────────────────────────────────────────────────────────
 
@@ -490,12 +492,23 @@ st_hanami_build() {
 st_hanami_enable() {
     x ln -sfn hanami.lua "$DOTS/$HANAMI_HYPR"
     x ln -sfn hanami-remote.conf "$DOTS/$HANAMI_KITTY"
+    local aec="$HOME/$HANAMI_AEC_DST"
+    if [ "$(readlink "$aec" 2>/dev/null)" != "$DOTS/$HANAMI_AEC" ]; then
+        if [ -e "$aec" ] || [ -L "$aec" ]; then
+            x mkdir -p "$BACKUP/$(dirname "$HANAMI_AEC_DST")"
+            x mv "$aec" "$BACKUP/$HANAMI_AEC_DST"
+        fi
+        x mkdir -p "$(dirname "$aec")"
+        x ln -s "$DOTS/$HANAMI_AEC" "$aec"
+        note "Hanami: el micrófono con cancelación de eco aparece tras reiniciar PipeWire (systemctl --user restart pipewire) o la sesión; en Hanami → Voz → Dispositivos elige \"Microphone (echo cancelled)\"."
+    fi
     # Hyprland reloads when a file it read is saved, not on a new link: ask it
     [ -z "${HYPRLAND_INSTANCE_SIGNATURE:-}" ] || x hyprctl reload
 }
 
 st_hanami_disable() {
     x rm -f "$DOTS/$HANAMI_HYPR" "$DOTS/$HANAMI_KITTY"
+    [ "$(readlink "$HOME/$HANAMI_AEC_DST" 2>/dev/null)" != "$DOTS/$HANAMI_AEC" ] || x rm -f "$HOME/$HANAMI_AEC_DST"
     [ -z "${HYPRLAND_INSTANCE_SIGNATURE:-}" ] || x hyprctl reload
 }
 
@@ -695,7 +708,7 @@ main() {
             plan 0 0 st_services "Servicios"
             if [ "$HANAMI" -eq 1 ]; then
                 plan 0 0 st_hanami_package "Hanami: paquete"
-                plan 0 0 st_hanami_enable "Hanami: atajos y control de kitty"
+                plan 0 0 st_hanami_enable "Hanami: atajos, control de kitty y micrófono"
                 [ "$FPRINT_INSTALL" -eq 0 ] || plan 0 0 st_fprintd "Hanami: lector de huellas (fprintd)"
             elif [ "$HANAMI" -eq -1 ]; then
                 plan 0 0 st_hanami_disable "Hanami: desactivar"
