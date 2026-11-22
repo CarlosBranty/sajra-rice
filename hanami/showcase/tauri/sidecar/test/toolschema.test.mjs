@@ -1,0 +1,125 @@
+// Tool schemas every provider accepts. Run: npm test
+import assert from 'node:assert/strict';
+import { resolveToolSchema } from '@kenkaiiii/gg-ai';
+import { createTools } from '../tools.mjs';
+
+const noop = async () => {};
+const { tools } = createTools({ allowActions: false, ui: () => {}, ask: async () => false, openUrl: noop, onCommitments: noop, showList: noop, fmtWhen: String, commitmentsText: () => '', userName: 'Test' });
+
+// Regression: fetch_url's url had format "uri", which OpenAI strict schemas reject, failing every OpenAI request.
+const formats = [];
+const walk = (name, node, at) => {
+  if (Array.isArray(node)) return node.forEach((n, i) => walk(name, n, `${at}/${i}`));
+  if (!node || typeof node !== 'object') return;
+  for (const [k, v] of Object.entries(node)) {
+    if (k === 'format') formats.push(`${name}${at}: ${v}`);
+    walk(name, v, `${at}/${k}`);
+  }
+};
+for (const t of tools) walk(t.name, resolveToolSchema(t), '');
+assert.deepEqual(formats, [], 'no tool uses a string format');
+// draw replaced point_at, on every platform (pixels from a screenshot work everywhere).
+assert.ok(tools.some((t) => t.name === 'draw') && !tools.some((t) => t.name === 'point_at'), 'draw, not point_at');
+const drawSchema = JSON.stringify(resolveToolSchema(tools.find((t) => t.name === 'draw')));
+assert.ok(!/"(oneOf|anyOf|allOf)"/.test(drawSchema), 'draw is one flat object schema (no unions some providers reject)');
+console.log('tool schema ok');
+
+// act_in_app that only types a web address into a browser's bar becomes a direct open.
+{
+  const { typedAddress } = await import('../tools.mjs');
+  const go = (t) => [{ do: 'type', text: t }, { do: 'key', key: 'return' }];
+  assert.equal(typedAddress('Safari', [{ do: 'key', key: 'cmd+l' }, ...go('example.com'), { do: 'wait', seconds: 2 }]), 'example.com');
+  assert.equal(typedAddress('Safari', [{ do: 'click_text', text: 'smart search field' }, ...go('example.com')]), 'example.com');
+  assert.equal(typedAddress('Google Chrome', [{ do: 'key', key: 'cmd+t' }, ...go('https://bbc.co.uk/news')]), 'https://bbc.co.uk/news');
+  assert.equal(typedAddress('browser', [{ do: 'click_text', text: 'New Tab' }, ...go('example.com')]), 'example.com');
+  // Not just opening a link: leave it alone.
+  assert.equal(typedAddress('TextEdit', [{ do: 'key', key: 'cmd+l' }, ...go('example.com')]), null);
+  assert.equal(typedAddress('Safari', [{ do: 'key', key: 'cmd+l' }, ...go('cheap flights to rome')]), null);
+  assert.equal(typedAddress('Safari', [{ do: 'click_text', text: 'Search' }, ...go('example.com')]), null);
+  assert.equal(typedAddress('Safari', [{ do: 'key', key: 'cmd+l' }, ...go('example.com'), { do: 'click_text', text: 'More information' }]), null);
+  assert.equal(typedAddress('Safari', [{ do: 'key', key: 'cmd+l' }, { do: 'type', text: 'example.com' }]), null);
+  assert.equal(typedAddress('Safari', [{ do: 'fill', field: 'Email', text: 'a@b.com' }, ...go('example.com')]), null);
+  console.log('typed address ok');
+}
+
+// Regression: a YouTube search typed into the search box failed and re-ran the old search; the search URL works.
+// act_in_app is there on macOS, and elsewhere when the hands helper is (ROAMIES_HANDS).
+assert.equal(tools.some((t) => t.name === 'act_in_app'), process.platform === 'darwin' || !!process.env.ROAMIES_HANDS, 'act_in_app follows the helper');
+if (process.platform === 'darwin') {
+  const actInApp = tools.find((t) => t.name === 'act_in_app').description;
+  assert.match(actInApp, /youtube\.com\/results\?search_query=/);
+  // ...but when the user asks for the page's own search box, it uses the box.
+  assert.match(actInApp, /unless the user asks you to use the box: then fill it/);
+}
+
+// Linux: apps are opened by name through their .desktop files.
+{
+  const { parseDesktopEntry, findDesktopApp } = await import('../tools.mjs');
+  const e = parseDesktopEntry('# a comment\n[Desktop Entry]\nType=Application\nName=Files\nName[de]=Dateien\nGenericName=File Manager\nExec=nautilus --new-window %U\n\n[Desktop Action new-window]\nName=New Window\nExec=nautilus --new-window\n');
+  assert.equal(e.Name, 'Files', 'the main name, not a translation');
+  assert.equal(e.Exec, 'nautilus --new-window %U', 'keys from [Desktop Entry] only, not its actions');
+  assert.equal(e.GenericName, 'File Manager');
+  const app = (id, entry) => ({ id, file: `/usr/share/applications/${id}.desktop`, entry: { Type: 'Application', Exec: id, ...entry } });
+  const apps = [
+    app('org.gnome.Nautilus', { Name: 'Files', GenericName: 'File Manager' }),
+    app('google-chrome', { Name: 'Google Chrome', GenericName: 'Web Browser' }),
+    app('firefox', { Name: 'Firefox Web Browser', GenericName: 'Web Browser' }),
+    app('secret-tool-helper', { Name: 'Hidden Helper', NoDisplay: 'true' }),
+    app('gone', { Name: 'Gone', Hidden: 'true' }),
+    { id: 'a-link', file: '/x/a-link.desktop', entry: { Type: 'Link', Name: 'A Link', URL: 'https://example.com' } },
+  ];
+  const find = (n) => findDesktopApp(apps, n)?.id ?? null;
+  assert.equal(find('Files'), 'org.gnome.Nautilus', 'by the name in the menus');
+  assert.equal(find('files'), 'org.gnome.Nautilus', 'any case');
+  assert.equal(find('nautilus'), 'org.gnome.Nautilus', 'by the last part of its id');
+  assert.equal(find('org.gnome.Nautilus.desktop'), 'org.gnome.Nautilus', 'by its file name');
+  assert.equal(find('chrome'), 'google-chrome', 'a word of its name');
+  assert.equal(find('firefox'), 'firefox');
+  assert.equal(find('Web Browser'), 'google-chrome', 'by its kind when nothing is named that');
+  assert.equal(find('Hidden Helper'), null, 'never one hidden from the menus');
+  assert.equal(find('Gone'), null);
+  assert.equal(find('A Link'), null, 'only apps');
+  assert.equal(find('Photoshop'), null);
+  assert.equal(find('  '), null);
+  console.log('linux app tests: passed');
+}
+
+// Regression: a launcher's output is inherited by the app it starts, so waiting for it to close waited for the app.
+{
+  const { launch } = await import('../tools.mjs');
+  const t0 = Date.now();
+  const r = await launch(process.execPath, ['-e', "require('child_process').spawn(process.execPath, ['-e', 'setTimeout(() => {}, 4000)'], { stdio: 'inherit', detached: true }).unref()"]);
+  assert.equal(r.err, null);
+  assert.ok(Date.now() - t0 < 2500, 'done when the launcher exits, not when the app it started does');
+  const bad = await launch(process.execPath, ['-e', "process.stderr.write('Unable to find application'); process.exit(2)"]);
+  assert.equal(bad.err.code, 2);
+  assert.match(bad.stderr, /Unable to find application/);
+  assert.equal((await launch('/no/such/launcher', [])).err.code, 'ENOENT');
+  console.log('launch tests: passed');
+}
+
+// The draw tool's description. With the hands helper it is, to the letter, what it was before the words about
+// places depended on the helper (its length and SHA-256, taken from that text; "Roamie" now reads "Hanami"), with and without the Wayland note.
+{
+  const { createHash } = await import('node:crypto');
+  const { drawDescription } = await import('../tools.mjs');
+  const { hasHands, linuxSession, stepWaits } = await import('../platform.mjs');
+  const pin = (d) => [d.length, createHash('sha256').update(d).digest('hex')];
+  assert.deepEqual(pin(drawDescription({ hands: true, waits: 'pointer' })), [3516, 'c5cf143e8f5af591ec23cc9c87eb0d946011bc7204374af2fbe8240a73aaa927'], 'with the helper: unchanged');
+  assert.deepEqual(pin(drawDescription({ hands: true, waits: 'none' })), [3704, 'e344e4c2193322261504f09fd1d312ea03f36419d8590d40f7f8c38fbf717b72'], 'with the helper on Wayland: unchanged');
+  // Without it: places by position, and nothing that sends the agent to words or ids.
+  for (const waits of ['pointer', 'none']) {
+    const d = drawDescription({ hands: false, waits });
+    assert.match(d, /\nPlaces \(at, to, tie\): \{x, y, w, h\} in the pixels of your latest screenshot/, `places by position (${waits})`);
+    assert.match(d, /Look first: take a screenshot/);
+    assert.ok(!/best first|\{text: the exact words|\{id\} from read_window|the next step is found after they click/.test(d), `no words-first advice (${waits})`);
+    // Everything else is the same text.
+    const rest = (s) => s.split('\n').filter((l) => !/^(Places|Walkthroughs) \(/.test(l)).join('\n');
+    assert.equal(rest(d), rest(drawDescription({ hands: true, waits })), `the other lines are untouched (${waits})`);
+  }
+  // The tool on this computer carries the description for what it can do.
+  const session = process.platform === 'linux' ? linuxSession() : '';
+  const here = { hands: hasHands(process.platform, process.env.ROAMIES_HANDS), waits: stepWaits(process.platform, session, process.env.ROAMIES_LAYER || '') };
+  assert.equal(tools.find((t) => t.name === 'draw').description, drawDescription(here), 'the draw tool says what this computer can do');
+  console.log('draw description ok');
+}

@@ -1,0 +1,18 @@
+                               ANA Pérez Ruiz, tu
+                                 transferencia está lista
+                      La transferencia al número celular de LUIS ALBERTO GOMEZ TORRES de S/7.50
+                      se ha realizado exitosamente.
+                      Detalle
+                      Cuenta Cargo                                                  Cuenta Ahorro Soles
+                      Nro. de cuenta                                             1234567890123456789
+                      Comisión                                                                  S/00.00
+                      Destinatario                                  LUIS ALBERTO GOMEZ TORRES
+                      CCI                                                        00211122233344455566
+                      Tipo de moneda                                                              Soles
+                      Monto de transferencia                                                     S/7.50
+                      Fecha                                               2026-11-08T21:40:05-03:00
+                      Hora                                                                 19:40:01
+                      Tipo de transferencia                                              Inmediata
+                      Nro. de operación                                              990811194001
+                               Por tu seguridad, recuerda
+                                • Nunca te solicitaremos datos conﬁdenciales como claves.

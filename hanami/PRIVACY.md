@@ -1,0 +1,113 @@
+# Privacy
+
+Effective date: 10 November 2026
+
+Roamies is an open-source desktop app made by an individual developer. This page says, in plain words, what
+data Roamies handles and where it goes.
+
+## The short version
+
+- The developer runs no servers and collects nothing from you.
+- There is no analytics or telemetry.
+- Data leaves your computer only to services you choose to use, listed below.
+
+## What leaves your computer, and where it goes
+
+**The AI provider you sign in to** (Anthropic via Claude Code, OpenAI/ChatGPT, or a provider you add with an API
+key) receives:
+
+- your messages and the conversation so far
+- a "live state" block: the date and time, your time zone, the name or title of the app and window in front,
+  and the facts and commitments Roamies has saved in memory
+- screenshots or window text, when Roamies looks at your screen to answer
+
+**Fish Audio** receives the text of each reply to speak it, only if spoken replies are on. It uses your own key.
+
+**GitHub** is used to check for and download updates.
+
+**Hugging Face** and **GitHub** are used once, on Windows and Linux, to download the speech model (NVIDIA Parakeet)
+and two small helper models: Silero VAD, which tells a voice from noise, and Pipecat Smart Turn, which tells when
+you've finished speaking. Each file is pinned to one version and checked; all of them run on your computer, and no
+audio leaves it.
+
+**Wikipedia** is used to fetch photos for photo cards, and websites' `favicon.ico` is fetched for source cards.
+
+**Websites** that you or the agent open or fetch (for example with its `fetch_url` tool) receive the usual
+request a browser would send.
+
+Each provider's own privacy policy applies to what is sent to it.
+
+## Speech, microphone and screen
+
+- **macOS:** speech is turned into text on your Mac by Apple's on-device recognizer. On Macs where on-device
+  recognition isn't available, Apple's recognizer may use Apple's servers, under Apple's terms.
+- **Windows and Linux:** speech is turned into text on your computer (Parakeet).
+- The microphone is used only while you hold the talk keys (or, on Linux with Wayland, from your talk shortcut
+  until you press it again or pause), unless you switch the wake word on.
+- **Wake word (Linux, off by default):** while it's on, the microphone stays on so Roamies can hear the phrase you
+  picked. What it hears is checked on your computer, a few seconds at a time, for that phrase and nothing else: it
+  isn't saved or logged, and nothing is sent anywhere until the phrase is heard. From there it's a spoken question
+  like any other. It doesn't listen for the phrase while it's speaking a reply.
+- The screen is captured only when Roamies answers something about your screen, or when you mark an area. On Linux
+  with Wayland it's taken through your desktop's screenshot portal; the copy the portal saves is deleted right away.
+
+## Money (off until you add a mail account)
+
+- When you add a mail account on the Money page, Roamies connects to that provider's mail server (IMAP over TLS)
+  every few minutes with the app password you created. It opens your mailbox read-only and asks only for mail from
+  the exact addresses of the banks it knows; it never marks, moves or deletes anything.
+- The app password is kept in your system's keyring, never in Roamies' settings, logs or database. Remove the account
+  in Roamies to delete it there, and revoke the app password at your provider.
+- From each bank mail it keeps only the expense: date, amount, merchant or person, the last four digits of the
+  account, the operation number and the category you give it, in a database on your computer. Mails it can't read are
+  listed by sender and subject so you can check them; their contents are not kept.
+- Nothing from your mail is sent to the AI model unless you ask Roamies about your spending; then it sees the expenses
+  it needs to answer, not the mails.
+- Renaming or deleting a category, or changing or removing an expense's classification, first asks for your computer
+  password or your fingerprint (Linux). Your system's own PAM checks it on your computer, as your lock screen does;
+  the password goes from the prompt straight to that check and is wiped after. It is never stored, sent anywhere
+  (the AI model included) or logged; the log only notes that a check was asked and how it went.
+- The panel's Money page shows these records (and lets you classify them or add one by hand) only on your computer;
+  the same changes ask for your password or fingerprint there too.
+
+## What's stored on your computer
+
+Everything lives in `~/.gg` (on Windows, `%USERPROFILE%\.gg`) and stays on your computer:
+
+| File or folder           | What's in it                                                                        |
+| ------------------------ | ----------------------------------------------------------------------------------- |
+| `sidekick.json`          | your settings                                                                       |
+| `sidekick/memory.json`   | facts Roamies learned and your commitments                                          |
+| `sidekick/sessions/`     | conversations (the newest 60 are kept)                                              |
+| `sidekick/logs/`         | activity logs: tool names, timings, errors and short snippets of tool results (such as a line of window or page text); text you type into apps or files is reduced to its length; kept 7 days |
+| `sidekick/usage.jsonl`   | token counts and timings only, never content                                       |
+| `auth.json`              | your AI sign-ins, shared with GG Coder                                              |
+
+**Save Diagnostics** (the panel's About page, or the tray icon's menu) writes one `roamies-diagnostics-….log` file to
+your Downloads folder, only when you ask. It holds the logs above, your system and screen details, your microphones and
+permission states, and your settings. Keys, tokens, email addresses, names, your home folder and user name are removed
+first. Nothing is uploaded: it stays on your computer unless you choose to send it (for example by attaching it to a
+GitHub issue).
+
+Your Fish Audio key is kept in the macOS Keychain, encrypted with DPAPI on Windows, or in your desktop's keyring
+(through the Secret Service) on Linux.
+
+You can see what Roamies remembers on the panel's **Memory** page, and remove it with **Forget** or
+**Forget Everything**.
+
+## Deleting everything
+
+Follow the [Uninstall](README.md#uninstall) steps in the README.
+
+## Children
+
+Roamies isn't made for children under 13 (or the minimum age in their country), and it doesn't ask about age.
+Parents should supervise any use by children.
+
+## Changes
+
+Changes to this notice are made in this file on GitHub, so its history shows what changed and when.
+
+## Questions
+
+Email [ken@kenkais.com](mailto:ken@kenkais.com) or [open an issue](https://github.com/KenKaiii/Roamies/issues).

@@ -1,0 +1,33 @@
+{
+  "bundle": {
+    "externalBin": [
+      "binaries/roamies-voice",
+      "binaries/node"
+    ],
+    "linux": {
+      "appimage": {
+        "bundleMediaFramework": true
+      },
+      "deb": {
+        "depends": [
+          "libasound2",
+          "libgtk-layer-shell0",
+          "xdg-utils"
+        ],
+        "recommends": [
+          "libsecret-tools"
+        ]
+      },
+      "rpm": {
+        "depends": [
+          "alsa-lib",
+          "gtk-layer-shell",
+          "xdg-utils"
+        ],
+        "recommends": [
+          "libsecret"
+        ]
+      }
+    }
+  }
+}

@@ -1,0 +1,47 @@
+[package]
+name = "roamies"
+version = "0.1.33"
+edition = "2021"
+license = "AGPL-3.0-only"
+description = "Hanami: AI desktop companions, a modified version of Roamies"
+# The original project (Hanami's own repository is FORK_REPO in src/main.rs).
+repository = "https://github.com/KenKaiii/Roamies"
+homepage = "https://github.com/KenKaiii/Roamies"
+
+# The crate keeps its upstream name (easier merges); the program is `hanami`, so the Linux packages install
+# /usr/bin/hanami and `cargo build` makes target/<profile>/hanami.
+[[bin]]
+name = "hanami"
+path = "src/main.rs"
+
+[build-dependencies]
+tauri-build = { version = "=2.7.4", features = [] }
+
+[dependencies]
+tauri = { version = "=2.12.5", features = ["tray-icon", "macos-private-api"] }
+serde_json = "=1.0.154"
+global-hotkey = "=0.9.0"
+tauri-plugin-single-instance = "=2.5.4"
+tauri-plugin-updater = "=2.14.1"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "=0.6.5"
+objc2-service-management = { version = "=0.3.2", default-features = false, features = ["std", "SMAppService", "objc2", "objc2-foundation"] }
+
+# Linux: the overlay's input shape, clipboard and screenshots (GTK, the version Tauri uses), the pointer on X11,
+# and the desktop portal on Wayland. All three are already in Cargo.lock through Tauri and its plugins.
+# gtk-layer-shell (the release made for gtk 0.18) turns the overlay and the panel into layer surfaces on Wayland
+# compositors that have them; it links the system library libgtk-layer-shell (0.6 or later, for the keyboard modes).
+[target.'cfg(target_os = "linux")'.dependencies]
+gtk = "=0.18.2"
+x11rb = "=0.13.2"
+zbus = "=5.19.0"
+gtk-layer-shell = { version = "=0.8.2", features = ["v0_6"] }
+# Checking it's the user before a money change (auth.rs): libpam is opened at run time (dlopen), so no PAM headers or
+# library are needed to build. libc (already in Cargo.lock through Tauri) has dlopen and getpwuid_r.
+libc = "=0.2.191"
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true

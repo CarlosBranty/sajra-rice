@@ -1,0 +1,108 @@
+{
+  "id": "bcp",
+  "name": "BCP",
+  "notes": "Every layout is checked against real mails (November 2026) except the credit card purchase, which no mail has shown yet: it assumes the debit layout and is held for review. Label and value sit in two cells, the value often on its own line; 'otherLabels' keeps an empty value (an empty 'Mensaje') from reading the next row.",
+  "senders": ["notificaciones@notificacionesbcp.com.pe"],
+  "mails": [
+    {
+      "subject": "Constancia de Yapeo a Celular",
+      "kind": "yape_out",
+      "otherLabels": ["Operación realizada", "Destino", "Moneda", "Canal"],
+      "fields": {
+        "amount": "Monto enviado",
+        "date": "Fecha y hora",
+        "merchant": "Enviado a",
+        "account": { "label": "Desde", "lines": 2 },
+        "note": { "label": "Mensaje", "optional": true },
+        "operation": "Número de operación"
+      }
+    },
+    {
+      "subject": "Constancia de Pago con QR",
+      "kind": "purchase",
+      "notes": "A Yape QR payment from the account: the body reads like a yapeo.",
+      "otherLabels": ["Operación realizada", "Destino", "Moneda", "Canal"],
+      "fields": {
+        "amount": "Monto enviado",
+        "date": "Fecha y hora",
+        "merchant": "Enviado a",
+        "account": { "label": "Desde", "lines": 2 },
+        "note": { "label": "Mensaje", "optional": true },
+        "operation": "Número de operación"
+      }
+    },
+    {
+      "subject": "Constancia de recepción de Yapeo a celular",
+      "kind": "transfer_in",
+      "notes": "Money received: no account and no operation number.",
+      "otherLabels": ["Operación realizada"],
+      "fields": {
+        "amount": "Monto recibido",
+        "date": "Fecha y hora",
+        "merchant": "Enviado por"
+      }
+    },
+    {
+      "subject": "Constancia de Transferencia Entre mis Cuentas",
+      "kind": "own_transfer",
+      "notes": "Between the user's own accounts: never spending.",
+      "otherLabels": ["Operación realizada", "Canal"],
+      "fields": {
+        "amount": "Monto transferido",
+        "date": "Fecha y hora",
+        "account": { "label": "Desde", "lines": 2 },
+        "note": { "label": "Enviado a", "lines": 2 },
+        "operation": "Número de operación"
+      }
+    },
+    {
+      "subject": "Se rechazó tu compra",
+      "kind": "rejected",
+      "notes": "No money moved: kept as a record, never spending. No operation number.",
+      "fields": {
+        "amount": "Importe de compra rechazada",
+        "date": "Fecha y hora",
+        "merchant": "Nombre del Comercio",
+        "account": { "label": "Número de Tarjeta", "optional": true },
+        "note": { "label": "Motivo de rechazo", "optional": true }
+      }
+    },
+    {
+      "subject": "Realizaste un retiro en un cajero",
+      "kind": "withdrawal",
+      "otherLabels": ["Operación realizada", "Código de cajero", "Cuenta de cargo"],
+      "fields": {
+        "amount": "Total retirado",
+        "fee": { "label": "Comisión por operación", "optional": true },
+        "date": "Fecha y hora",
+        "account": "Número de Tarjeta de Débito",
+        "operation": "Número de operación"
+      }
+    },
+    {
+      "subject": "Realizaste un consumo con tu Tarjeta de Débito",
+      "kind": "purchase",
+      "otherLabels": ["Operación realizada"],
+      "fields": {
+        "amount": "Total del consumo",
+        "merchant": "Empresa",
+        "date": "Fecha y hora",
+        "account": "Número de Tarjeta de Débito",
+        "operation": "Número de operación"
+      }
+    },
+    {
+      "subject": "Realizaste un consumo con tu Tarjeta de Crédito",
+      "kind": "purchase",
+      "verified": false,
+      "otherLabels": ["Operación realizada"],
+      "fields": {
+        "amount": "Total del consumo",
+        "merchant": "Empresa",
+        "date": "Fecha y hora",
+        "account": { "label": ["Número de Tarjeta de Crédito", "Número de Tarjeta"], "optional": true },
+        "operation": { "label": "Número de operación", "optional": true }
+      }
+    }
+  ]
+}
