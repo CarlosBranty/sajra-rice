@@ -8,7 +8,8 @@ import qs.components
 // the wheel group). Left, every printer added: the white pill is the one picked (←→ or click), the dot goes red when it
 // is unplugged or paused. Right, what to do with it — default, pause, a test print, drop its jobs, remove — and, for a
 // ticket printer (ESC/POS, zj-58 driver), its roll: 58 or 80 mm, cut at the end, open the cash drawer. Below, printers
-// found and not added yet: one click adds them (USB always; the network on "scan network", it takes seconds)
+// found and not added yet: one click adds them (USB always; the network on "scan network", it takes seconds), and
+// the jobs waiting, each dropped with a click
 Column {
     id: root
 
@@ -251,6 +252,22 @@ Column {
             }
         }
         Btn { text: scan.running ? "scanning…" : "scan network"; onTap: if (!scan.running) scan.running = true }
+    }
+
+    // the jobs waiting, on any printer: a chip each, click drops that one
+    Flow {
+        visible: (root.st.jobs?.length ?? 0) > 0
+        width: 925
+        spacing: 10
+        Lb { height: 52; verticalAlignment: Text.AlignVCenter; rightPadding: 8; text: "waiting" }
+        Repeater {
+            model: root.st.jobs ?? []
+            Btn {
+                required property var modelData
+                text: `drop · ${modelData.id} · ${Math.max(1, Math.round(modelData.bytes / 1024))} kb`
+                onTap: root.run(["cancel", modelData.id])
+            }
+        }
     }
 
     Lb { visible: !!text; text: root.msg; px: 10; color: root.bad ? Theme.red : Theme.grey }

@@ -107,6 +107,7 @@ class Parsers(unittest.TestCase):
         self.assertEqual([d["uri"] for d in devs], ["usb://Printer/POS-80?serial=776E176D3730", "usb://Brother/HL-1110?serial=X1"])
         self.assertEqual(devs[0]["info"], "Printer POS-80")
         self.assertEqual([gp.is_ticket(d) for d in devs], [True, False])
+        self.assertTrue(gp.is_ticket({"id": "MANUFACTURER:Xprinter;COMMAND SET:ESC/POS;MODEL:XP-80C;"}), "the device id's long field names")
         self.assertEqual(gp.parse_devices(""), [])
 
     def test_options_tell_the_ticket_settings(self):
@@ -126,6 +127,16 @@ class Parsers(unittest.TestCase):
         self.assertEqual(gp.name_for("Printer POS-80", ["POS-80", "POS-80-2"]), "POS-80-3")
         self.assertEqual(gp.name_for("Brother HL-1110 series", []), "Brother-HL-1110-series")
         self.assertEqual(gp.name_for("  #/ ", []), "printer")
+        self.assertEqual(gp.name_for("Printer POS-80", ["pos-80"]), "POS-80-2", "CUPS tells no upper from lower case in a name")
+
+    def test_the_test_ticket_fits_its_roll(self):
+        # what texttopdf fits with the zj-58 driver files: 33 columns at 12 cpi on 80 mm, 28 at 15 cpi on 58 mm
+        self.assertEqual(gp.TICKET, {"80": {"cpi": 12, "cols": 32}, "58": {"cpi": 15, "cols": 26}})
+        for width, t in gp.TICKET.items():
+            for name in ["Ticketera", "A-printer-with-a-name-longer-than-the-roll-is-wide"]:
+                rows = gp.ticket_text(name, width).splitlines()
+                self.assertLessEqual(max(map(len, rows)), t["cols"], f"{width} mm, {name}")
+                self.assertIn("TOTAL", "".join(rows))
 
     def test_the_driver_for_a_device(self):
         models = {"raw", "zjiang/zj58.ppd", "zjiang/zj80.ppd", "everywhere"}
@@ -217,7 +228,7 @@ class Commands(unittest.TestCase):
         self.assertEqual(self.calls(log, "lpadmin"), [["-p", "Brother-HL-1110-series", "-E", "-v", "usb://Brother/HL-1110?serial=X1", "-m", "brother/hl1110.ppd", "-D", "Brother HL-1110 series"]])
 
     def test_add_refuses_what_it_cannot_add(self):
-        for uri, why in [("usb://Nobody/Here?serial=0", "connected"), ("-x", "address"), ("Ticketera", "address")]:
+        for uri, why in [("usb://Nobody/Here?serial=0", "connected"), ("-x", "address"), ("Ticketera", "address"), ("ipp://laser.local/print\n", "address")]:
             rc, out, log = self.run_gp("add", uri)
             self.assertEqual((rc, out["ok"]), (1, False), uri)
             self.assertIn(why, out["error"])
@@ -278,6 +289,7 @@ class Commands(unittest.TestCase):
         (call,) = self.calls(log, "lp")
         self.assertEqual(call[:2], ["-d", "Ticketera"])
         self.assertEqual(call[-3:-1], ["-", "<stdin>"], "a ticket printer gets a ticket, as text")
+        self.assertIn("cpi=12", call, "80 mm: the size its 32 columns fit at")
         self.assertIn("Ticketera", call[-1])
         rc, out, log = self.run_gp("test", "EPSON-L220-Series")
         self.assertEqual(rc, 0)

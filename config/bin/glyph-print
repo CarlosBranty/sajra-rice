@@ -27,6 +27,9 @@ ENV = dict(os.environ, LC_ALL="C")  # the tools' English, whatever the desktop s
 TICKET_DRIVERS = {"58": "zjiang/zj58.ppd", "80": "zjiang/zj80.ppd"}
 # the roll is one long page: the driver stops at the last printed line (BlankSpace=False)
 ROLL = {"58": "X48MMY3276MM", "80": "X70MMY3276MM"}
+# the test ticket's letter size and how many columns it is laid out in. Through texttopdf the zj-58 driver files fit
+# 33 columns at 12 cpi on the 80 mm roll and 28 at 15 cpi on the 58 mm one (page-left/right change nothing there)
+TICKET = {"80": {"cpi": 12, "cols": 32}, "58": {"cpi": 15, "cols": 26}}
 NETWORK = ("ipp", "ipps", "dnssd", "socket", "lpd", "http", "https")
 TEST_PAGES = ["/usr/share/cups/data/default-testpage.pdf", "/usr/share/cups/data/testprint"]
 
@@ -38,7 +41,7 @@ class Fail(Exception):
 def run(*cmd, text_in=None, timeout=30):
     """→ (exit code, stdout, stderr). A tool that isn't installed is exit 127."""
     try:
-        p = subprocess.run(cmd, capture_output=True, text=True, env=ENV, timeout=timeout,
+        p = subprocess.run(cmd, capture_output=True, text=True, errors="replace", env=ENV, timeout=timeout,
                            **({"input": text_in} if text_in is not None else {"stdin": subprocess.DEVNULL}))
         return p.returncode, p.stdout, p.stderr
     except FileNotFoundError:
@@ -101,8 +104,8 @@ def id_field(dev, key):
 
 
 def is_ticket(dev):
-    """A receipt printer says so in its device id: its command set is ESC/POS."""
-    return "ESC/POS" in id_field(dev, "CMD").upper()
+    """A receipt printer says so in its device id: its command set (CMD, or COMMAND SET in the long form) is ESC/POS."""
+    return "ESC/POS" in (id_field(dev, "CMD") or id_field(dev, "COMMAND SET")).upper()
 
 
 def ticket_driver(dev, models):
@@ -110,7 +113,7 @@ def ticket_driver(dev, models):
     printer, or the driver isn't installed."""
     if not is_ticket(dev):
         return None
-    ppd = TICKET_DRIVERS["58" if "58" in (id_field(dev, "MDL") or dev.get("model", "")) else "80"]
+    ppd = TICKET_DRIVERS["58" if "58" in (id_field(dev, "MDL") or id_field(dev, "MODEL") or dev.get("model", "")) else "80"]
     return ppd if ppd in models else None
 
 
@@ -145,10 +148,11 @@ def parse_jobs(text):
 
 
 def name_for(label, taken):
-    """A queue name CUPS takes (no spaces, / or #) that nobody has: "Printer POS-80" → POS-80, then POS-80-2."""
+    """A queue name CUPS takes (no spaces, / or #) that nobody has: "Printer POS-80" → POS-80, then POS-80-2.
+    CUPS tells no upper from lower case in a name: pos-80 has POS-80 taken."""
     base = re.sub(r"[^A-Za-z0-9._-]+", "-", re.sub(r"^\s*printer\s+", "", label, flags=re.I)).strip("-.") or "printer"
-    name, n = base, 1
-    while name in taken:
+    name, n, taken = base, 1, {t.lower() for t in taken}
+    while name.lower() in taken:
         n += 1
         name = f"{base}-{n}"
     return name
@@ -200,7 +204,7 @@ def printer(name):
 # ---------- the commands ----------
 
 def add(uri, name=None):
-    if not re.match(r"[a-z][a-z0-9+.-]*://\S+$", uri):
+    if not re.fullmatch(r"[a-z][a-z0-9+.-]*://\S+", uri):
         raise Fail(f"{uri} is not a printer address (usb://…, ipp://…)")
     st = queues()
     taken = [p["name"] for p in st["printers"]]
@@ -266,20 +270,19 @@ def cancel(target):
 
 
 def ticket_text(name, width):
-    cols = 32 if width == "58" else 42
+    cols = TICKET[width]["cols"]
     line = "-" * cols
     now = datetime.datetime.now().strftime("%d/%m/%Y %H:%M")
     rows = ["GLYPH".center(cols), "test ticket".center(cols), line, f"printer  {name}", f"paper    {width} mm", f"date     {now}", line,
             "1 x text".ljust(cols - 6) + "  1.00", "1 x cut".ljust(cols - 6) + "  1.00", line, "TOTAL".ljust(cols - 6) + "  2.00", "", "it works".center(cols), ""]
-    return "\n".join(rows) + "\n"
+    return "\n".join(row[:cols] for row in rows) + "\n"
 
 
 def test(name):
     p = printer(name)
     ticket = ticket_state(parse_options(run("lpoptions", "-p", name, "-l")[1]))
     if ticket:
-        cpi = "12" if ticket["paper"] == "58" else "13"
-        must("lp", "-d", p["name"], "-t", "glyph test ticket", "-o", f"cpi={cpi}", "-o", "lpi=7", "-o", "page-left=6", "-o", "page-right=6", "-o", "page-top=8", "-",
+        must("lp", "-d", p["name"], "-t", "glyph test ticket", "-o", f"cpi={TICKET[ticket['paper']]['cpi']}", "-o", "lpi=7", "-",
              text_in=ticket_text(name, ticket["paper"]))
     else:
         page = next((f for f in TEST_PAGES if os.path.exists(f)), None)
