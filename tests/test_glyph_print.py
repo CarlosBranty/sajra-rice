@@ -18,6 +18,7 @@ SCRIPT = Path(__file__).resolve().parent.parent / "config" / "bin" / "glyph-prin
 
 
 def load():
+    sys.dont_write_bytecode = True  # no __pycache__ next to the script (config/bin is linked into ~/.local/bin)
     loader = importlib.machinery.SourceFileLoader("glyph_print", str(SCRIPT))
     spec = importlib.util.spec_from_loader("glyph_print", loader)
     mod = importlib.util.module_from_spec(spec)
