@@ -34,6 +34,8 @@ PACMAN=(
     thunar pavucontrol
     # music panel and musica (mpv over MPRIS, ffprobe/ffmpeg for the index), downloads panel, keystroke overlay
     mpv mpv-mpris ffmpeg aria2 showmethekey
+    # printing: the PRINT page of Prefs (glyph-print over the CUPS tools)
+    cups cups-filters
     # fonts (cjk: kaomoji in Charms), icons (Papirus-Dark: the base of Rice's folder theme), dark base for gtk.css
     ttf-jetbrains-mono-nerd noto-fonts noto-fonts-cjk noto-fonts-emoji papirus-icon-theme adw-gtk-theme
 )
@@ -41,6 +43,7 @@ PACMAN=(
 AUR=(
     qtengine darkly-bin bibata-cursor-theme-bin
     zen-browser-bin
+    zj-58 # thermal ticket printers (ESC/POS, 58 and 80 mm): the driver glyph-print adds them with
 )
 
 # Optional components, like caelestia's. What the special-workspace binds open: apps in hypr/variables.lua
@@ -92,6 +95,7 @@ LINKS=(
     "config/bin/musica-remote                   .local/bin/musica-remote"
     "config/bin/glyph-charge-setup              .local/bin/glyph-charge-setup"
     "config/bin/glyph-dl                        .local/bin/glyph-dl"
+    "config/bin/glyph-print                     .local/bin/glyph-print"
 )
 
 # Hanami is on when these gitignored links exist (user.lua and kitty.conf read them only then)
@@ -406,7 +410,7 @@ st_links() {
 }
 
 st_services() {
-    x sudo systemctl enable NetworkManager bluetooth power-profiles-daemon
+    x sudo systemctl enable NetworkManager bluetooth power-profiles-daemon cups.socket
     systemctl is-enabled -q display-manager.service 2>/dev/null || x sudo systemctl enable sddm
     x systemctl --user enable pipewire-pulse.socket wireplumber ydotool
     x sudo usermod -aG input,video "$USER" # ydotool (uinput), brightnessctl
