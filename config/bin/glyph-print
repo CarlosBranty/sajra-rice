@@ -25,8 +25,10 @@ import sys
 
 ENV = dict(os.environ, LC_ALL="C")  # the tools' English, whatever the desktop speaks
 TICKET_DRIVERS = {"58": "zjiang/zj58.ppd", "80": "zjiang/zj80.ppd"}
-# the roll is one long page: the driver stops at the last printed line (BlankSpace=False)
-ROLL = {"58": "X48MMY3276MM", "80": "X70MMY3276MM"}
+# the page a ticket is laid out on. The driver stops at the last printed line (BlankSpace=False) and cuts at the job's
+# end, so a short ticket wastes nothing and a longer one runs on to the next page uncut. Not the driver's 3276 mm
+# page: Firefox's PDF viewer sends that one empty, and texttopdf starts 20 cm down it
+ROLL = {"58": "X48MMY297MM", "80": "X70MMY297MM"}
 # the test ticket's letter size and how many columns it is laid out in. Through texttopdf the zj-58 driver files fit
 # 33 columns at 12 cpi on the 80 mm roll and 28 at 15 cpi on the 58 mm one (page-left/right change nothing there)
 TICKET = {"80": {"cpi": 12, "cols": 32}, "58": {"cpi": 15, "cols": 26}}
@@ -282,7 +284,7 @@ def test(name):
     p = printer(name)
     ticket = ticket_state(parse_options(run("lpoptions", "-p", name, "-l")[1]))
     if ticket:
-        must("lp", "-d", p["name"], "-t", "glyph test ticket", "-o", f"cpi={TICKET[ticket['paper']]['cpi']}", "-o", "lpi=7", "-",
+        must("lp", "-d", p["name"], "-t", "glyph test ticket", "-o", f"PageSize={ROLL[ticket['paper']]}", "-o", f"cpi={TICKET[ticket['paper']]['cpi']}", "-o", "lpi=7", "-",
              text_in=ticket_text(name, ticket["paper"]))
     else:
         page = next((f for f in TEST_PAGES if os.path.exists(f)), None)

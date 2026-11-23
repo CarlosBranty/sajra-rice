@@ -34,8 +34,9 @@ PACMAN=(
     thunar pavucontrol
     # music panel and musica (mpv over MPRIS, ffprobe/ffmpeg for the index), downloads panel, keystroke overlay
     mpv mpv-mpris ffmpeg aria2 showmethekey
-    # printing: the PRINT page of Prefs (glyph-print over the CUPS tools)
-    cups cups-filters
+    # printing: the PRINT page of Prefs (glyph-print over the CUPS tools). ghostscript: cups-filters' other
+    # rasteriser (pdftoraster) gives the thermal driver an inverted page
+    cups cups-filters ghostscript
     # fonts (cjk: kaomoji in Charms), icons (Papirus-Dark: the base of Rice's folder theme), dark base for gtk.css
     ttf-jetbrains-mono-nerd noto-fonts noto-fonts-cjk noto-fonts-emoji papirus-icon-theme adw-gtk-theme
 )

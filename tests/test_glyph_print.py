@@ -110,6 +110,11 @@ class Parsers(unittest.TestCase):
         self.assertTrue(gp.is_ticket({"id": "MANUFACTURER:Xprinter;COMMAND SET:ESC/POS;MODEL:XP-80C;"}), "the device id's long field names")
         self.assertEqual(gp.parse_devices(""), [])
 
+    def test_the_roll_is_a_page_a_browser_can_draw(self):
+        # 3276 mm, the driver's longest, comes out of Firefox's PDF viewer as an empty page; a longer ticket simply
+        # runs on to the next page, uncut (the cut is at the job's end)
+        self.assertEqual(gp.ROLL, {"58": "X48MMY297MM", "80": "X70MMY297MM"})
+
     def test_options_tell_the_ticket_settings(self):
         self.assertEqual(gp.ticket_state(gp.parse_options(TICKET_OPTS)), {"paper": "80", "cut": True, "drawer": False})
         narrow = TICKET_OPTS.replace("X70MM", "X48MM").replace("*EndOfJob", "EndOfJob").replace("None EndOfPage", "*None EndOfPage").replace("*None 1BeforePrinting 1AfterPrinting", "None 1BeforePrinting *1AfterPrinting")
@@ -213,7 +218,7 @@ class Commands(unittest.TestCase):
         self.assertEqual((rc, out["ok"], out["name"]), (0, True, "POS-80"))
         self.assertEqual(self.calls(log, "lpadmin"), [
             ["-p", "POS-80", "-E", "-v", "usb://Printer/POS-80?serial=776E176D3730", "-m", "zjiang/zj80.ppd", "-D", "Printer POS-80",
-             "-o", "PageSize=X70MMY3276MM", "-o", "BlankSpace=False", "-o", "CutMedia=EndOfJob", "-o", "OptionCutter=True"],
+             "-o", "PageSize=X70MMY297MM", "-o", "BlankSpace=False", "-o", "CutMedia=EndOfJob", "-o", "OptionCutter=True"],
             ["-d", "POS-80"],  # the first printer becomes the default
         ])
 
@@ -272,7 +277,7 @@ class Commands(unittest.TestCase):
             ("drawer=on", ["-p", "Ticketera", "-o", "CashDrawer1Setting=1AfterPrinting", "-o", "OptionCash1=True"]),
             ("drawer=off", ["-p", "Ticketera", "-o", "CashDrawer1Setting=None", "-o", "OptionCash1=False"]),
             # another width is another driver file: the roll's page and what was set (cut on, drawer off) are put back
-            ("paper=58", ["-p", "Ticketera", "-m", "zjiang/zj58.ppd", "-o", "PageSize=X48MMY3276MM", "-o", "BlankSpace=False",
+            ("paper=58", ["-p", "Ticketera", "-m", "zjiang/zj58.ppd", "-o", "PageSize=X48MMY297MM", "-o", "BlankSpace=False",
                           "-o", "CutMedia=EndOfJob", "-o", "OptionCutter=True", "-o", "CashDrawer1Setting=None", "-o", "OptionCash1=False"]),
         ]:
             rc, out, log = self.run_gp("set", "Ticketera", arg)
@@ -290,6 +295,8 @@ class Commands(unittest.TestCase):
         self.assertEqual(call[:2], ["-d", "Ticketera"])
         self.assertEqual(call[-3:-1], ["-", "<stdin>"], "a ticket printer gets a ticket, as text")
         self.assertIn("cpi=12", call, "80 mm: the size its 32 columns fit at")
+        # on its own page whatever the queue is set to: on the 3276 mm one the text starts 20 cm down
+        self.assertIn("PageSize=X70MMY297MM", call)
         self.assertIn("Ticketera", call[-1])
         rc, out, log = self.run_gp("test", "EPSON-L220-Series")
         self.assertEqual(rc, 0)
