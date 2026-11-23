@@ -1,0 +1,337 @@
+#!/usr/bin/env python3
+"""glyph-print: the printers behind the shell's PRINT page (Prefs), over the CUPS command line tools. Every command
+answers one JSON object on stdout ({"ok": true, …} or {"ok": false, "error": "…"}) and exits 0 or 1.
+
+    glyph-print list [--net]         printers added, printers found and not added, the jobs waiting
+                                     (--net also looks on the network, which takes a few seconds)
+    glyph-print add <uri> [name]     add a found printer: a ticket printer (ESC/POS) gets the thermal driver and
+                                     ticket defaults, a network one is driverless, any other needs its driver installed
+    glyph-print remove <name>
+    glyph-print default <name>
+    glyph-print pause|resume <name>
+    glyph-print test <name>          a test ticket on a ticket printer, CUPS' test page on any other
+    glyph-print cancel <name|job>    every job of a printer, or one job (Ticketera-6)
+    glyph-print set <name> paper=58|80 | cut=on|off | drawer=on|off     ticket printers only
+
+Queues are managed with lpadmin, which CUPS allows to the wheel group without a password. The thermal driver is
+zj-58 (AUR): /usr/share/cups/model/zjiang/zj58.ppd and zj80.ppd.
+"""
+import datetime
+import json
+import os
+import re
+import subprocess
+import sys
+
+ENV = dict(os.environ, LC_ALL="C")  # the tools' English, whatever the desktop speaks
+TICKET_DRIVERS = {"58": "zjiang/zj58.ppd", "80": "zjiang/zj80.ppd"}
+# the roll is one long page: the driver stops at the last printed line (BlankSpace=False)
+ROLL = {"58": "X48MMY3276MM", "80": "X70MMY3276MM"}
+NETWORK = ("ipp", "ipps", "dnssd", "socket", "lpd", "http", "https")
+TEST_PAGES = ["/usr/share/cups/data/default-testpage.pdf", "/usr/share/cups/data/testprint"]
+
+
+class Fail(Exception):
+    pass
+
+
+def run(*cmd, text_in=None, timeout=30):
+    """→ (exit code, stdout, stderr). A tool that isn't installed is exit 127."""
+    try:
+        p = subprocess.run(cmd, capture_output=True, text=True, env=ENV, timeout=timeout,
+                           **({"input": text_in} if text_in is not None else {"stdin": subprocess.DEVNULL}))
+        return p.returncode, p.stdout, p.stderr
+    except FileNotFoundError:
+        return 127, "", f"{cmd[0]} is not installed"
+    except subprocess.TimeoutExpired:
+        return 124, "", f"{cmd[0]} did not answer"
+
+
+def must(*cmd, **kw):
+    rc, out, err = run(*cmd, **kw)
+    if rc != 0:
+        raise Fail((err or out).strip().splitlines()[-1] if (err or out).strip() else f"{cmd[0]} failed")
+    return out
+
+
+# ---------- what the tools print ----------
+
+def parse_lpstat(text):
+    """`lpstat -p -d -a -v` → {"default": name or None, "printers": [{name, state, note, accepting, uri}]}.
+    state: idle, printing, or paused (CUPS disables a queue whose printer went away, with the reason on the next line)."""
+    printers, default, last = {}, None, None
+
+    def at(name):
+        return printers.setdefault(name, {"name": name, "state": "idle", "note": "", "accepting": True, "uri": ""})
+
+    for line in text.splitlines():
+        if line[:1] in ("\t", " "):
+            if last is not None and not last["note"]:
+                last["note"] = line.strip()
+            continue
+        last = None
+        if m := re.match(r"printer (\S+) (is idle|now printing|disabled)", line):
+            last = at(m[1])
+            last["state"] = {"is idle": "idle", "now printing": "printing", "disabled": "paused"}[m[2]]
+        elif m := re.match(r"system default destination: (\S+)", line):
+            default = m[1]
+        elif m := re.match(r"(\S+) (not )?accepting requests", line):
+            at(m[1])["accepting"] = not m[2]
+        elif m := re.match(r"device for (\S+): (\S+)", line):
+            at(m[1])["uri"] = m[2]
+    return {"default": default, "printers": list(printers.values())}
+
+
+def parse_devices(text):
+    """`lpinfo -l -v` → [{uri, info, model, id}] (id: the IEEE 1284 device id, "MFG:…;MDL:…;CMD:…;")."""
+    devs = []
+    for line in text.splitlines():
+        if m := re.match(r"Device: uri = (\S+)", line):
+            devs.append({"uri": m[1], "info": "", "model": "", "id": ""})
+        elif devs and (m := re.match(r"\s+([a-z-]+) = ?(.*)", line)):
+            key = {"info": "info", "make-and-model": "model", "device-id": "id"}.get(m[1])
+            if key:
+                devs[-1][key] = m[2].strip()
+    return devs
+
+
+def id_field(dev, key):
+    m = re.search(rf"(?:^|;)\s*{key}:([^;]*)", dev.get("id", ""), re.I)
+    return m[1].strip() if m else ""
+
+
+def is_ticket(dev):
+    """A receipt printer says so in its device id: its command set is ESC/POS."""
+    return "ESC/POS" in id_field(dev, "CMD").upper()
+
+
+def ticket_driver(dev, models):
+    """The thermal driver file for a ticket printer (58 mm when its model says 58, else 80), or None: not a ticket
+    printer, or the driver isn't installed."""
+    if not is_ticket(dev):
+        return None
+    ppd = TICKET_DRIVERS["58" if "58" in (id_field(dev, "MDL") or dev.get("model", "")) else "80"]
+    return ppd if ppd in models else None
+
+
+def parse_options(text):
+    """`lpoptions -p <name> -l` → {option: (its default, [choices])}."""
+    opts = {}
+    for line in text.splitlines():
+        if m := re.match(r"([^/:\s]+)(?:/[^:]*)?:\s*(.*)", line):
+            choices = m[2].split()
+            opts[m[1]] = (next((c[1:] for c in choices if c.startswith("*")), ""), [c.lstrip("*") for c in choices])
+    return opts
+
+
+def ticket_state(opts):
+    """A ticket printer's settings from its options, or None for a printer without a cutter option."""
+    if "CutMedia" not in opts and "OptionCutter" not in opts:
+        return None
+    return {
+        "paper": "58" if opts.get("PageSize", ("",))[0].startswith("X48MM") else "80",
+        "cut": opts.get("CutMedia", ("None",))[0] != "None",
+        "drawer": opts.get("CashDrawer1Setting", ("None",))[0] != "None",
+    }
+
+
+def parse_jobs(text):
+    """`lpstat -o` → [{id, printer, user, bytes, when}]."""
+    jobs = []
+    for line in text.splitlines():
+        if m := re.match(r"((\S+)-\d+)\s+(\S+)\s+(\d+)\s+(.*)", line):
+            jobs.append({"id": m[1], "printer": m[2], "user": m[3], "bytes": int(m[4]), "when": m[5].strip()})
+    return jobs
+
+
+def name_for(label, taken):
+    """A queue name CUPS takes (no spaces, / or #) that nobody has: "Printer POS-80" → POS-80, then POS-80-2."""
+    base = re.sub(r"[^A-Za-z0-9._-]+", "-", re.sub(r"^\s*printer\s+", "", label, flags=re.I)).strip("-.") or "printer"
+    name, n = base, 1
+    while name in taken:
+        n += 1
+        name = f"{base}-{n}"
+    return name
+
+
+# ---------- the state ----------
+
+def cups_up():
+    return "is running" in run("lpstat", "-r")[1]
+
+
+def queues():
+    return parse_lpstat(run("lpstat", "-p", "-d", "-a", "-v")[1])
+
+
+def devices(net=False):
+    devs = parse_devices(run("lpinfo", "--include-schemes", "usb", "-l", "-v")[1])
+    if net:
+        devs += parse_devices(run("lpinfo", "--include-schemes", "dnssd", "--timeout", "4", "-l", "-v", timeout=15)[1])
+    return devs
+
+
+def state(net=False):
+    if not cups_up():
+        raise Fail("cups is not running: systemctl enable --now cups.socket")
+    st = queues()
+    devs = devices(net)
+    plugged = {d["uri"] for d in devs}
+    jobs = parse_jobs(run("lpstat", "-o")[1])
+    for p in st["printers"]:
+        # a USB printer is there when its address is on the bus; a network one is never asked (it would take seconds)
+        p["connected"] = p["uri"] in plugged if p["uri"].startswith("usb://") else None
+        p["ticket"] = ticket_state(parse_options(run("lpoptions", "-p", p["name"], "-l")[1]))
+        p["jobs"] = sum(j["printer"] == p["name"] for j in jobs)
+    added = {p["uri"] for p in st["printers"]}
+    found = [{"uri": d["uri"], "name": d["info"] or d["model"] or d["uri"], "ticket": is_ticket(d)} for d in devs if d["uri"] not in added]
+    return {"ok": True, "default": st["default"], "printers": st["printers"], "found": found, "jobs": jobs}
+
+
+def printer(name):
+    """The queue with this name, or Fail: nothing is run on a name that isn't a printer."""
+    for p in queues()["printers"]:
+        if p["name"] == name:
+            return p
+    raise Fail(f"no printer called {name}")
+
+
+# ---------- the commands ----------
+
+def add(uri, name=None):
+    if not re.match(r"[a-z][a-z0-9+.-]*://\S+$", uri):
+        raise Fail(f"{uri} is not a printer address (usb://…, ipp://…)")
+    st = queues()
+    taken = [p["name"] for p in st["printers"]]
+    if any(p["uri"] == uri for p in st["printers"]):
+        raise Fail("that printer is already added")
+    extra = []
+    if uri.split(":", 1)[0] in NETWORK:
+        label = name or re.sub(r"^[a-z]+://([^/:?]+).*", r"\1", uri)
+        driver = "everywhere"
+    else:
+        dev = next((d for d in devices() if d["uri"] == uri), None)
+        if dev is None:
+            raise Fail("that printer is not connected")
+        label = dev["info"] or dev["model"] or "printer"
+        if is_ticket(dev):
+            models = {line.split()[0] for line in run("lpinfo", "-m")[1].splitlines() if line.strip()}
+            driver = ticket_driver(dev, models)
+            if driver is None:
+                raise Fail("the ticket printer driver is missing: install zj-58 (yay -S zj-58)")
+            width = "58" if driver == TICKET_DRIVERS["58"] else "80"
+            extra = ["-o", f"PageSize={ROLL[width]}", "-o", "BlankSpace=False", "-o", "CutMedia=EndOfJob", "-o", "OptionCutter=True"]
+        else:
+            listed = [line.split()[0] for line in run("lpinfo", "--make-and-model", dev["model"] or label, "-m")[1].splitlines() if line.strip()]
+            driver = next((m for m in listed if m not in ("everywhere", "raw")), None)
+            if driver is None:
+                raise Fail(f"no driver for {label}: install its driver package, then add it again")
+    queue = name_for(name or label, taken)
+    must("lpadmin", "-p", queue, "-E", "-v", uri, "-m", driver, "-D", label, *extra)
+    if st["default"] is None:
+        run("lpadmin", "-d", queue)
+    return {"ok": True, "name": queue, "msg": f"added {queue}"}
+
+
+def remove(name):
+    must("lpadmin", "-x", printer(name)["name"])
+    return {"ok": True, "msg": f"removed {name}"}
+
+
+def default(name):
+    must("lpadmin", "-d", printer(name)["name"])
+    return {"ok": True, "msg": f"{name} is the default"}
+
+
+def pause(name):
+    must("cupsdisable", printer(name)["name"])
+    return {"ok": True, "msg": f"{name} paused"}
+
+
+def resume(name):
+    must("cupsenable", printer(name)["name"])
+    return {"ok": True, "msg": f"{name} resumed"}
+
+
+def cancel(target):
+    st = queues()
+    if any(p["name"] == target for p in st["printers"]):
+        must("cancel", "-a", target)
+        return {"ok": True, "msg": f"cancelled the jobs of {target}"}
+    if any(j["id"] == target for j in parse_jobs(run("lpstat", "-o")[1])):
+        must("cancel", target)
+        return {"ok": True, "msg": f"cancelled {target}"}
+    raise Fail(f"no printer or job called {target}")
+
+
+def ticket_text(name, width):
+    cols = 32 if width == "58" else 42
+    line = "-" * cols
+    now = datetime.datetime.now().strftime("%d/%m/%Y %H:%M")
+    rows = ["GLYPH".center(cols), "test ticket".center(cols), line, f"printer  {name}", f"paper    {width} mm", f"date     {now}", line,
+            "1 x text".ljust(cols - 6) + "  1.00", "1 x cut".ljust(cols - 6) + "  1.00", line, "TOTAL".ljust(cols - 6) + "  2.00", "", "it works".center(cols), ""]
+    return "\n".join(rows) + "\n"
+
+
+def test(name):
+    p = printer(name)
+    ticket = ticket_state(parse_options(run("lpoptions", "-p", name, "-l")[1]))
+    if ticket:
+        cpi = "12" if ticket["paper"] == "58" else "13"
+        must("lp", "-d", p["name"], "-t", "glyph test ticket", "-o", f"cpi={cpi}", "-o", "lpi=7", "-o", "page-left=6", "-o", "page-right=6", "-o", "page-top=8", "-",
+             text_in=ticket_text(name, ticket["paper"]))
+    else:
+        page = next((f for f in TEST_PAGES if os.path.exists(f)), None)
+        if page is None:
+            raise Fail("CUPS' test page is not installed")
+        must("lp", "-d", p["name"], "-t", "glyph test page", page)
+    return {"ok": True, "msg": f"test sent to {name}"}
+
+
+def cut_opts(on):
+    return ["-o", f"CutMedia={'EndOfJob' if on else 'None'}", "-o", f"OptionCutter={'True' if on else 'False'}"]
+
+
+def drawer_opts(on):
+    return ["-o", f"CashDrawer1Setting={'1AfterPrinting' if on else 'None'}", "-o", f"OptionCash1={'True' if on else 'False'}"]
+
+
+def set_option(name, pair):
+    p = printer(name)
+    ticket = ticket_state(parse_options(run("lpoptions", "-p", name, "-l")[1]))
+    if ticket is None:
+        raise Fail(f"{name} is not a ticket printer")
+    key, _, value = pair.partition("=")
+    if key in ("cut", "drawer") and value in ("on", "off"):
+        opts = (cut_opts if key == "cut" else drawer_opts)(value == "on")
+        must("lpadmin", "-p", p["name"], *opts)
+    elif key == "paper" and value in TICKET_DRIVERS:
+        # another width is another driver file, which starts from its own defaults: what was set is put back
+        must("lpadmin", "-p", p["name"], "-m", TICKET_DRIVERS[value], "-o", f"PageSize={ROLL[value]}", "-o", "BlankSpace=False",
+             *cut_opts(ticket["cut"]), *drawer_opts(ticket["drawer"]))
+    else:
+        raise Fail("set takes paper=58|80, cut=on|off or drawer=on|off")
+    return {"ok": True, "msg": f"{name}: {key} {value}"}
+
+
+COMMANDS = {"add": (add, 1, 2), "remove": (remove, 1, 1), "default": (default, 1, 1), "pause": (pause, 1, 1), "resume": (resume, 1, 1),
+            "test": (test, 1, 1), "cancel": (cancel, 1, 1), "set": (set_option, 2, 2)}
+
+
+def main(argv):
+    try:
+        if argv[:1] == ["list"] and argv[1:] in ([], ["--net"]):
+            out = state(net=argv[1:] == ["--net"])
+        elif argv and argv[0] in COMMANDS and COMMANDS[argv[0]][1] <= len(argv) - 1 <= COMMANDS[argv[0]][2]:
+            out = COMMANDS[argv[0]][0](*argv[1:])
+        else:
+            raise Fail("usage: glyph-print list [--net] | add <uri> [name] | remove|default|pause|resume|test <name> | cancel <name|job> | set <name> <key>=<value>")
+    except Fail as e:
+        print(json.dumps({"ok": False, "error": str(e)}))
+        return 1
+    print(json.dumps(out))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
