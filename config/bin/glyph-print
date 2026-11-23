@@ -22,18 +22,13 @@ import os
 import re
 import subprocess
 import sys
-import tempfile
 
 ENV = dict(os.environ, LC_ALL="C")  # the tools' English, whatever the desktop speaks
 TICKET_DRIVERS = {"58": "zjiang/zj58.ppd", "80": "zjiang/zj80.ppd"}
-MODELS = os.environ.get("GLYPH_PRINT_MODELS", "/usr/share/cups/model")  # where CUPS keeps the driver files
 # the page a ticket is laid out on. The driver stops at the last printed line (BlankSpace=False) and cuts at the job's
 # end, so a short ticket wastes nothing and a longer one runs on to the next page uncut. Not the driver's 3276 mm
-# page: Firefox's PDF viewer sends that one empty (it stretches the ticket over the whole page, too big a picture to
-# make), and texttopdf starts 20 cm down it. A browser remembers the page it last used on a printer, so a ticket
-# printer is given its driver file without that page (without_long_page): nothing can pick it
+# page, where a job that doesn't start at the top feeds blank paper first: texttopdf starts 20 cm down it
 ROLL = {"58": "X48MMY297MM", "80": "X70MMY297MM"}
-LONG_PAGE = "3276MM"
 # the test ticket's letter size and how many columns it is laid out in. Through texttopdf the zj-58 driver files fit
 # 33 columns at 12 cpi on the 80 mm roll and 28 at 15 cpi on the 58 mm one (page-left/right change nothing there)
 TICKET = {"80": {"cpi": 12, "cols": 32}, "58": {"cpi": 15, "cols": 26}}
@@ -122,34 +117,6 @@ def ticket_driver(dev, models):
         return None
     ppd = TICKET_DRIVERS["58" if "58" in (id_field(dev, "MDL") or id_field(dev, "MODEL") or dev.get("model", "")) else "80"]
     return ppd if ppd in models else None
-
-
-def without_long_page(ppd):
-    """A thermal driver file without its 3276 mm page (the page's size, region, printable area and dimension lines)."""
-    return "".join(line for line in ppd.splitlines(True) if LONG_PAGE not in line)
-
-
-def ticket_ppd(width):
-    """→ the path of a temporary driver file for this width, without the long page. The caller removes it."""
-    src = os.path.join(MODELS, TICKET_DRIVERS[width])
-    try:
-        with open(src, encoding="latin-1") as f:
-            text = f.read()
-    except OSError:
-        raise Fail("the ticket printer driver is missing: install zj-58 (yay -S zj-58)")
-    with tempfile.NamedTemporaryFile("w", suffix=".ppd", prefix="glyph-print-", encoding="latin-1", delete=False) as out:
-        out.write(without_long_page(text))
-    return out.name
-
-
-def lpadmin_ticket(queue, width, before=(), after=(), opts=()):
-    """One lpadmin on a ticket printer's queue: `before`, its driver file (without the long page), `after`, its page
-    and `opts` (a driver file starts from its own defaults, so what was set is given again)."""
-    ppd = ticket_ppd(width)
-    try:
-        must("lpadmin", "-p", queue, *before, "-P", ppd, *after, "-o", f"PageSize={ROLL[width]}", "-o", "BlankSpace=False", *opts)
-    finally:
-        os.unlink(ppd)
 
 
 def parse_options(text):
@@ -245,7 +212,7 @@ def add(uri, name=None):
     taken = [p["name"] for p in st["printers"]]
     if any(p["uri"] == uri for p in st["printers"]):
         raise Fail("that printer is already added")
-    width = None  # a ticket printer's roll, once it is known to be one
+    extra = []
     if uri.split(":", 1)[0] in NETWORK:
         label = name or re.sub(r"^[a-z]+://([^/:?]+).*", r"\1", uri)
         driver = "everywhere"
@@ -260,16 +227,14 @@ def add(uri, name=None):
             if driver is None:
                 raise Fail("the ticket printer driver is missing: install zj-58 (yay -S zj-58)")
             width = "58" if driver == TICKET_DRIVERS["58"] else "80"
+            extra = ["-o", f"PageSize={ROLL[width]}", "-o", "BlankSpace=False", "-o", "CutMedia=EndOfJob", "-o", "OptionCutter=True"]
         else:
             listed = [line.split()[0] for line in run("lpinfo", "--make-and-model", dev["model"] or label, "-m")[1].splitlines() if line.strip()]
             driver = next((m for m in listed if m not in ("everywhere", "raw")), None)
             if driver is None:
                 raise Fail(f"no driver for {label}: install its driver package, then add it again")
     queue = name_for(name or label, taken)
-    if width:
-        lpadmin_ticket(queue, width, before=["-E", "-v", uri], after=["-D", label], opts=cut_opts(True))
-    else:
-        must("lpadmin", "-p", queue, "-E", "-v", uri, "-m", driver, "-D", label)
+    must("lpadmin", "-p", queue, "-E", "-v", uri, "-m", driver, "-D", label, *extra)
     if st["default"] is None:
         run("lpadmin", "-d", queue)
     return {"ok": True, "name": queue, "msg": f"added {queue}"}
@@ -348,7 +313,8 @@ def set_option(name, pair):
         must("lpadmin", "-p", p["name"], *opts)
     elif key == "paper" and value in TICKET_DRIVERS:
         # another width is another driver file, which starts from its own defaults: what was set is put back
-        lpadmin_ticket(p["name"], value, opts=cut_opts(ticket["cut"]) + drawer_opts(ticket["drawer"]))
+        must("lpadmin", "-p", p["name"], "-m", TICKET_DRIVERS[value], "-o", f"PageSize={ROLL[value]}", "-o", "BlankSpace=False",
+             *cut_opts(ticket["cut"]), *drawer_opts(ticket["drawer"]))
     else:
         raise Fail("set takes paper=58|80, cut=on|off or drawer=on|off")
     return {"ok": True, "msg": f"{name}: {key} {value}"}
