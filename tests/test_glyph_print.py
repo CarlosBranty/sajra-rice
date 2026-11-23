@@ -81,6 +81,10 @@ Laser-12                sajra            20480   Mon Nov 23 11:30:02 2026
 FAKE = r'''#!/usr/bin/env python3
 import json, os, sys
 tool, args = os.path.basename(sys.argv[0]), sys.argv[1:]
+for i in range(1, len(args)):
+    if args[i - 1] == "-P":  # a driver file: say which model it is and whether it still offers the 3276 mm page
+        text = open(args[i]).read()
+        args[i] = "<%s %s>" % (text.split('ModelName: "')[1].split('"')[0], "with-3276" if "3276MM" in text else "no-3276")
 with open(os.environ["FAKE_LOG"], "a") as f:
     f.write(json.dumps([tool] + args + (["<stdin>", sys.stdin.read()] if tool == "lp" and args[-1:] == ["-"] else [])) + "\n")
 for want_tool, needle, out, rc in json.load(open(os.environ["FAKE_REPLIES"])):
@@ -114,6 +118,13 @@ class Parsers(unittest.TestCase):
         # 3276 mm, the driver's longest, comes out of Firefox's PDF viewer as an empty page; a longer ticket simply
         # runs on to the next page, uncut (the cut is at the job's end)
         self.assertEqual(gp.ROLL, {"58": "X48MMY297MM", "80": "X70MMY297MM"})
+
+    def test_a_ticket_printers_driver_file_has_no_3276_mm_page(self):
+        # a browser remembers the page it last used on a printer: the only way it never sends that one is not to offer it
+        text = '*ModelName: "Zijiang ZJ-80"\n*DefaultPageSize: X70MMY65MM\n*PageSize X70MMY297MM/80mm x 297mm: "a"\n*PageSize X70MMY3276MM/80mm x 3276mm: "b"\n*PaperDimension X70MMY3276MM/80mm x 3276mm: "1 1"\n*CustomPageSize True: "c"\n'
+        kept = gp.without_long_page(text)
+        self.assertNotIn("3276", kept)
+        self.assertEqual(kept, '*ModelName: "Zijiang ZJ-80"\n*DefaultPageSize: X70MMY65MM\n*PageSize X70MMY297MM/80mm x 297mm: "a"\n*CustomPageSize True: "c"\n')
 
     def test_options_tell_the_ticket_settings(self):
         self.assertEqual(gp.ticket_state(gp.parse_options(TICKET_OPTS)), {"paper": "80", "cut": True, "drawer": False})
@@ -164,6 +175,15 @@ class Commands(unittest.TestCase):
             f.chmod(f.stat().st_mode | stat.S_IXUSR)
         self.log = self.dir / "calls.jsonl"
         self.replies = self.dir / "replies.json"
+        # the thermal driver's files, as zj-58 installs them (cut down)
+        self.models = self.dir / "model"
+        (self.models / "zjiang").mkdir(parents=True)
+        for width, model, size in [("58", "Zijiang ZJ-58", "X48MM"), ("80", "Zijiang ZJ-80", "X70MM")]:
+            (self.models / "zjiang" / f"zj{width}.ppd").write_text(
+                f'*PPD-Adobe: "4.3"\n*ModelName: "{model}"\n*DefaultPageSize: {size}Y65MM\n'
+                f'*PageSize {size}Y297MM/{width}mm x 297mm: "a"\n*PageSize {size}Y3276MM/{width}mm x 3276mm: "b"\n'
+                f'*PageRegion {size}Y3276MM/{width}mm x 3276mm: "b"\n*ImageableArea {size}Y3276MM/{width}mm x 3276mm: "0 0 1 1"\n'
+                f'*PaperDimension {size}Y3276MM/{width}mm x 3276mm: "1 1"\n*CustomPageSize True: "c"\n')
         # the desk as it is: an unplugged inkjet (the default), the ticket printer, and a second printer on USB not added
         self.reply = [
             ["lpstat", "-r", "scheduler is running\n", 0],
@@ -179,7 +199,7 @@ class Commands(unittest.TestCase):
     def run_gp(self, *args):
         self.replies.write_text(json.dumps(self.reply))
         self.log.write_text("")
-        env = dict(os.environ, PATH=f"{self.bin}:{os.environ['PATH']}", FAKE_LOG=str(self.log), FAKE_REPLIES=str(self.replies))
+        env = dict(os.environ, PATH=f"{self.bin}:{os.environ['PATH']}", FAKE_LOG=str(self.log), FAKE_REPLIES=str(self.replies), GLYPH_PRINT_MODELS=str(self.models))
         p = subprocess.run([sys.executable, str(SCRIPT), *args], capture_output=True, text=True, env=env)
         return p.returncode, json.loads(p.stdout), [json.loads(line) for line in self.log.read_text().splitlines()]
 
@@ -217,7 +237,7 @@ class Commands(unittest.TestCase):
         rc, out, log = self.run_gp("add", "usb://Printer/POS-80?serial=776E176D3730")
         self.assertEqual((rc, out["ok"], out["name"]), (0, True, "POS-80"))
         self.assertEqual(self.calls(log, "lpadmin"), [
-            ["-p", "POS-80", "-E", "-v", "usb://Printer/POS-80?serial=776E176D3730", "-m", "zjiang/zj80.ppd", "-D", "Printer POS-80",
+            ["-p", "POS-80", "-E", "-v", "usb://Printer/POS-80?serial=776E176D3730", "-P", "<Zijiang ZJ-80 no-3276>", "-D", "Printer POS-80",
              "-o", "PageSize=X70MMY297MM", "-o", "BlankSpace=False", "-o", "CutMedia=EndOfJob", "-o", "OptionCutter=True"],
             ["-d", "POS-80"],  # the first printer becomes the default
         ])
@@ -276,8 +296,11 @@ class Commands(unittest.TestCase):
             ("cut=on", ["-p", "Ticketera", "-o", "CutMedia=EndOfJob", "-o", "OptionCutter=True"]),
             ("drawer=on", ["-p", "Ticketera", "-o", "CashDrawer1Setting=1AfterPrinting", "-o", "OptionCash1=True"]),
             ("drawer=off", ["-p", "Ticketera", "-o", "CashDrawer1Setting=None", "-o", "OptionCash1=False"]),
+            # the width it has: its driver file is put again (a queue added by hand loses the 3276 mm page so)
+            ("paper=80", ["-p", "Ticketera", "-P", "<Zijiang ZJ-80 no-3276>", "-o", "PageSize=X70MMY297MM", "-o", "BlankSpace=False",
+                          "-o", "CutMedia=EndOfJob", "-o", "OptionCutter=True", "-o", "CashDrawer1Setting=None", "-o", "OptionCash1=False"]),
             # another width is another driver file: the roll's page and what was set (cut on, drawer off) are put back
-            ("paper=58", ["-p", "Ticketera", "-m", "zjiang/zj58.ppd", "-o", "PageSize=X48MMY297MM", "-o", "BlankSpace=False",
+            ("paper=58", ["-p", "Ticketera", "-P", "<Zijiang ZJ-58 no-3276>", "-o", "PageSize=X48MMY297MM", "-o", "BlankSpace=False",
                           "-o", "CutMedia=EndOfJob", "-o", "OptionCutter=True", "-o", "CashDrawer1Setting=None", "-o", "OptionCash1=False"]),
         ]:
             rc, out, log = self.run_gp("set", "Ticketera", arg)
