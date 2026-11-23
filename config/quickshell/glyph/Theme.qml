@@ -218,7 +218,7 @@ Singleton {
             property bool quickHover: true // быстрые настройки по наведению на правый край
             property bool deckHover: true  // deck — панель снизу по центру, вылезает по наведению на край
             property var deck: ["clock", "weather", "perf", "net", "media"] // её секции по порядку, см. decks
-            property var bar: ["layout", "wifi", "bluetooth", "sound", "notes", "battery", "mode", "power"] // трей бара сверху вниз, см. bars
+            property var bar: ["apps", "layout", "wifi", "bluetooth", "sound", "notes", "battery", "mode", "power"] // трей бара сверху вниз, см. bars
             property bool barTitle: true   // заголовок окна столбиком в баре
             property string barAt: "left" // left или top; за баром едут календарь, карточка батареи, дом, остров и вспышка Glyph
             property string barStyle: "float" // float — пилюля с отступом, hug — вплотную к краю с вогнутыми углами, flat — вплотную, прямая
@@ -242,7 +242,7 @@ Singleton {
     // секции deck
     readonly property var decks: ["clock", "weather", "perf", "net", "media"]
     // трей бара
-    readonly property var bars: ["layout", "wifi", "bluetooth", "sound", "notes", "battery", "mode", "power", "cat", "roamie"]
+    readonly property var bars: ["apps", "layout", "wifi", "bluetooth", "sound", "notes", "battery", "mode", "power", "cat", "roamie"]
 
     // ---- вид всего, что вне шелла. Зовёт только shell.qml: на старте, при смене темы и цвета ----
     // hypr наследует demonshot: монитор, ввод, простой, ночник и движение ставит его же Rules (shell.qml), анимации — из

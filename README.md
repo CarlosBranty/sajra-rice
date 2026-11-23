@@ -36,6 +36,7 @@ This rice is not built from scratch. It stands on the work of these projects, an
 | **glyph-tok** | TikTok, Netflix, Crunchyroll or Dailymotion in a glyph-styled phone window, docked on the right of every workspace (or floating, or in a corner the tiles wrap around), with Brave's ad blocker; `Super` `↑`/`↓` change videos while it shows. Source in [`apps/glyph-tok/`](apps/glyph-tok/) | `Super` `Alt` `T` |
 | **Downloads** | aria2-based download manager panel (`glyph-dl`) | |
 | **Speakers** | Prefs → SPEAKERS: Dolby-style profiles, 8-band EQ, loudness and balance, driven by [x1sound](x1sound/) | `Super` `I` |
+| **Tray** | apps in the tray (Hanami, Telegram, Steam…) folded into a capsule on the bar with their count; a click slides the icons out in place, grey like the bar. Click opens the app, right click its menu drawn as a glyph card (submenus, ticks), middle click its second action. Prefs → BAR places it as `apps` | |
 | **Mixer** | per-app volume on the volume slider's right click | |
 | **Vault** | Vaultwarden password picker (rbw + rofi) | `Super` `Alt` `P` |
 | **Keys** | keystroke overlay in glyph style | `Super` `Alt` `K` |
