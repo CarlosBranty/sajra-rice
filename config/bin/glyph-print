@@ -179,8 +179,9 @@ def state(net=False):
     plugged = {d["uri"] for d in devs}
     jobs = parse_jobs(run("lpstat", "-o")[1])
     for p in st["printers"]:
-        # a USB printer is there when its address is on the bus; a network one is never asked (it would take seconds)
-        p["connected"] = p["uri"] in plugged if p["uri"].startswith("usb://") else None
+        # a USB printer is there when its address is on the bus, or while it prints: CUPS then holds the device and
+        # lpinfo doesn't list it for those seconds. A network one is never asked (it would take seconds)
+        p["connected"] = (p["uri"] in plugged or p["state"] == "printing") if p["uri"].startswith("usb://") else None
         p["ticket"] = ticket_state(parse_options(run("lpoptions", "-p", p["name"], "-l")[1]))
         p["jobs"] = sum(j["printer"] == p["name"] for j in jobs)
     added = {p["uri"] for p in st["printers"]}

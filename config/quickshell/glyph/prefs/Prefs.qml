@@ -20,10 +20,10 @@ PanelWindow {
 
     property int sel: 0
     signal wallRequested // обои — свой экран (wall/Walls), его открывает shell.qml
-    readonly property var sections: ["HOME", "DECK", "BAR", "LOOK", "STYLE", "WINDOWS", "DISPLAY", "AUDIO", "POWER", "INPUT", "IDLE", "SHELL", "SPEAKERS"]
+    readonly property var sections: ["HOME", "DECK", "BAR", "LOOK", "STYLE", "WINDOWS", "DISPLAY", "AUDIO", "POWER", "INPUT", "IDLE", "SHELL", "SPEAKERS", "PRINT"]
     readonly property string moves: "shift ←→ move · ↵ swap · del drop · drag"
     readonly property string rings: "drag round the rings · scroll"
-    readonly property var hints: [moves, moves, moves, "", "hover to preview · ↵ or click sets it", rings, "drag a screen to move it · " + rings, "click or ←→ a device", "↵ or click a mode", rings, "drag the marks", ""]
+    readonly property var hints: [moves, moves, moves, "", "hover to preview · ↵ or click sets it", rings, "drag a screen to move it · " + rings, "click or ←→ a device", "↵ or click a mode", rings, "drag the marks", "", "", "←→ a printer · ↵ default"]
     readonly property var r: Rules.store
 
     // глифы видов дома, секций deck и трея бара
@@ -1360,6 +1360,14 @@ PanelWindow {
             k: 12
             caption: spk.caption
             Speakers { id: spk }
+        }
+
+        // ---- PRINT: the printers CUPS knows — add, default, pause, test, a ticket printer's roll (prefs/Printers) ----
+        Page {
+            id: printPage
+            k: 13
+            caption: prn.caption
+            Printers { id: prn; live: printPage.visible && root.shown }
         }
     }
 

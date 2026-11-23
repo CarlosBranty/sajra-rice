@@ -180,6 +180,14 @@ class Commands(unittest.TestCase):
         self.assertEqual(st["found"], [{"uri": "usb://Brother/HL-1110?serial=X1", "name": "Brother HL-1110 series", "ticket": False}])
         self.assertEqual([j["id"] for j in st["jobs"]], ["Ticketera-6"])
 
+    def test_a_printer_at_work_is_connected(self):
+        # while a job prints, CUPS holds the USB device and lpinfo doesn't list it for those seconds
+        self.reply[2][2] = self.reply[2][2].replace("printer Ticketera is idle.", "printer Ticketera now printing Ticketera-6.")
+        self.reply[5] = ["lpinfo", "-v", "", 0]
+        _, st, _ = self.run_gp("list")
+        self.assertEqual([(p["name"], p["state"], p["connected"]) for p in st["printers"]],
+                         [("EPSON-L220-Series", "paused", False), ("Ticketera", "printing", True)])
+
     def test_list_without_cups_says_so(self):
         self.reply[0] = ["lpstat", "-r", "scheduler is not running\n", 0]
         rc, st, log = self.run_gp("list")
