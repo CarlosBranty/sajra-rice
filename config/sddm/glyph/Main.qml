@@ -125,6 +125,7 @@ Rectangle {
     }
 
     property bool queued: false
+    property bool finger: false // Enter on an empty password: pam skips the password and waits for the reader
     property string msg // что сказал pam: «заблокирован после 3 попыток» у faillock
     function login() {
         if (busy || ok) return;
@@ -135,6 +136,7 @@ Rectangle {
         busy = true;
         fail = false;
         msg = "";
+        finger = !pwd.text;
         sddm.login(who, pwd.text, si);
     }
     onStepChanged: if (step === 4 && queued) login()
@@ -456,10 +458,10 @@ Rectangle {
                 px: 12
                 opacity: root.face
                 color: root.flash || root.fail ? root.red : root.grey
-                text: root.ok ? "welcome" : root.busy ? "ignition…" : root.fail ? root.msg || "denied · try again"
+                text: root.ok ? "welcome" : root.busy ? root.msg || (root.finger ? "touch the reader" : "ignition…") : root.fail ? root.msg || "denied · try again"
                     : root.pm >= 0 ? `enter · ${root.power[root.pm].t}      ↓ · back`
                     : user.activeFocus ? "type user · tab"
-                    : pwd.text ? `${pwd.text.length} · enter to start` : "type password"
+                    : pwd.text ? `${pwd.text.length} · enter to start` : "type password · enter · fingerprint"
             }
         }
 

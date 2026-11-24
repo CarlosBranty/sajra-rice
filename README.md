@@ -83,7 +83,7 @@ This rice is not built from scratch. It stands on the work of these projects, an
 | **Buds** | Nothing / CMF earbuds: battery, ANC | |
 | **Power** | power menu | `Super` `Esc` |
 | **Lock** | lock screen | `Super` `L` |
-| **Login** | SDDM theme: sessions on a camera dial, a Glyph tachometer that fills as you type, a staged power-on | `←` `→` |
+| **Login** | SDDM theme in the shell's colours (they follow its palette): sessions on a camera dial, a Glyph tachometer that fills as you type, a staged power-on; Enter on an empty password takes the fingerprint | `←` `→` |
 | **Style** | where the colour comes from, like caelestia: Nothing (black, white, red), the wallpaper (one of its tones through a Material You variant — monochrome, neutral, tonal spot, rainbow, content, fidelity, fruit salad, expressive, vibrant) or a palette — Catppuccin, Rosé Pine, Gruvbox, Nord, Dracula, Tokyo Night, Everforest, Kanagawa. Shell, Hyprland and kitty follow at once, GTK and Qt apps when they next start | launcher → style, Prefs → Style (a live mock-up of the desktop shows the palette under the cursor before you pick it) |
 | **Rice** | shell switcher, if Demon's Shot is installed too | `rice switch <name>` |
 
