@@ -36,6 +36,7 @@ This rice is not built from scratch. It stands on the work of these projects, an
 | **glyph-tok** | TikTok, Netflix, Crunchyroll or Dailymotion in a glyph-styled phone window, docked on the right of every workspace (or floating, or in a corner the tiles wrap around), with Brave's ad blocker; `Super` `↑`/`↓` change videos while it shows. Source in [`apps/glyph-tok/`](apps/glyph-tok/) | `Super` `Alt` `T` |
 | **Downloads** | aria2-based download manager panel (`glyph-dl`) | |
 | **Speakers** | Prefs → SPEAKERS: Dolby-style profiles, 8-band EQ, loudness and balance, driven by [x1sound](x1sound/) | `Super` `I` |
+| **Print** | Prefs → PRINT: the printers CUPS knows (state, default, unplugged), one click to add the ones found on USB or the network, pause, test print, drop jobs, remove. Ticket printers (ESC/POS, through the [zj-58](https://github.com/RinWate/zj-58) driver) get their roll: 58 or 80 mm, cut at the end, cash drawer. Backed by `glyph-print` | `Super` `I` |
 | **Mixer** | per-app volume on the volume slider's right click | |
 | **Vault** | Vaultwarden password picker (rbw + rofi) | `Super` `Alt` `P` |
 | **Keys** | keystroke overlay in glyph style | `Super` `Alt` `K` |

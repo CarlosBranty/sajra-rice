@@ -13,3 +13,4 @@ config/kitty/hanami.conf
 # local agent workspace: feature logbooks and the skill registry
 /odd/
 /.atl/
+__pycache__/
