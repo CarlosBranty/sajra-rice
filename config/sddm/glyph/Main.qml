@@ -15,13 +15,17 @@ Rectangle {
     height: 1080
     color: bg
 
-    readonly property color bg: "#000000"
-    readonly property color s2: "#1A1A1A"
-    readonly property color s3: "#2A2A2A"
-    readonly property color mute: "#4A4A4A"
-    readonly property color grey: "#8C8C8C"
-    readonly property color fg: "#F2F2F2"
-    readonly property color red: "#D71921"
+    // the shell's palette: it writes theme.conf.user (next to theme.conf, which sddm reads over it) whenever its colours
+    // change; without it, glyph's own black, white and red
+    function tint(key, fallback) { return config.stringValue(key) || fallback; }
+    readonly property color bg: tint("bg", "#000000")
+    readonly property color s2: tint("s2", "#1A1A1A")
+    readonly property color s3: tint("s3", "#2A2A2A")
+    readonly property color mute: tint("mute", "#4A4A4A")
+    readonly property color grey: tint("grey", "#8C8C8C")
+    readonly property color fg: tint("fg", "#F2F2F2")
+    readonly property color accent: tint("accent", "#D71921") // the needle's tip and the first dot that lights
+    readonly property color red: tint("red", "#D71921")       // a wrong password
 
     FontLoader { id: doto; source: "fonts/Doto[ROND,wght].ttf" }
     FontLoader { id: grotesk; source: "fonts/SpaceGrotesk-Regular.otf" }
@@ -383,14 +387,14 @@ Rectangle {
                     height: 230
                     radius: 2
                     color: root.fg
-                    Rectangle { width: 4; height: 44; radius: 2; color: root.red }
+                    Rectangle { width: 4; height: 44; radius: 2; color: root.accent }
                 }
             }
 
             // первое, что загорается
             Rectangle {
                 x: -8; y: -200; width: 16; height: 16; radius: 8
-                color: root.red
+                color: root.accent
                 opacity: 1 - root.face
                 NumberAnimation on scale { from: 0; to: 1; duration: 300; easing.type: Easing.OutBack }
             }
@@ -488,7 +492,7 @@ Rectangle {
             spacing: 6
             opacity: root.face
             Text {
-                text: "GLYPH"
+                text: "SAJRA"
                 font { family: doto.name; pixelSize: 34; weight: Font.Black; variableAxes: ({ "ROND": 100, "wght": 900 }) }
                 topPadding: -0.175 * font.pixelSize
                 bottomPadding: topPadding

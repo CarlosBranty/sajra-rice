@@ -542,6 +542,8 @@ st_greeter() {
     x sudo rm -rf /usr/share/sddm/themes/glyph
     x sudo cp -rLT "$DOTS/config/sddm/glyph" /usr/share/sddm/themes/glyph
     x sudo chmod -R a+rX /usr/share/sddm/themes/glyph
+    # the shell's palette (Theme.greeter): this one file is the user's, rewritten whenever the colours change
+    x sudo install -o "$USER" -m 644 /dev/null /usr/share/sddm/themes/glyph/theme.conf.user
     # empty InputMethod: sddm's default is qtvirtualkeyboard, and with this theme a full-screen keyboard pops up
     x sudo mkdir -p /etc/sddm.conf.d
     # zz-: conf.d files are read alphabetically and each overrides the previous; ours goes last, over others'

@@ -311,6 +311,17 @@ for f in gtk-3.0/gtk.css gtk-4.0/gtk.css qtengine.colors; do
 done`,
             "bash", Quickshell.shellPath("term"), riceState + "/glyph"].concat(sed));
         system();
+        greeter();
+    }
+
+    // the login screen (sddm, config/sddm/glyph) in the same colours. sddm can't read $HOME, so the palette goes into
+    // theme.conf.user in the installed theme, which sddm reads over theme.conf; install.sh hands that one file to the user.
+    // Not there or not writable (sddm not installed, the theme from an older install): nothing is written
+    function greeter() {
+        const p = pal, c = k => "#" + hex(Qt.lighter(k, 1));
+        const conf = "[General]\n" + [["bg", p.c[0]], ["s2", p.c[2]], ["s3", p.c[3]], ["mute", p.c[4]], ["grey", p.c[5]],
+            ["fg", p.c[6]], ["accent", p.accent], ["red", p.red]].map(([key, v]) => `${key}=${c(v)}`).join("\n") + "\n";
+        Quickshell.execDetached(["bash", "-c", 'f=/usr/share/sddm/themes/glyph/theme.conf.user; [ -w "$f" ] && printf %s "$1" > "$f"', "bash", conf]);
     }
 
     // the system's own light/dark: what libadwaita/gtk4, browsers, Electron and portals go by (color-scheme), and the
