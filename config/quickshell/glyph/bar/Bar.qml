@@ -172,7 +172,7 @@ PanelWindow {
                     Loader {
                         id: part
                         required property string modelData
-                        readonly property bool quick: modelData !== "mode" && modelData !== "power" && modelData !== "roamie"
+                        readonly property bool quick: !["mode", "power", "roamie", "apps"].includes(modelData)
                         sourceComponent: root.parts[modelData] ?? null
                         visible: !!sourceComponent && (modelData !== "battery" || root.bat.isLaptopBattery)
                         TapHandler { enabled: part.quick; onTapped: root.trayClicked() }
@@ -247,8 +247,10 @@ PanelWindow {
             }
         }
     }
-    readonly property var parts: ({ layout: layoutC, wifi: wifiC, bluetooth: btC, sound: soundC, notes: notesC, battery: batC, mode: modeC, power: powerC, cat: catC, roamie: roamieC })
+    readonly property var parts: ({ apps: appsC, layout: layoutC, wifi: wifiC, bluetooth: btC, sound: soundC, notes: notesC, battery: batC, mode: modeC, power: powerC, cat: catC, roamie: roamieC })
     Component { id: layoutC; Lb { text: Sys.layout; px: 10 } }
+    // apps in the tray: a capsule that opens in place (bar/Tray.qml); its clicks are its own
+    Component { id: appsC; Tray { window: root } }
     // Roamies descansa aquí mientras no está en pantalla (bar/Roamie.qml); sus clics son suyos
     Component { id: roamieC; Roamie { screen: root.screen } }
     // кот RunCat: чем больше cpu, тем быстрее бежит (250 мс на кадр в простое, 50 на полной). cpu опрашивается, пока он в трее;

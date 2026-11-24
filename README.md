@@ -37,6 +37,7 @@ This rice is not built from scratch. It stands on the work of these projects, an
 | **Downloads** | aria2-based download manager panel (`glyph-dl`) | |
 | **Speakers** | Prefs → SPEAKERS: Dolby-style profiles, 8-band EQ, loudness and balance, driven by [x1sound](x1sound/) | `Super` `I` |
 | **Print** | Prefs → PRINT: the printers CUPS knows (state, default, unplugged), one click to add the ones found on USB or the network, pause, test print, drop jobs, remove. Ticket printers (ESC/POS, through the [zj-58](https://github.com/RinWate/zj-58) driver) get their roll: 58 or 80 mm, cut at the end, cash drawer. Backed by `glyph-print` | `Super` `I` |
+| **Tray** | apps in the tray (Hanami, Telegram, Steam…) folded into a capsule on the bar with their count; a click slides the icons out in place, grey like the bar. Click opens the app, right click its menu drawn as a glyph card (submenus, ticks), middle click its second action. Prefs → BAR places it as `apps` | |
 | **Mixer** | per-app volume on the volume slider's right click | |
 | **Vault** | Vaultwarden password picker (rbw + rofi) | `Super` `Alt` `P` |
 | **Keys** | keystroke overlay in glyph style | `Super` `Alt` `K` |
