@@ -1,17 +1,17 @@
 #!/usr/bin/env bash
 # sajra-rice in one command: clones the repo (or updates the clone already there), then runs its installer.
-#   curl -fsSL https://raw.githubusercontent.com/cbranty/sajra-rice/main/setup.sh | bash
-#   curl -fsSL https://raw.githubusercontent.com/cbranty/sajra-rice/main/setup.sh | bash -s -- --with hanami tok
+#   curl -fsSL https://raw.githubusercontent.com/CarlosBranty/sajra-rice/main/setup.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/CarlosBranty/sajra-rice/main/setup.sh | bash -s -- --with hanami tok
 # Everything after -- goes to install.sh as is (see ./install.sh --help). The installer links the configs into the
 # clone, so the clone stays: by default in ~/.local/share/sajra-rice.
 #   SAJRA_DIR     where the clone lives          (default ~/.local/share/sajra-rice)
-#   SAJRA_REPO    the git URL to clone           (default https://github.com/cbranty/sajra-rice.git)
+#   SAJRA_REPO    the git URL to clone           (default https://github.com/CarlosBranty/sajra-rice.git)
 #   SAJRA_BRANCH  the branch to clone and follow (default main)
 # The whole script is inside main(), run on the last line: if curl stops halfway, bash runs nothing.
 set -euo pipefail
 
 main() {
-    local repo="${SAJRA_REPO:-https://github.com/cbranty/sajra-rice.git}"
+    local repo="${SAJRA_REPO:-https://github.com/CarlosBranty/sajra-rice.git}"
     local branch="${SAJRA_BRANCH:-main}"
     local dir="${SAJRA_DIR:-$HOME/.local/share/sajra-rice}"
 

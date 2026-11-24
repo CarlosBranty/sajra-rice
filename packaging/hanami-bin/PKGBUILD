@@ -6,7 +6,7 @@
 # (install.sh --hanami-deb <path> does both for you).
 
 # The GitHub OWNER/REPO that publishes Hanami's releases (Hanami_<version>_amd64.deb as a release asset)
-_repo=cbranty/sajra-rice
+_repo=CarlosBranty/sajra-rice
 
 _debver=${HANAMI_VERSION:-0.1.0}
 pkgname=hanami-bin

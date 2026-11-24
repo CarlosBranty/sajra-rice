@@ -24,7 +24,7 @@ This rice is not built from scratch. It stands on the work of these projects, an
 | [**Caelestia**](https://github.com/caelestia-dots/shell) | The model glyph-rice follows for the deck, hardware detection, optional components and where the colour comes from (wallpaper, Material You, palettes). |
 | [**Demon's Shot**](https://github.com/Nebelung-cloud/demons-shot-rice) | glyph's sibling rice; `rice switch` changes between them. |
 | [**Roamies**](https://github.com/KenKaiii/Roamies) by Ken Kai (AGPL-3.0-only) | The base of **Hanami**, the desktop assistant in [`hanami/`](hanami/). |
-| [**Qodi Music**](https://github.com/cbranty/qodi-music) | The self-hosted music server the music panel can stream from (a separate project). |
+| [**Qodi Music**](https://github.com/CarlosBranty/qodi-music) | The self-hosted music server the music panel can stream from (a separate project). |
 | [Nothing OS](https://nothing.tech), [Doto](https://github.com/oliverlalan/Doto), [Gadgetbridge](https://codeberg.org/Freeyourgadget/Gadgetbridge) | The look and the Glyph lights, the dot matrix font, the earbuds protocol in `glyph/ear`. |
 
 <h2 align="center">What sajra-rice adds</h2>
@@ -32,7 +32,7 @@ This rice is not built from scratch. It stands on the work of these projects, an
 | | | |
 |---|---|:---:|
 | **Hanami** | voice assistant that lives on the desktop: talk, dictate into any app, reminders, finance overview, desktop control; its settings open as a native glyph side panel | `Ctrl` `Alt` `Space` · `Ctrl` `Alt` `H` |
-| **Music** | music panel: library by albums or folders, search, shuffle and repeat, plays through `mpv` in the background (MPRIS, media keys). **Local** plays `~/Music`; **Server** streams from a [Qodi Music](https://github.com/cbranty/qodi-music) server, with login and library folder in its settings | `Super` `Alt` `M` · `Super` `M` play/pause |
+| **Music** | music panel: library by albums or folders, search, shuffle and repeat, plays through `mpv` in the background (MPRIS, media keys). **Local** plays `~/Music`; **Server** streams from a [Qodi Music](https://github.com/CarlosBranty/qodi-music) server, with login and library folder in its settings | `Super` `Alt` `M` · `Super` `M` play/pause |
 | **glyph-tok** | TikTok, Netflix, Crunchyroll or Dailymotion in a glyph-styled phone window, docked on the right of every workspace (or floating, or in a corner the tiles wrap around), with Brave's ad blocker; `Super` `↑`/`↓` change videos while it shows. Source in [`apps/glyph-tok/`](apps/glyph-tok/) | `Super` `Alt` `T` |
 | **Downloads** | aria2-based download manager panel (`glyph-dl`) | |
 | **Speakers** | Prefs → SPEAKERS: Dolby-style profiles, 8-band EQ, loudness and balance, driven by [x1sound](x1sound/) | `Super` `I` |
@@ -110,19 +110,19 @@ workspace.
 One command, on Arch (it clones the repo to `~/.local/share/sajra-rice`, or updates it, and runs the installer):
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/cbranty/sajra-rice/main/setup.sh | bash
+curl -fsSL https://raw.githubusercontent.com/CarlosBranty/sajra-rice/main/setup.sh | bash
 ```
 
 Installer flags go after `bash -s --`, for example
-`curl -fsSL https://raw.githubusercontent.com/cbranty/sajra-rice/main/setup.sh | bash -s -- --with hanami tok`.
+`curl -fsSL https://raw.githubusercontent.com/CarlosBranty/sajra-rice/main/setup.sh | bash -s -- --with hanami tok`.
 Run the same command again later to update. `SAJRA_DIR` changes where the clone lives. If you'd rather read
-[`setup.sh`](setup.sh) before running it: `curl -fsSLO https://raw.githubusercontent.com/cbranty/sajra-rice/main/setup.sh`,
+[`setup.sh`](setup.sh) before running it: `curl -fsSLO https://raw.githubusercontent.com/CarlosBranty/sajra-rice/main/setup.sh`,
 look, then `bash setup.sh`.
 
 Or by hand:
 
 ```sh
-git clone https://github.com/cbranty/sajra-rice ~/.local/share/sajra-rice
+git clone https://github.com/CarlosBranty/sajra-rice ~/.local/share/sajra-rice
 cd ~/.local/share/sajra-rice
 ./install.sh                  # Arch: packages, services, symlinks, login theme
 ./install.sh --with telegram  # same, components picked up front (--with "" for the rice only)
@@ -215,7 +215,7 @@ The installer applies what fits the machine and leaves the rest to you:
   `auth sufficient pam_fprintd.so` as the first `auth` line of `/etc/pam.d/sudo` and `/etc/pam.d/sddm`, after
   `fprintd-enroll`.
 - **Qodi Music server** — optional, for the music panel's **Server** tab: see
-  [cbranty/qodi-music](https://github.com/cbranty/qodi-music).
+  [CarlosBranty/qodi-music](https://github.com/CarlosBranty/qodi-music).
 
 <h2 align="center">Dependencies</h2>
 
@@ -292,7 +292,7 @@ Nothing, Nothing OS and Glyph are trademarks of Nothing Technology Ltd; this is 
 
 ## Credits
 
-sajra-rice is maintained by Carlos Branty Conza Mendoza ([@cbranty](https://github.com/cbranty)). It is a modified
+sajra-rice is maintained by Carlos Branty Conza Mendoza ([@CarlosBranty](https://github.com/CarlosBranty)). It is a modified
 version of [glyph-rice](https://github.com/Nebelung-cloud/glyph-rice) by Nebelung and its contributors (GPL-3.0), whose
 history this repository keeps. Hanami is a modified version of [Roamies](https://github.com/KenKaiii/Roamies) by Ken Kai
 (AGPL-3.0-only); what changed is listed in [hanami/NOTICE](hanami/NOTICE). Thanks to
