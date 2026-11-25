@@ -133,7 +133,7 @@ PanelWindow {
         return { path: p, title: f.replace(/\.[^.]+$/, ""), artist: "", album: "", folder: "", dur: 0, track: 0, disc: 0 };
     }
 
-    property string mode: "album" // album | folder | list
+    property string mode: "album" // album | artist | folder | list
     property string q: ""
     property var fold: ({})       // ключ группы → развёрнута ли (если трогали руками)
 
@@ -146,6 +146,27 @@ PanelWindow {
             return { key: "list\n" + l.name, name: l.name, sub: "", art, tracks, dur: tracks.reduce((s, t) => s + (t.dur || 0), 0), list: i };
         });
         const m = new Map();
+        // by artist: the album's artist (a song with guests stays with its album), one group whatever the accents or case
+        if (mode === "artist") {
+            for (const t of lib) {
+                const who = t.albumArtist || t.artist || "unknown artist";
+                const key = "@" + norm(who);
+                let g = m.get(key);
+                if (!g) { g = { key, name: who, sub: "", art: t.art, tracks: [], dur: 0, albums: new Set() }; m.set(key, g); }
+                g.tracks.push(t);
+                g.dur += t.dur || 0;
+                g.albums.add(t.album || t.folder);
+                if (!g.art && t.art) g.art = t.art;
+            }
+            const out = Array.from(m.values());
+            for (const g of out) {
+                g.sub = g.albums.size === 1 ? "1 album" : `${g.albums.size} albums`;
+                delete g.albums;
+                g.tracks.sort((a, b) => (a.album || a.folder).localeCompare(b.album || b.folder) || (a.disc - b.disc) || (a.track - b.track) || a.path.localeCompare(b.path));
+            }
+            out.sort((a, b) => a.name.localeCompare(b.name));
+            return out;
+        }
         for (const t of lib) {
             const byAlbum = mode === "album" && !!t.album;
             const key = byAlbum ? `${t.albumArtist || t.artist}\n${t.album}` : `/${t.folder}`;
@@ -248,7 +269,7 @@ PanelWindow {
                         x: 6
                         anchors.verticalCenter: parent.verticalCenter
                         Text { text: "Music"; font { family: Theme.ui; pixelSize: 20; weight: Font.DemiBold } color: Theme.fg }
-                        Lb { px: 10; text: root.settings ? "settings" : root.q ? `${root.count} found` : root.mode === "list" ? `${root.lists.length} ${root.lists.length === 1 ? "list" : "lists"}` : `${root.lib.length} songs · ${root.groups.length} ${root.mode === "album" ? "albums" : "folders"}` }
+                        Lb { px: 10; text: root.settings ? "settings" : root.q ? `${root.count} found` : root.mode === "list" ? `${root.lists.length} ${root.lists.length === 1 ? "list" : "lists"}` : `${root.lib.length} songs · ${root.groups.length} ${root.mode === "album" ? "albums" : root.mode === "artist" ? "artists" : "folders"}` }
                     }
                     Row {
                         anchors { right: parent.right; verticalCenter: parent.verticalCenter }
@@ -357,7 +378,7 @@ PanelWindow {
                                 root.play(x.g, Math.max(0, x.g.tracks.findIndex(t => t.path === x.hits[0].path)));
                                 e.accepted = true;
                             } else if (e.key === Qt.Key_Tab) {
-                                root.mode = root.mode === "album" ? "folder" : root.mode === "folder" ? "list" : "album";
+                                root.mode = ({ album: "artist", artist: "folder", folder: "list", list: "album" })[root.mode];
                                 e.accepted = true;
                             }
                         }
@@ -386,7 +407,7 @@ PanelWindow {
                 MusicTabs {
                     visible: !root.settings
                     width: parent.width
-                    opts: [["album", "albums"], ["folder", "folders"], ["list", "lists"]]
+                    opts: [["album", "albums"], ["artist", "artists"], ["folder", "folders"], ["list", "lists"]]
                     value: root.mode
                     onPicked: v => root.mode = v
                 }
