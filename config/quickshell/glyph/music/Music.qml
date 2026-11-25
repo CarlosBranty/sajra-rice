@@ -98,6 +98,12 @@ PanelWindow {
         Quickshell.execDetached(["bash", "-c", 'mkdir -p "$1" && printf "%s\\n" "$2" > "$1/playlists.json.tmp" && mv -f "$1/playlists.json.tmp" "$1/playlists.json"',
             "bash", conf, JSON.stringify({ lists: a }, null, 2)]);
     }
+    // every song some list holds, by path: its row shows a tick
+    readonly property var listed: {
+        const m = {};
+        for (const l of lists) for (const p of l.tracks) m[p] = true;
+        return m;
+    }
     function copyLists() { return lists.map(l => ({ name: l.name, tracks: l.tracks.slice() })); }
     function addTo(i, paths) {
         const a = copyLists();
@@ -410,6 +416,7 @@ PanelWindow {
                             g: modelData.g
                             hits: modelData.hits
                             now: root.now
+                            listed: root.listed
                             open: root.opened(modelData.g)
                             onToggled: root.flip(modelData.g)
                             onPicked: i => root.play(modelData.g, i)

@@ -14,6 +14,7 @@ Column {
     required property var hits   // её треки, прошедшие поиск
     property bool open
     property string now          // путь играющего трека
+    property var listed: ({})    // paths some list holds: a tick on their row
     signal toggled
     signal picked(int i)         // индекс в g.tracks
     signal add(var paths, string what) // to a list: the picker opens
@@ -168,6 +169,14 @@ Column {
                         if (root.isList) root.drop(i);
                         else root.add([row.modelData.path], row.modelData.title);
                     }
+                }
+                // already in a list: a tick where the + shows under the pointer (not inside a list, all of them are)
+                Icon {
+                    anchors.centerIn: parent
+                    visible: !rh.hovered && !root.isList && !!root.listed[row.modelData.path]
+                    text: "\u{F012C}"
+                    font.pixelSize: 16
+                    color: row.cur ? Theme.ink : Theme.accent
                 }
                 HoverHandler { id: pickHov; cursorShape: Qt.PointingHandCursor }
             }
