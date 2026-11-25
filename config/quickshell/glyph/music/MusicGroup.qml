@@ -131,7 +131,8 @@ Column {
                 width: 30
                 height: parent.height
                 Icon { anchors.centerIn: parent; visible: row.cur; text: Media.playing ? "\u{F057E}" : "\u{F03E4}"; font.pixelSize: 16; color: Theme.ink }
-                Lb { anchors.centerIn: parent; visible: !row.cur; px: 11; text: row.modelData.track ? String(row.modelData.track).padStart(2, "0") : "·" }
+                Lb { anchors.centerIn: parent; visible: !row.cur; px: 11; text: root.isList ? String(root.g.tracks.findIndex(t => t.path === row.modelData.path) + 1).padStart(2, "0") // its place in the list
+                    : row.modelData.track ? String(row.modelData.track).padStart(2, "0") : "·" }
             }
             Text {
                 anchors { left: no.right; leftMargin: 8; right: pick.left; rightMargin: 10; verticalCenter: parent.verticalCenter }
@@ -178,7 +179,13 @@ Column {
                 color: row.cur ? Theme.ink : Theme.grey
             }
             // по пути, не indexOf: модель отдаёт копии объектов, indexOf всегда -1
-            TapHandler { onTapped: root.picked(Math.max(0, root.g.tracks.findIndex(t => t.path === row.modelData.path))) }
+            // a tap on + or − is theirs: every handler here sees it, and the song would play too
+            TapHandler {
+                onTapped: e => {
+                    if (pick.contains(pick.mapFromItem(row, e.position))) return;
+                    root.picked(Math.max(0, root.g.tracks.findIndex(t => t.path === row.modelData.path)));
+                }
+            }
             HoverHandler { id: rh; cursorShape: Qt.PointingHandCursor }
         }
     }

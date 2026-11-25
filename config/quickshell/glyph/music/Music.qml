@@ -167,7 +167,7 @@ PanelWindow {
         for (const g of groups) {
             const head = norm(`${g.name} ${g.sub}`);
             const hits = g.tracks.filter(t => {
-                const s = `${head} ${norm(`${t.title} ${t.artist} ${t.folder}`)}`;
+                const s = `${head} ${norm(`${t.title} ${t.artist} ${t.album ?? ""} ${t.folder}`)}`; // album too: in a list the head is the list's name
                 return words.every(w => s.includes(w));
             });
             if (hits.length) out.push({ g, hits });
@@ -390,6 +390,9 @@ PanelWindow {
             Flickable {
                 id: list
                 visible: !root.settings
+                // off while the picker is open: its rows' handlers would still see a click on the card above them (a
+                // MouseArea there doesn't stop pointer handlers) and play the song under it
+                enabled: !root.adding
                 anchors { left: parent.left; leftMargin: 12; right: parent.right; rightMargin: 12; top: head.bottom; topMargin: 12; bottom: parent.bottom; bottomMargin: 14 }
                 clip: true
                 contentHeight: groupsCol.height
@@ -434,7 +437,7 @@ PanelWindow {
                 visible: !!root.adding
                 radius: Theme.corner(24)
                 color: Theme.fade(Theme.s1, 0.7)
-                TapHandler { onTapped: root.adding = null }
+                MouseArea { anchors.fill: parent; onClicked: root.adding = null }
             }
             MusicPick {
                 id: pick

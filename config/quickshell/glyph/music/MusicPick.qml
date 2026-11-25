@@ -22,8 +22,8 @@ Rectangle {
     function focusField() { name.text = ""; name.take(); }
     function has(l) { return root.paths.length > 0 && root.paths.every(p => l.tracks.includes(p)); }
 
-    // a tap on the card itself stays on it, the panel behind doesn't take it
-    TapHandler {}
+    // a click on the card's empty space stays on it (the list under it is off meanwhile, see Music.qml)
+    MouseArea { anchors.fill: parent }
 
     Column {
         id: col
