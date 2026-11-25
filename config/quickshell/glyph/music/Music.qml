@@ -14,6 +14,9 @@ import qs.services
 // Local | Server: сервер Qodi Music (~/.local/bin/musica-remote login URL USER) → ~/.cache/musica/remote.json,
 // синхронизируется при каждом открытии; песни — URL потока, mpv играет их напрямую.
 // ⚙ в шапке — настройки (MusicSettings): папка библиотеки и вход на сервер, вместо поиска и списка
+// Lists (the third tab): ~/.config/musica/playlists.json, { lists: [{ name, tracks: [path] }] }. A path is a file or a
+// server URL, so one list mixes both libraries; a song no longer in either shows by its file name. + on a song or an
+// album opens the picker (MusicPick); in a list, − takes a song out and the bin deletes the list
 PanelWindow {
     id: root
 
@@ -25,7 +28,7 @@ PanelWindow {
     function close() { open = false; }
     property bool settings: false
     onSettingsChanged: if (!settings) search.forceActiveFocus(); else panel.forceActiveFocus()
-    onOpenChanged: if (open) { settings = false; indexer.running = true; remoteSync.running = true; search.forceActiveFocus(); }
+    onOpenChanged: if (open) { settings = false; adding = null; indexer.running = true; remoteSync.running = true; listsFile.reload(); search.forceActiveFocus(); }
 
     property real t: open ? 1 : 0
     Behavior on t { NumberAnimation { duration: Theme.t; easing.type: Easing.BezierSpline; easing.bezierCurve: Theme.glide } }
@@ -78,13 +81,64 @@ PanelWindow {
         return "";
     }
 
-    property string mode: "album" // album | folder
+    // --- lists
+    readonly property string conf: (Quickshell.env("XDG_CONFIG_HOME") || Quickshell.env("HOME") + "/.config") + "/musica/"
+    property var lists: []
+    FileView {
+        id: listsFile
+        path: root.conf + "playlists.json"
+        watchChanges: true
+        printErrors: false
+        onFileChanged: reload()
+        onLoaded: try { const d = JSON.parse(text()); root.lists = (d.lists ?? []).filter(l => l && typeof l.name === "string" && Array.isArray(l.tracks)); } catch (e) {}
+    }
+    // written through a temp file and mv, so a half-written file is never read back; the folder may not exist yet
+    function saveLists(a) {
+        lists = a;
+        Quickshell.execDetached(["bash", "-c", 'mkdir -p "$1" && printf "%s\\n" "$2" > "$1/playlists.json.tmp" && mv -f "$1/playlists.json.tmp" "$1/playlists.json"',
+            "bash", conf, JSON.stringify({ lists: a }, null, 2)]);
+    }
+    function copyLists() { return lists.map(l => ({ name: l.name, tracks: l.tracks.slice() })); }
+    function addTo(i, paths) {
+        const a = copyLists();
+        for (const p of paths) if (!a[i].tracks.includes(p)) a[i].tracks.push(p);
+        saveLists(a);
+    }
+    function newList(name, paths) {
+        const at = lists.findIndex(l => l.name.toLowerCase() === name.toLowerCase());
+        if (at >= 0) return addTo(at, paths); // the same name: into that one
+        saveLists(copyLists().concat([{ name, tracks: Array.from(new Set(paths)) }]));
+    }
+    function dropFrom(i, k) { const a = copyLists(); a[i].tracks.splice(k, 1); saveLists(a); }
+    function removeList(i) { const a = copyLists(); a.splice(i, 1); saveLists(a); }
+    // what the picker is adding: { paths, what }, null while it is closed
+    property var adding: null
+    onAddingChanged: if (!adding && !settings) search.forceActiveFocus()
+
+    // every song either library knows, by path: a list's tracks are looked up here
+    readonly property var known: {
+        const m = {};
+        for (const t of localLib) m[t.path] = t;
+        for (const t of remote.tracks ?? []) m[t.path] = t;
+        return m;
+    }
+    function stub(p) {
+        const f = decodeURIComponent(String(p).split("?")[0].split("/").pop() || p);
+        return { path: p, title: f.replace(/\.[^.]+$/, ""), artist: "", album: "", folder: "", dur: 0, track: 0, disc: 0 };
+    }
+
+    property string mode: "album" // album | folder | list
     property string q: ""
     property var fold: ({})       // ключ группы → развёрнута ли (если трогали руками)
 
     function norm(s) { return String(s ?? "").toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, ""); }
 
     readonly property var groups: {
+        if (mode === "list") return lists.map((l, i) => {
+            const tracks = l.tracks.map(p => known[p] ?? stub(p));
+            const art = tracks.find(t => t.art)?.art ?? "";
+            return { key: "list\n" + l.name, name: l.name, sub: "", art, tracks, dur: tracks.reduce((s, t) => s + (t.dur || 0), 0), list: i };
+        });
         const m = new Map();
         for (const t of lib) {
             const byAlbum = mode === "album" && !!t.album;
@@ -170,8 +224,8 @@ PanelWindow {
             color: Theme.s1
             border { width: 1; color: Theme.s2 }
             focus: true
-            Keys.onEscapePressed: root.settings ? root.settings = false : root.close() // из настроек — назад к списку
-            MouseArea { anchors.fill: parent; onClicked: if (!root.settings) search.forceActiveFocus() }
+            Keys.onEscapePressed: root.adding ? root.adding = null : root.settings ? root.settings = false : root.close() // из настроек — назад к списку
+            MouseArea { anchors.fill: parent; onClicked: if (!root.settings && !root.adding) search.forceActiveFocus() }
 
             Column {
                 id: head
@@ -188,7 +242,7 @@ PanelWindow {
                         x: 6
                         anchors.verticalCenter: parent.verticalCenter
                         Text { text: "Music"; font { family: Theme.ui; pixelSize: 20; weight: Font.DemiBold } color: Theme.fg }
-                        Lb { px: 10; text: root.settings ? "settings" : root.q ? `${root.count} found` : `${root.lib.length} songs · ${root.groups.length} ${root.mode === "album" ? "albums" : "folders"}` }
+                        Lb { px: 10; text: root.settings ? "settings" : root.q ? `${root.count} found` : root.mode === "list" ? `${root.lists.length} ${root.lists.length === 1 ? "list" : "lists"}` : `${root.lib.length} songs · ${root.groups.length} ${root.mode === "album" ? "albums" : "folders"}` }
                     }
                     Row {
                         anchors { right: parent.right; verticalCenter: parent.verticalCenter }
@@ -297,7 +351,7 @@ PanelWindow {
                                 root.play(x.g, Math.max(0, x.g.tracks.findIndex(t => t.path === x.hits[0].path)));
                                 e.accepted = true;
                             } else if (e.key === Qt.Key_Tab) {
-                                root.mode = root.mode === "album" ? "folder" : "album";
+                                root.mode = root.mode === "album" ? "folder" : root.mode === "folder" ? "list" : "album";
                                 e.accepted = true;
                             }
                         }
@@ -313,9 +367,9 @@ PanelWindow {
                     }
                 }
 
-                // своя библиотека или сервер Qodi Music
+                // своя библиотека или сервер Qodi Music; a list mixes both, so not over the lists
                 MusicTabs {
-                    visible: !root.settings
+                    visible: !root.settings && root.mode !== "list"
                     width: parent.width
                     opts: [["local", "local"], ["server", "server"]]
                     value: root.source
@@ -326,7 +380,7 @@ PanelWindow {
                 MusicTabs {
                     visible: !root.settings
                     width: parent.width
-                    opts: [["album", "albums"], ["folder", "folders"]]
+                    opts: [["album", "albums"], ["folder", "folders"], ["list", "lists"]]
                     value: root.mode
                     onPicked: v => root.mode = v
                 }
@@ -356,6 +410,9 @@ PanelWindow {
                             open: root.opened(modelData.g)
                             onToggled: root.flip(modelData.g)
                             onPicked: i => root.play(modelData.g, i)
+                            onAdd: (paths, what) => { root.adding = { paths, what }; pick.focusField(); }
+                            onDrop: i => root.dropFrom(modelData.g.list, i)
+                            onRemove: root.removeList(modelData.g.list)
                         }
                     }
                     Lb {
@@ -363,11 +420,32 @@ PanelWindow {
                         width: groupsCol.width
                         topPadding: 30
                         horizontalAlignment: Text.AlignHCenter
-                        text: root.source === "server" && root.remoteNote ? root.remoteNote
+                        text: root.mode === "list" && !root.lists.length ? "no lists yet · + on a song or an album"
+                            : root.source === "server" && root.remoteNote && root.mode !== "list" ? root.remoteNote
                             : root.lib.length ? "nothing found"
                             : root.source === "server" ? "no music on the server" : "no music in ~/Music"
                     }
                 }
+            }
+
+            // the picker: over the list, at the bottom; a tap on the dimmed list closes it
+            Rectangle {
+                anchors { fill: list }
+                visible: !!root.adding
+                radius: Theme.corner(24)
+                color: Theme.fade(Theme.s1, 0.7)
+                TapHandler { onTapped: root.adding = null }
+            }
+            MusicPick {
+                id: pick
+                visible: !!root.adding
+                anchors { left: parent.left; leftMargin: 12; right: parent.right; rightMargin: 12; bottom: parent.bottom; bottomMargin: 14 }
+                what: root.adding?.what ?? ""
+                paths: root.adding?.paths ?? []
+                lists: root.lists
+                onPicked: i => { root.addTo(i, paths); root.adding = null; }
+                onCreated: name => { root.newList(name, paths); root.adding = null; }
+                onDismissed: root.adding = null
             }
 
             // настройки: вместо поиска и списка, своя прокрутка (форма входа длиннее, чем помещается)

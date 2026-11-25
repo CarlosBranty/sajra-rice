@@ -4,7 +4,9 @@ import qs.components
 import qs.services
 
 // группа в панели музыки: шапка (обложка точками, альбом или папка, исполнитель, число песен, play) и под ней треки.
-// Играющий трек — белая пилюля, как «вкл.» у плиток. Отдельным файлом: inline component ломает горячую перезагрузку
+// Играющий трек — белая пилюля, как «вкл.» у плиток. Отдельным файлом: inline component ломает горячую перезагрузку.
+// + under the pointer adds the song (or, on the header, the whole group) to a list; in a list (g.list) it is − instead,
+// and the header's bin deletes the list on a second tap
 Column {
     id: root
 
@@ -14,6 +16,14 @@ Column {
     property string now          // путь играющего трека
     signal toggled
     signal picked(int i)         // индекс в g.tracks
+    signal add(var paths, string what) // to a list: the picker opens
+    signal drop(int i)           // in a list: take its i-th song out
+    signal remove                // in a list: delete it
+
+    readonly property bool isList: g.list !== undefined
+    property bool sure: false    // the bin was tapped once
+    onSureChanged: if (sure) unsure.restart()
+    Timer { id: unsure; interval: 2500; onTriggered: root.sure = false }
 
     readonly property bool live: g.tracks.some(t => t.path === now)
 
@@ -33,7 +43,7 @@ Column {
 
         Art { id: art; x: 8; anchors.verticalCenter: parent.verticalCenter; width: 48; height: 48; step: 3; url: root.fileUrl(root.g.art) }
         Column {
-            anchors { left: art.right; leftMargin: 12; right: go.left; rightMargin: 10; verticalCenter: parent.verticalCenter }
+            anchors { left: art.right; leftMargin: 12; right: more.left; rightMargin: 10; verticalCenter: parent.verticalCenter }
             spacing: 2
             Text {
                 width: parent.width
@@ -49,6 +59,30 @@ Column {
                 px: 10
                 text: `${root.g.sub ? root.g.sub + " · " : ""}${root.hits.length < root.g.tracks.length ? root.hits.length + "/" : ""}${root.g.tracks.length} songs`
             }
+        }
+        // + the whole group to a list; in a list, the bin: red on the first tap, the second deletes
+        Rectangle {
+            id: more
+            anchors { right: go.left; rightMargin: 4; verticalCenter: parent.verticalCenter }
+            width: 32
+            height: 32
+            radius: 16
+            visible: hov.hovered || root.sure
+            color: root.sure ? Theme.red : moreTap.pressed ? Theme.fg : moreHov.hovered ? Theme.s3 : "transparent"
+            Icon {
+                anchors.centerIn: parent
+                text: root.isList ? "\u{F09E7}" : "\u{F0415}"
+                font.pixelSize: 17
+                color: root.sure ? Theme.bg : moreTap.pressed ? Theme.ink : Theme.grey
+            }
+            TapHandler {
+                id: moreTap
+                onTapped: {
+                    if (!root.isList) return root.add(root.g.tracks.map(t => t.path), root.g.name);
+                    if (root.sure) { root.sure = false; root.remove(); } else root.sure = true;
+                }
+            }
+            HoverHandler { id: moreHov; cursorShape: Qt.PointingHandCursor }
         }
         Rectangle {
             id: go
@@ -70,8 +104,13 @@ Column {
             rotation: root.open ? 180 : 0
             Behavior on rotation { NumberAnimation { duration: Theme.t; easing.type: Easing.BezierSpline; easing.bezierCurve: Theme.glide } }
         }
-        // шапка целиком — свернуть/развернуть; кнопка play сверху забирает свой тап
-        TapHandler { onTapped: root.toggled() }
+        // шапка целиком — свернуть/развернуть; a tap on + or play is theirs (the handlers here all see it)
+        TapHandler {
+            onTapped: e => {
+                for (const b of [more, go]) if (b.visible && b.contains(b.mapFromItem(parent, e.position))) return;
+                root.toggled();
+            }
+        }
         HoverHandler { id: hov; cursorShape: Qt.PointingHandCursor }
     }
 
@@ -95,12 +134,41 @@ Column {
                 Lb { anchors.centerIn: parent; visible: !row.cur; px: 11; text: row.modelData.track ? String(row.modelData.track).padStart(2, "0") : "·" }
             }
             Text {
-                anchors { left: no.right; leftMargin: 8; right: len.left; rightMargin: 10; verticalCenter: parent.verticalCenter }
+                anchors { left: no.right; leftMargin: 8; right: pick.left; rightMargin: 10; verticalCenter: parent.verticalCenter }
                 elide: Text.ElideRight
                 textFormat: Text.PlainText
                 text: row.modelData.title
                 font { family: Theme.ui; pixelSize: 14; weight: row.cur ? Font.DemiBold : Font.Normal }
                 color: row.cur ? Theme.ink : Theme.fg
+            }
+            // + to a list, − out of this one; only under the pointer
+            Item {
+                id: pick
+                anchors { right: len.left; rightMargin: 6; verticalCenter: parent.verticalCenter }
+                width: 28
+                height: 28
+                Rectangle {
+                    anchors.fill: parent
+                    radius: 14
+                    visible: rh.hovered
+                    color: pickTap.pressed ? (row.cur ? Theme.ink : Theme.fg) : pickHov.hovered ? Theme.s3 : "transparent"
+                    Icon {
+                        anchors.centerIn: parent
+                        text: root.isList ? "\u{F0374}" : "\u{F0415}"
+                        font.pixelSize: 16
+                        color: pickTap.pressed ? (row.cur ? Theme.fg : Theme.ink) : row.cur ? Theme.ink : Theme.grey
+                    }
+                }
+                TapHandler {
+                    id: pickTap
+                    enabled: rh.hovered
+                    onTapped: {
+                        const i = Math.max(0, root.g.tracks.findIndex(t => t.path === row.modelData.path));
+                        if (root.isList) root.drop(i);
+                        else root.add([row.modelData.path], row.modelData.title);
+                    }
+                }
+                HoverHandler { id: pickHov; cursorShape: Qt.PointingHandCursor }
             }
             Lb {
                 id: len

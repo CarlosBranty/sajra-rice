@@ -11,6 +11,7 @@ Column {
     property alias text: input.text
     property bool secret: false
     signal accepted
+    function take() { input.forceActiveFocus(); }
 
     spacing: 6
 
